@@ -731,6 +731,8 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.IssueProfiles = copyStringMap(s.IssueProfiles)
 	snap.PausedOpenPRs = copyStringMap(s.PausedOpenPRs)
 	snap.ForceReanalyze = copyStructMap(s.ForceReanalyze)
+	snap.PrevActiveIdentifiers = copyStructMap(s.PrevActiveIdentifiers)
+	snap.DiscardingIdentifiers = copyStructMap(s.DiscardingIdentifiers)
 
 	o.snapMu.Lock()
 	o.lastSnap = snap
@@ -779,7 +781,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 
 	// 2. Stall detection and tracker-state reconciliation.
 	state = ReconcileStalls(state, o.cfg, now, o.events, o.logBuf)
-	state = ReconcileTrackerStates(ctx, state, o.cfg, o.tracker, o.events)
+	state = ReconcileTrackerStates(ctx, state, o.cfg, o.tracker, o.events, o.logBuf)
 
 	// 3. Fetch candidates and dispatch eligible issues.
 	issues, err := o.tracker.FetchCandidateIssues(ctx)
@@ -788,14 +790,33 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		return state
 	}
 
+	// Build the current active-identifier set for this tick. We compare it
+	// against the previous tick's set in the auto-resume guard below, then
+	// store it for the next tick.
+	currentActive := make(map[string]struct{}, len(issues))
+	for i := range issues {
+		currentActive[issues[i].Identifier] = struct{}{}
+	}
+
 	// Auto-resume any paused issue that the tracker has moved back to an active
 	// state (e.g. user manually set it back to "Todo"). A tracker-side state
 	// change is treated as an implicit resume — clear the daemon-side pause so
 	// the issue can be dispatched on this tick without requiring a manual resume
 	// from the TUI.
+	//
+	// Guard: only auto-resume if the issue was NOT active on the previous tick.
+	// If the issue was already active last tick it was active when the user
+	// paused it (e.g. GitHub "todo" label stays throughout an agent run).
+	// In that case we must not auto-resume — we wait until the issue leaves
+	// active_states and then comes back.
 	for i := range issues {
 		issue := &issues[i]
 		if _, paused := state.PausedIdentifiers[issue.Identifier]; paused {
+			if _, wasActive := state.PrevActiveIdentifiers[issue.Identifier]; wasActive {
+				// Was already active last tick — user paused it while it was
+				// in active_states. Don't auto-resume.
+				continue
+			}
 			delete(state.PausedIdentifiers, issue.Identifier)
 			delete(state.PausedOpenPRs, issue.Identifier)
 			slog.Info("orchestrator: auto-resumed issue re-activated in tracker",
@@ -806,6 +827,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			}
 		}
 	}
+
+	state.PrevActiveIdentifiers = currentActive
 
 	slots := AvailableSlots(state, o.cfg)
 	slog.Debug("orchestrator: tick",
@@ -1012,6 +1035,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if err != nil {
 			slog.Warn("worker: workspace setup failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLine("ERROR", fmt.Sprintf("worker: workspace setup failed: %v", err)))
+			}
 			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 			return
 		}
@@ -1022,6 +1048,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if err := workspace.RunHook(ctx, o.cfg.Hooks.AfterCreate, wsPath, o.cfg.Hooks.TimeoutMs, hookLog); err != nil {
 				slog.Warn("worker: after_create hook failed, removing workspace so next retry re-runs it",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
+				if o.logBuf != nil {
+					o.logBuf.Add(issue.Identifier, makeBufLine("ERROR", fmt.Sprintf("worker: after_create hook failed: %v", err)))
+				}
 				_ = o.workspace.RemoveWorkspace(issue.Identifier)
 				o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 				return
@@ -1083,6 +1112,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if err := workspace.RunHook(ctx, o.cfg.Hooks.BeforeRun, wsPath, o.cfg.Hooks.TimeoutMs, hookLog); err != nil {
 			slog.Warn("worker: before_run hook failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLine("ERROR", fmt.Sprintf("worker: before_run hook failed: %v", err)))
+			}
 			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 			return
 		}
@@ -1131,6 +1163,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if err != nil {
 			slog.Warn("worker: prompt render failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLine("ERROR", fmt.Sprintf("worker: prompt render failed: %v", err)))
+			}
 			o.runAfterHook(ctx, wsPath, issue.ID)
 			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 			return
@@ -1515,22 +1550,44 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 			delete(state.PausedIdentifiers, ev.Identifier)
 			o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
 			slog.Info("orchestrator: paused issue terminated (claim released)", "identifier", ev.Identifier)
-			// Move the issue back to Backlog in the tracker so it is not immediately
-			// re-dispatched. Skip if we don't have the issue UUID (legacy disk entry).
+			// Move the issue back to Backlog (or first active state if no backlog
+			// is configured) to remove the in-progress label and prevent it from
+			// being immediately re-dispatched or left with a stale working label.
+			// Skip if we don't have the issue UUID (legacy disk entry).
 			if ev.IssueID != "" {
 				backlogStates := o.cfg.Tracker.BacklogStates
+				activeStates := o.cfg.Tracker.ActiveStates
+				var targetState string
 				if len(backlogStates) > 0 {
+					targetState = backlogStates[0]
+				} else if len(activeStates) > 0 {
+					// No backlog configured — revert to the first active state so the
+					// working-state label (e.g. "in-progress") is removed.
+					targetState = activeStates[0]
+				}
+				if targetState != "" {
+					// Hold the issue in DiscardingIdentifiers until the label update
+					// completes. The TUI's background TriggerPoll fires every ~30s and
+					// would re-dispatch the issue if it still has its "In Progress" label
+					// during the async window. DiscardingIdentifiers blocks IsEligible.
+					state.DiscardingIdentifiers[ev.Identifier] = struct{}{}
 					issueID := ev.IssueID
 					identifier := ev.Identifier
 					go func() {
 						ctx, cancel := context.WithTimeout(*o.runCtx.Load(), 15*time.Second)
 						defer cancel()
-						if err := o.tracker.UpdateIssueState(ctx, issueID, backlogStates[0]); err != nil {
-							slog.Warn("orchestrator: failed to move discarded issue to backlog",
-								"identifier", identifier, "target_state", backlogStates[0], "error", err)
+						if err := o.tracker.UpdateIssueState(ctx, issueID, targetState); err != nil {
+							slog.Warn("orchestrator: failed to transition discarded issue",
+								"identifier", identifier, "target_state", targetState, "error", err)
 						} else {
-							slog.Info("orchestrator: discarded issue moved to backlog",
-								"identifier", identifier, "state", backlogStates[0])
+							slog.Info("orchestrator: discarded issue transitioned",
+								"identifier", identifier, "state", targetState)
+						}
+						// Signal that the label update is complete (success or failure) so
+						// DiscardingIdentifiers can be cleared.
+						select {
+						case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier}:
+						default:
 						}
 					}()
 				}
@@ -1539,6 +1596,10 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 				o.OnStateChange()
 			}
 		}
+
+	case EventDiscardComplete:
+		delete(state.DiscardingIdentifiers, ev.Identifier)
+		slog.Info("orchestrator: discard complete, issue released", "identifier", ev.Identifier)
 
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.

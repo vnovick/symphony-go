@@ -14,7 +14,7 @@
 [![Web CI](https://github.com/vnovick/symphony-go/actions/workflows/ci-web.yml/badge.svg)](https://github.com/vnovick/symphony-go/actions/workflows/ci-web.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/vnovick/symphony-go)](go.mod)
 [![Latest Release](https://img.shields.io/github/v/release/vnovick/symphony-go)](https://github.com/vnovick/symphony-go/releases/latest)
-[![License](https://img.shields.io/github/license/vnovick/symphony-go)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/vnovick/symphony-go)](https://goreportcard.com/report/github.com/vnovick/symphony-go)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/Q6FrQSrP)
 [![codecov](https://codecov.io/gh/vnovick/symphony-go/graph/badge.svg?token=2KGN4P0WPG)](https://codecov.io/gh/vnovick/symphony-go)
@@ -398,7 +398,7 @@ Issues are fetched from the configured project filtered by `active_states`. The 
 2. Set `tracker.project_slug` to `owner/repo`
 3. Set `tracker.kind: github` and `tracker.api_key: $GITHUB_TOKEN`
 
-GitHub Issues don't have named workflow states. Symphony maps them via labels:
+GitHub Issues don't have named workflow states. Symphony maps them via **labels**:
 - Open issue with an **active label** → eligible for dispatch
 - Open issue with a **terminal label** → treated as done
 - **Closed** issue → always terminal regardless of labels
@@ -408,8 +408,64 @@ tracker:
   kind: github
   api_key: $GITHUB_TOKEN
   project_slug: myorg/myrepo
-  active_states: ["symphony:active"]   # label names
-  terminal_states: ["symphony:done"]
+  active_states: ["todo", "in-progress"]  # label names — create these in your repo
+  terminal_states: ["done", "cancelled"]
+  working_state: "in-progress"            # applied when agent starts; must exist as a label
+  completion_state: "in-review"           # applied when agent finishes; must exist as a label
+  backlog_states: ["backlog"]             # must be an array, not a bare string
+```
+
+#### Required labels
+
+Create these labels in your GitHub repo before running Symphony (`github.com/<owner>/<repo>/labels`):
+
+| Label | Color suggestion | Purpose |
+|---|---|---|
+| `todo` | `#0075ca` | Issues ready to be picked up |
+| `in-progress` | `#e4e669` | Issue is being worked on by an agent |
+| `in-review` | `#d93f0b` | Agent finished — PR open, awaiting review |
+| `done` | `#0e8a16` | Work accepted and merged |
+| `cancelled` | `#cccccc` | Issue closed without action |
+| `backlog` | `#f9f9f9` | Tracked but not yet ready |
+
+You can create them via the GitHub CLI:
+
+```bash
+gh label create "todo"        --color "0075ca" --repo owner/repo
+gh label create "in-progress" --color "e4e669" --repo owner/repo
+gh label create "in-review"   --color "d93f0b" --repo owner/repo
+gh label create "done"        --color "0e8a16" --repo owner/repo
+gh label create "cancelled"   --color "cccccc" --repo owner/repo
+gh label create "backlog"     --color "f9f9f9" --repo owner/repo
+```
+
+#### GitHub Projects v2 vs Labels
+
+**GitHub Projects v2 "Status"** (the Backlog / In Progress / Done column you see in the Projects board) is **completely separate** from issue labels. Symphony only reads and writes **labels** — it does not interact with Projects v2 status fields.
+
+If you manage work through a Projects board, use [GitHub Projects automation](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-built-in-automations) to sync the Status field → labels:
+- Status "Todo" → add label `todo`
+- Status "In Progress" → add label `in-progress`
+- Status "Done" → add label `done`
+
+#### `working_state` — important for GitHub
+
+`working_state` is the label Symphony applies when an agent starts working on an issue (transitions it away from `todo`). The **default is `"In Progress"`** — a label that does not exist in most repos.
+
+If `working_state` refers to a label that doesn't exist in your repo, Symphony will delete the existing active label and fail to add the new one, leaving the issue with **no state label at all**. It then disappears from Symphony silently.
+
+**Fix:** either create the label first (recommended — use the `gh label create` commands above), or set `working_state: "todo"` to keep the issue in its current state throughout the agent run.
+
+#### `backlog_states` syntax
+
+`backlog_states` must be a YAML **array**, not a bare string:
+
+```yaml
+# ✓ correct
+backlog_states: ["backlog"]
+
+# ✗ wrong — silently ignored, backlog panel stays empty
+backlog_states: "backlog"
 ```
 
 ---

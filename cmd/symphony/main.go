@@ -426,6 +426,9 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	tuiCfg.TerminateIssue = func(identifier string) bool {
 		ok := orch.TerminateIssue(identifier)
 		if ok {
+			// Safe to Refresh here: DiscardingIdentifiers blocks re-dispatch until
+			// the async UpdateIssueState goroutine completes (EventDiscardComplete),
+			// so a poll triggered immediately after discard cannot re-pick the issue.
 			orch.Refresh()
 		}
 		return ok
@@ -546,6 +549,9 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		terminateIssue := func(identifier string) bool {
 			ok := orch.TerminateIssue(identifier)
 			if ok {
+				// Safe to Refresh here: the web server has no TriggerPoll background
+				// ticker, so there's no race with the async UpdateIssueState goroutine
+				// in EventTerminatePaused (unlike the TUI path).
 				orch.Refresh()
 			}
 			return ok
@@ -799,6 +805,7 @@ func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
 			ProjectSlug:    cfg.Tracker.ProjectSlug,
 			ActiveStates:   cfg.Tracker.ActiveStates,
 			TerminalStates: cfg.Tracker.TerminalStates,
+			BacklogStates:  cfg.Tracker.BacklogStates,
 			Endpoint:       cfg.Tracker.Endpoint,
 		}), nil
 	default:
@@ -1061,13 +1068,30 @@ func generateWorkflow(trackerKind string, info repoInfo) string {
 		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
 		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
 		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\", \"Duplicate\"]\n")
-		b.WriteString("  completion_state: \"In Review\"\n")
+		b.WriteString("  working_state: \"In Progress\"     # State applied when an agent starts working.\n")
+		b.WriteString("  #                                  # Set to \"\" to disable auto-transition.\n")
+		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
+		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
 	} else {
 		b.WriteString("  project_slug: " + slug + "\n")
-		b.WriteString("  # GitHub uses labels to simulate states — create these labels in your repo.\n")
-		b.WriteString("  active_states: [\"todo\"]\n")
+		b.WriteString("  # GitHub uses labels to map states. Labels must exist in your repo.\n")
+		b.WriteString("  # NOTE: GitHub Projects v2 'Status' field is separate from labels — Symphony\n")
+		b.WriteString("  #       only reads labels. See README for Projects automation setup.\n")
+		b.WriteString("  # Create them with: gh label create \"todo\" --color \"0075ca\" --repo " + slug + "\n")
+		b.WriteString("  #                   gh label create \"in-progress\" --color \"e4e669\" --repo " + slug + "\n")
+		b.WriteString("  #                   gh label create \"in-review\" --color \"d93f0b\" --repo " + slug + "\n")
+		b.WriteString("  #                   gh label create \"done\" --color \"0e8a16\" --repo " + slug + "\n")
+		b.WriteString("  #                   gh label create \"cancelled\" --color \"cccccc\" --repo " + slug + "\n")
+		b.WriteString("  #                   gh label create \"backlog\" --color \"f9f9f9\" --repo " + slug + "\n")
+		b.WriteString("  active_states: [\"todo\", \"in-progress\"]\n")
 		b.WriteString("  terminal_states: [\"done\", \"cancelled\"]\n")
-		b.WriteString("  completion_state: \"in-review\"\n")
+		b.WriteString("  working_state: \"in-progress\"  # Label applied when an agent starts.\n")
+		b.WriteString("  #                               # MUST exist as a label in your repo.\n")
+		b.WriteString("  #                               # Set to \"\" to disable, or reuse an active label.\n")
+		b.WriteString("  completion_state: \"in-review\"  # Label applied when the agent finishes.\n")
+		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  #                               # Must be an array — not a bare string.\n")
+		b.WriteString("  backlog_states: [\"backlog\"]\n")
 	}
 
 	b.WriteString("\npolling:\n  interval_ms: 60000\n")

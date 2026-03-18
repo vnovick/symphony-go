@@ -18,6 +18,12 @@ const (
 	EventForceReanalyze  EventType = "ForceReanalyze"
 	EventResumeIssue     EventType = "ResumeIssue"
 	EventTerminatePaused EventType = "TerminatePaused"
+	// EventDiscardComplete is sent by the UpdateIssueState goroutine (spawned by
+	// EventTerminatePaused) once the label transition is confirmed. Until this
+	// event is processed, the issue stays in DiscardingIdentifiers which blocks
+	// dispatch — preventing the TUI's background TriggerPoll from re-picking the
+	// issue before the "In Progress" label has been removed.
+	EventDiscardComplete EventType = "DiscardComplete"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -112,19 +118,33 @@ type State struct {
 	// ForceReanalyze holds identifiers queued for forced PR re-analysis.
 	// These bypass the "existing open PR = skip" guard on next dispatch.
 	ForceReanalyze map[string]struct{}
+	// PrevActiveIdentifiers is the set of issue identifiers that were fetched
+	// as active on the previous tick. Used by the auto-resume guard to
+	// distinguish "issue came back to active after being absent" (safe to
+	// auto-resume) from "issue was already active when user paused it"
+	// (must not auto-resume — wait until it leaves active and returns).
+	PrevActiveIdentifiers map[string]struct{}
+	// DiscardingIdentifiers holds identifiers of issues whose EventTerminatePaused
+	// has been processed but whose UpdateIssueState goroutine has not yet
+	// completed. Issues in this set are ineligible for dispatch, preventing the
+	// TUI's background TriggerPoll from re-picking them before the label update
+	// (e.g. removing "In Progress") finishes. Cleared by EventDiscardComplete.
+	DiscardingIdentifiers map[string]struct{}
 }
 
 // NewState initialises a State from a config snapshot.
 func NewState(cfg *config.Config) State {
 	return State{
-		PollIntervalMs:      cfg.Polling.IntervalMs,
-		MaxConcurrentAgents: cfg.Agent.MaxConcurrentAgents,
-		Running:             make(map[string]*RunEntry),
-		Claimed:             make(map[string]struct{}),
-		RetryAttempts:       make(map[string]*RetryEntry),
-		PausedIdentifiers:   make(map[string]string),
-		IssueProfiles:       make(map[string]string),
-		PausedOpenPRs:       make(map[string]string),
-		ForceReanalyze:      make(map[string]struct{}),
+		PollIntervalMs:        cfg.Polling.IntervalMs,
+		MaxConcurrentAgents:   cfg.Agent.MaxConcurrentAgents,
+		Running:               make(map[string]*RunEntry),
+		Claimed:               make(map[string]struct{}),
+		RetryAttempts:         make(map[string]*RetryEntry),
+		PausedIdentifiers:     make(map[string]string),
+		IssueProfiles:         make(map[string]string),
+		PausedOpenPRs:         make(map[string]string),
+		ForceReanalyze:        make(map[string]struct{}),
+		PrevActiveIdentifiers: make(map[string]struct{}),
+		DiscardingIdentifiers: make(map[string]struct{}),
 	}
 }

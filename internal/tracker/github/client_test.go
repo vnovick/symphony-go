@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -243,6 +244,52 @@ func TestGHNormalizeClosedIssueAlwaysTerminal(t *testing.T) {
 	assert.Equal(t, "closed", result[0].State)
 }
 
+// TestGHClosedIssueNoTerminalLabelFallsBackToFirstTerminalState verifies that
+// closing a GitHub issue (state=closed) without applying a terminal label is
+// still recognised as terminal by deriveState. Previously this returned ""
+// which caused the reconciler to log a misleading "state changed to ”" message
+// instead of stopping the worker cleanly.
+func TestGHClosedIssueNoTerminalLabelFallsBackToFirstTerminalState(t *testing.T) {
+	srv := newGHServer(t)
+	// Issue is closed but has no "done"/"cancelled" label — just the default labels.
+	srv.addResponse([]interface{}{
+		ghIssue(7, "Cancelled work", "closed", []string{"in-progress"}),
+	}, "", 0)
+	ts := srv.serve()
+	defer ts.Close()
+
+	cfg := defaultConfig(ts.URL)
+	cfg.TerminalStates = []string{"done", "cancelled"}
+	cfg.ActiveStates = []string{"todo", "in-progress"}
+	client := ghclient.NewClient(cfg)
+	result, err := client.FetchIssuesByStates(context.Background(), []string{"done"})
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	// Should return first terminal state, not "" or "closed".
+	assert.Equal(t, "done", result[0].State)
+}
+
+// TestGHClosedIssueWithTerminalLabelReturnsThatLabel verifies that a closed
+// issue with a matching terminal label (e.g. "cancelled") returns that label,
+// not the generic fallback.
+func TestGHClosedIssueWithTerminalLabelReturnsThatLabel(t *testing.T) {
+	srv := newGHServer(t)
+	srv.addResponse([]interface{}{
+		ghIssue(8, "Cancelled work", "closed", []string{"cancelled"}),
+	}, "", 0)
+	ts := srv.serve()
+	defer ts.Close()
+
+	cfg := defaultConfig(ts.URL)
+	cfg.TerminalStates = []string{"done", "cancelled"}
+	cfg.ActiveStates = []string{"todo", "in-progress"}
+	client := ghclient.NewClient(cfg)
+	result, err := client.FetchIssuesByStates(context.Background(), []string{"cancelled"})
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "cancelled", result[0].State)
+}
+
 func TestGHNormalizeLabelsLowercase(t *testing.T) {
 	srv := newGHServer(t)
 	srv.addResponse([]interface{}{
@@ -436,6 +483,97 @@ func TestGHIssueOpenWithNoMatchingLabelNotEligible(t *testing.T) {
 	// "unrelated" label → deriveState returns "" → filtered by fetchPaginated
 	assert.Len(t, issues, 1)
 	assert.Equal(t, "#1", issues[0].Identifier)
+}
+
+func TestGHFetchIssuesByStatesBacklogNotInActiveOrTerminal(t *testing.T) {
+	// Regression: FetchIssuesByStates must return issues whose label is in
+	// backlog_states even when that label is absent from active_states and
+	// terminal_states (i.e. deriveState returns "").
+	srv := newGHServer(t)
+	// GitHub filters by label server-side; only the "backlog" issue is returned.
+	srv.addResponse([]interface{}{
+		ghIssue(10, "Backlog story", "open", []string{"backlog"}),
+	}, "", 0)
+	ts := srv.serve()
+	defer ts.Close()
+
+	client := ghclient.NewClient(ghclient.ClientConfig{
+		APIKey:         "tok",
+		ProjectSlug:    "owner/repo",
+		ActiveStates:   []string{"todo"},
+		TerminalStates: []string{"done"},
+		Endpoint:       ts.URL,
+	})
+	issues, err := client.FetchIssuesByStates(context.Background(), []string{"backlog"})
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.Equal(t, "#10", issues[0].Identifier)
+	assert.Equal(t, "backlog", issues[0].State)
+}
+
+func TestGHUpdateIssueStateRemovesBacklogLabel(t *testing.T) {
+	// Regression: UpdateIssueState must DELETE backlog labels (not just
+	// active+terminal) so dispatching from backlog removes "backlog".
+	var mu sync.Mutex
+	deleted := []string{}
+	var addedLabel string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodDelete:
+			// Path: /repos/owner/repo/issues/123/labels/<label>
+			parts := splitPath(r.URL.Path)
+			label := parts[len(parts)-1]
+			mu.Lock()
+			deleted = append(deleted, label)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if labels := body["labels"]; len(labels) > 0 {
+				mu.Lock()
+				addedLabel = labels[0]
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer ts.Close()
+
+	client := ghclient.NewClient(ghclient.ClientConfig{
+		APIKey:         "tok",
+		ProjectSlug:    "owner/repo",
+		ActiveStates:   []string{"todo", "in-progress"},
+		TerminalStates: []string{"done", "cancelled"},
+		BacklogStates:  []string{"backlog"},
+		Endpoint:       ts.URL,
+	})
+
+	err := client.UpdateIssueState(context.Background(), "123", "todo")
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, "todo", addedLabel, "should add target label")
+	assert.Contains(t, deleted, "in-progress", "should remove other active label")
+	assert.Contains(t, deleted, "backlog", "should remove backlog label")
+	assert.NotContains(t, deleted, "todo", "should not delete the target label itself")
+}
+
+// splitPath splits a URL path on "/" and returns non-empty parts.
+func splitPath(p string) []string {
+	var parts []string
+	for _, s := range strings.Split(p, "/") {
+		if s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return parts
 }
 
 func TestGHMissingPageLinkError(t *testing.T) {

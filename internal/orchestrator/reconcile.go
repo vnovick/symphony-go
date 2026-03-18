@@ -65,7 +65,12 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 // ReconcileTrackerStates fetches current states for all running issues and
 // reconciles: terminal→cleanup, active→update snapshot, neither→stop no cleanup.
 // If the fetch fails, workers are kept and the error is logged.
-func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config, tr tracker.Tracker, events chan OrchestratorEvent) State {
+// The optional logBuf receives per-issue explanatory messages when workers are stopped.
+func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config, tr tracker.Tracker, events chan OrchestratorEvent, logBuf ...*logbuffer.Buffer) State {
+	var buf *logbuffer.Buffer
+	if len(logBuf) > 0 {
+		buf = logBuf[0]
+	}
 	if len(state.Running) == 0 {
 		return state
 	}
@@ -92,6 +97,9 @@ func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config
 		if !found {
 			slog.Info("reconciliation: issue not found in tracker, stopping worker",
 				"issue_id", id, "issue_identifier", entry.Issue.Identifier)
+			if buf != nil {
+				buf.Add(entry.Issue.Identifier, makeBufLine("WARN", "worker: ⚠ issue no longer found in tracker — worker stopped"))
+			}
 			if entry.WorkerCancel != nil {
 				entry.WorkerCancel()
 			}
@@ -107,6 +115,9 @@ func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config
 		if isTermState(refreshedState, cfg) {
 			slog.Info("reconciliation: terminal state, stopping worker",
 				"issue_id", id, "issue_identifier", entry.Issue.Identifier, "state", refreshedState)
+			if buf != nil {
+				buf.Add(entry.Issue.Identifier, makeBufLine("INFO", fmt.Sprintf("worker: issue moved to terminal state %q — worker stopped", refreshedState)))
+			}
 			if entry.WorkerCancel != nil {
 				entry.WorkerCancel()
 			}
@@ -129,6 +140,9 @@ func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config
 		} else {
 			slog.Info("reconciliation: non-active state, stopping worker without cleanup",
 				"issue_id", id, "issue_identifier", entry.Issue.Identifier, "state", refreshedState)
+			if buf != nil {
+				buf.Add(entry.Issue.Identifier, makeBufLine("WARN", fmt.Sprintf("worker: ⚠ issue state changed to %q (not in active_states) — worker stopped", refreshedState)))
+			}
 			if entry.WorkerCancel != nil {
 				entry.WorkerCancel()
 			}

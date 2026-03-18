@@ -116,20 +116,35 @@ func priorityFromLabels(labels []string) int {
 }
 
 // deriveState computes the Symphony state string for a GitHub issue.
-// Closed issues are always "closed".
+// Closed issues: prefer a matching terminal label if present, otherwise return
+// the first configured terminal state (so the reconciler treats it as terminal
+// regardless of which label the user applied or whether they applied one at all).
 // Open issues: first matching active or terminal label wins.
 // Open issues with no matching label return "" (not eligible).
 func deriveState(raw map[string]any, activeStates, terminalStates []string) string {
 	ghState, _ := raw["state"].(string)
+	labels := extractLabels(raw)
 	if strings.ToLower(ghState) == "closed" {
+		// Prefer a terminal label if the user applied one (e.g. "done", "cancelled").
+		for _, label := range labels {
+			for _, terminal := range terminalStates {
+				if strings.EqualFold(label, terminal) {
+					return terminal
+				}
+			}
+		}
+		// No matching terminal label — fall back to the first configured terminal
+		// state so the reconciler still recognises this as a terminal event.
+		if len(terminalStates) > 0 {
+			return terminalStates[0]
+		}
 		return "closed"
 	}
-	labels := extractLabels(raw)
 	// Check active labels first
 	for _, label := range labels {
 		for _, active := range activeStates {
 			if strings.EqualFold(label, active) {
-				return label
+				return active
 			}
 		}
 	}
@@ -137,7 +152,7 @@ func deriveState(raw map[string]any, activeStates, terminalStates []string) stri
 	for _, label := range labels {
 		for _, terminal := range terminalStates {
 			if strings.EqualFold(label, terminal) {
-				return label
+				return terminal
 			}
 		}
 	}
