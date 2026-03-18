@@ -37,6 +37,7 @@ type ClientConfig struct {
 	ProjectSlug    string // "owner/repo"
 	ActiveStates   []string
 	TerminalStates []string
+	BacklogStates  []string
 	Endpoint       string
 }
 
@@ -297,7 +298,9 @@ func (c *Client) fetchSingleIssue(ctx context.Context, issueNumber string) (*dom
 }
 
 // fetchPaginated follows Link header pagination for a GitHub list endpoint.
-func (c *Client) fetchPaginated(ctx context.Context, startURL string, _ []string) ([]domain.Issue, error) {
+// extraStates lists additional label names (e.g. backlog_states) that are
+// accepted even when absent from active_states and terminal_states.
+func (c *Client) fetchPaginated(ctx context.Context, startURL string, extraStates []string) ([]domain.Issue, error) {
 	var all []domain.Issue
 	nextURL := startURL
 
@@ -318,6 +321,21 @@ func (c *Client) fetchPaginated(ctx context.Context, startURL string, _ []string
 				continue
 			}
 			derived := deriveState(raw, c.cfg.ActiveStates, c.cfg.TerminalStates)
+			if derived == "" {
+				// Fall back to extraStates (e.g. backlog_states) so issues whose
+				// labels are not in active/terminal are still returned.
+				for _, label := range extractLabels(raw) {
+					for _, extra := range extraStates {
+						if strings.EqualFold(label, extra) {
+							derived = extra
+							break
+						}
+					}
+					if derived != "" {
+						break
+					}
+				}
+			}
 			if derived == "" {
 				continue // not eligible
 			}
@@ -342,11 +360,12 @@ func (c *Client) fetchPaginated(ctx context.Context, startURL string, _ []string
 func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string) error {
 	u := fmt.Sprintf("%s/repos/%s/%s/issues/%s/labels", c.cfg.Endpoint, c.owner, c.repo, issueID)
 
-	// Remove existing state labels (active + terminal).
-	// Use a fresh slice to avoid mutating cfg.ActiveStates' backing array.
-	allStateLabels := make([]string, 0, len(c.cfg.ActiveStates)+len(c.cfg.TerminalStates))
+	// Remove existing state labels (active + terminal + backlog).
+	// Use a fresh slice to avoid mutating cfg's backing arrays.
+	allStateLabels := make([]string, 0, len(c.cfg.ActiveStates)+len(c.cfg.TerminalStates)+len(c.cfg.BacklogStates))
 	allStateLabels = append(allStateLabels, c.cfg.ActiveStates...)
 	allStateLabels = append(allStateLabels, c.cfg.TerminalStates...)
+	allStateLabels = append(allStateLabels, c.cfg.BacklogStates...)
 	for _, label := range allStateLabels {
 		if strings.EqualFold(label, stateName) {
 			continue

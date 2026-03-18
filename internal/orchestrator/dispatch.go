@@ -23,6 +23,9 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if _, paused := state.PausedIdentifiers[issue.Identifier]; paused {
 		return "paused"
 	}
+	if _, discarding := state.DiscardingIdentifiers[issue.Identifier]; discarding {
+		return "discarding"
+	}
 	if _, running := state.Running[issue.ID]; running {
 		return "already_running"
 	}
@@ -73,8 +76,11 @@ func IsEligible(issue domain.Issue, state State, cfg *config.Config) bool {
 		return false
 	}
 
-	// 3. Not paused by user
+	// 3. Not paused or being discarded
 	if _, paused := state.PausedIdentifiers[issue.Identifier]; paused {
+		return false
+	}
+	if _, discarding := state.DiscardingIdentifiers[issue.Identifier]; discarding {
 		return false
 	}
 

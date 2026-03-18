@@ -365,6 +365,12 @@ func parseLogLine(line string) (IssueLogEntry, bool) {
 	case strings.HasPrefix(line, "INFO worker: turn_summary"):
 		msg := extractAttrValue(line, "summary")
 		entry = IssueLogEntry{Level: "INFO", Event: "turn", Message: msg}
+	case strings.HasPrefix(line, "ERROR"):
+		_, rest, _ := strings.Cut(line, "ERROR ")
+		if idx := strings.LastIndex(rest, " time="); idx > 0 {
+			rest = rest[:idx]
+		}
+		entry = IssueLogEntry{Level: "ERROR", Event: "error", Message: rest}
 	case strings.HasPrefix(line, "WARN"):
 		_, rest, _ := strings.Cut(line, "WARN ")
 		// Strip trailing time= attribute from the message for cleaner display.
