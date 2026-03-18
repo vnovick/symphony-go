@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
 	"github.com/osteele/liquid"
+	"github.com/vnovick/symphony-go/internal/domain"
 )
 
 // DefaultPrompt is used when the workflow prompt body is empty.

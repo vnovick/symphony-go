@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/orchestrator"
 	"github.com/stretchr/testify/assert"
+	"github.com/vnovick/symphony-go/internal/orchestrator"
 )
 
 func TestBackoffMsContinuation(t *testing.T) {

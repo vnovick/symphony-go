@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/workspace"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/symphony-go/internal/config"
+	"github.com/vnovick/symphony-go/internal/workspace"
 )
 
 func testManager(t *testing.T) (*workspace.Manager, string) {

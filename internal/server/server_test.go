@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/symphony-go/internal/server"
 )
 
 func testServer(t *testing.T) *server.Server {

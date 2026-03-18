@@ -23,4 +23,4 @@ log/
 # Planning docs (local only)
 planning/
 docs/superpowers/
-
+coverage.out

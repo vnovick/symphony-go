@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/vnovick/symphony-go/internal/tracker/linear"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/symphony-go/internal/tracker/linear"
 )
 
 func linearIssueNode(id, identifier, state string) map[string]interface{} {

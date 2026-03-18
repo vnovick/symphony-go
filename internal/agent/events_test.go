@@ -3,9 +3,9 @@ package agent_test
 import (
 	"testing"
 
-	"github.com/vnovick/symphony-go/internal/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/symphony-go/internal/agent"
 )
 
 func TestParseLineSystemEvent(t *testing.T) {

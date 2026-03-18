@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/vnovick/symphony-go/internal/config"
 	"github.com/vnovick/symphony-go/internal/domain"
 	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/stretchr/testify/assert"
 )
 
 func baseConfig() *config.Config {

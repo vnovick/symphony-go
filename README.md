@@ -69,7 +69,7 @@ cd web && pnpm dev               # opens at http://localhost:5173
 
 | Requirement | Version |
 |---|---|
-| [Node.js](https://nodejs.org/) | 18+ |
+| [Node.js](https://nodejs.org/) | 20+ |
 | [pnpm](https://pnpm.io/) | 9+ |
 
 The pre-built dashboard is embedded in the binary when you `go install` or download a release. Node.js and pnpm are only needed if you are building from source (`go generate ./internal/server/`).
@@ -164,8 +164,19 @@ Or build from source:
 ```bash
 git clone https://github.com/vnovick/symphony-go
 cd symphony-go
+
+# Build the web dashboard (requires Node.js 20+ and pnpm 10+)
+cd web && pnpm install --frozen-lockfile && pnpm build && cd ..
+
+# Embed the dashboard and compile the binary
+go generate ./internal/server/
 go build -o symphony ./cmd/symphony
+
+# Run it
+./symphony -workflow path/to/WORKFLOW.md
 ```
+
+For contributors, `make dev` runs the Go server and the Vite dev server together with HMR. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full list of `make` commands.
 
 ### Commands
 

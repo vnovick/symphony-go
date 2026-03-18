@@ -3,8 +3,8 @@ package domain_test
 import (
 	"testing"
 
-	"github.com/vnovick/symphony-go/internal/domain"
 	"github.com/stretchr/testify/assert"
+	"github.com/vnovick/symphony-go/internal/domain"
 )
 
 func TestIssueZeroValue(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/workflow"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/symphony-go/internal/workflow"
 )
 
 func TestWatcherTriggersOnChange(t *testing.T) {

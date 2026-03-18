@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vnovick/symphony-go/internal/agent"
 	"github.com/vnovick/symphony-go/internal/agent/agenttest"
 	"github.com/vnovick/symphony-go/internal/domain"
 	"github.com/vnovick/symphony-go/internal/orchestrator"
 	"github.com/vnovick/symphony-go/internal/tracker"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func singleIssueTracker(t *testing.T, state string) *tracker.MemoryTracker {

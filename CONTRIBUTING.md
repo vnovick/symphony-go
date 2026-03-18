@@ -10,6 +10,7 @@ Thank you for your interest in contributing. This document covers how to get the
 
 - Go 1.21+
 - `git`
+- [Lefthook](https://github.com/evilmartians/lefthook) (`brew install lefthook` or `go install github.com/evilmartians/lefthook@latest`)
 - [Claude Code CLI](https://claude.ai/code) (only needed for end-to-end manual testing)
 
 ### Clone and build
@@ -17,6 +18,7 @@ Thank you for your interest in contributing. This document covers how to get the
 ```bash
 git clone https://github.com/vnovick/symphony-go
 cd symphony-go
+lefthook install        # wires pre-commit and pre-push hooks
 go build ./...
 go test -race ./...
 ```
@@ -25,20 +27,52 @@ All tests should pass with no external dependencies. Tests that hit real APIs ar
 
 ### Frontend setup (web dashboard)
 
+The web dashboard is a Vite app that proxies API calls to a running `symphony` process. To work on the frontend you need two things running at the same time:
+
+**Terminal 1 — build and run the Go binary from a project that has a `WORKFLOW.md`:**
+
+```bash
+# In symphony-go — build the binary
+go build -o symphony ./cmd/symphony
+
+# In your project repo (must have a WORKFLOW.md with server.port set)
+/path/to/symphony-go/symphony   # picks up WORKFLOW.md in the current directory automatically
+```
+
+Make sure `server.port` is set in that project's `WORKFLOW.md`:
+
+```yaml
+server:
+  port: 8090
+```
+
+**Terminal 2 — start the Vite dev server (in this repo):**
+
 ```bash
 cd web
 pnpm install --frozen-lockfile
-pnpm build   # one-time production build
-pnpm dev     # dev server with HMR at localhost:5173
+pnpm dev     # HMR at http://localhost:5173, proxies /api/* to localhost:8090
 ```
 
-### Running all checks (mirrors CI)
+`make dev` is a shortcut for the Vite step only. The Go binary must be running separately from a project directory.
 
-```bash
-make verify     # fmt + vet + lint-go + test + web-test
-make build      # go build ./... + web-build
-make all        # build + verify
-```
+### Make commands
+
+| Command | Description |
+|---|---|
+| `make all` | `build` + `verify` — full build and check suite |
+| `make build` | Build web dashboard then compile Go binary |
+| `make verify` | `fmt` + `vet` + `lint-go` + `test` + `web-test` — mirrors CI |
+| `make dev` | Start the Vite dev server with HMR at `localhost:5173` (run the Go binary separately — see [Frontend setup](#frontend-setup-web-dashboard)) |
+| `make test` | `go test -race ./... -count=1` |
+| `make coverage` | Run tests with coverage, output `coverage.html` |
+| `make benchmark` | `go test -bench=. -benchmem ./...` |
+| `make fmt` | `gofmt -l -w .` |
+| `make vet` | `go vet ./...` |
+| `make lint-go` | `golangci-lint run ./...` |
+| `make web-build` | `pnpm install --frozen-lockfile && pnpm build` in `web/` |
+| `make web-test` | `pnpm install --frozen-lockfile && pnpm test` in `web/` |
+| `make clean` | Remove `symphony` binary and coverage files |
 
 ---
 

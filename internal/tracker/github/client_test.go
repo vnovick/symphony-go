@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	ghclient "github.com/vnovick/symphony-go/internal/tracker/github"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	ghclient "github.com/vnovick/symphony-go/internal/tracker/github"
 )
 
 func ghIssue(number int, title, state string, labels []string) map[string]interface{} {

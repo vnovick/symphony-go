@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/agent/agenttest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/symphony-go/internal/agent"
+	"github.com/vnovick/symphony-go/internal/agent/agenttest"
 )
 
 func TestRunTurnFirstTurnBuildsPromptFlag(t *testing.T) {

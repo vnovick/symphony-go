@@ -44,6 +44,4 @@ web-test:
 	cd web && pnpm install --frozen-lockfile && pnpm test
 
 dev:
-	npx concurrently \
-	  "go run ./cmd/symphony" \
-	  "cd web && pnpm dev"
+	cd web && pnpm dev
