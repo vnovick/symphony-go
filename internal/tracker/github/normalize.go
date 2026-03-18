@@ -129,7 +129,7 @@ func deriveState(raw map[string]any, activeStates, terminalStates []string) stri
 		for _, label := range labels {
 			for _, terminal := range terminalStates {
 				if strings.EqualFold(label, terminal) {
-					return label
+					return terminal
 				}
 			}
 		}
@@ -144,7 +144,7 @@ func deriveState(raw map[string]any, activeStates, terminalStates []string) stri
 	for _, label := range labels {
 		for _, active := range activeStates {
 			if strings.EqualFold(label, active) {
-				return label
+				return active
 			}
 		}
 	}
@@ -152,7 +152,7 @@ func deriveState(raw map[string]any, activeStates, terminalStates []string) stri
 	for _, label := range labels {
 		for _, terminal := range terminalStates {
 			if strings.EqualFold(label, terminal) {
-				return label
+				return terminal
 			}
 		}
 	}

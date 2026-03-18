@@ -424,13 +424,14 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	}
 	tuiCfg.ResumeIssue = tuiResume
 	tuiCfg.TerminateIssue = func(identifier string) bool {
-		// Do NOT call Refresh() here: for paused→discard, Refresh races with the
-		// async UpdateIssueState goroutine in EventTerminatePaused. If onTick runs
-		// before the label update completes, the issue (still "In Progress" on GitHub)
-		// is returned by FetchCandidateIssues and re-dispatched immediately.
-		// The snapshot and SSE clients are updated via OnStateChange inside the event
-		// handler, so no explicit Refresh is needed.
-		return orch.TerminateIssue(identifier)
+		ok := orch.TerminateIssue(identifier)
+		if ok {
+			// Safe to Refresh here: DiscardingIdentifiers blocks re-dispatch until
+			// the async UpdateIssueState goroutine completes (EventDiscardComplete),
+			// so a poll triggered immediately after discard cannot re-pick the issue.
+			orch.Refresh()
+		}
+		return ok
 	}
 	tuiCfg.TriggerPoll = orch.Refresh
 	go statusui.Run(ctx, snap, logBuf, tuiCfg, tuiCancel)
@@ -546,8 +547,14 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		}
 		resumeIssue := tuiResume
 		terminateIssue := func(identifier string) bool {
-			// No Refresh — see tuiCfg.TerminateIssue comment above.
-			return orch.TerminateIssue(identifier)
+			ok := orch.TerminateIssue(identifier)
+			if ok {
+				// Safe to Refresh here: the web server has no TriggerPoll background
+				// ticker, so there's no race with the async UpdateIssueState goroutine
+				// in EventTerminatePaused (unlike the TUI path).
+				orch.Refresh()
+			}
+			return ok
 		}
 		fetchLogs := func(identifier string) []string {
 			return logBuf.Get(identifier)
