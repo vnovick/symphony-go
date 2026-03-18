@@ -247,7 +247,7 @@ func TestGHNormalizeClosedIssueAlwaysTerminal(t *testing.T) {
 // TestGHClosedIssueNoTerminalLabelFallsBackToFirstTerminalState verifies that
 // closing a GitHub issue (state=closed) without applying a terminal label is
 // still recognised as terminal by deriveState. Previously this returned ""
-// which caused the reconciler to log a misleading "state changed to ''" message
+// which caused the reconciler to log a misleading "state changed to ”" message
 // instead of stopping the worker cleanly.
 func TestGHClosedIssueNoTerminalLabelFallsBackToFirstTerminalState(t *testing.T) {
 	srv := newGHServer(t)

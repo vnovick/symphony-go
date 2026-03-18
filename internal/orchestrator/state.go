@@ -135,12 +135,12 @@ type State struct {
 // NewState initialises a State from a config snapshot.
 func NewState(cfg *config.Config) State {
 	return State{
-		PollIntervalMs:      cfg.Polling.IntervalMs,
-		MaxConcurrentAgents: cfg.Agent.MaxConcurrentAgents,
-		Running:             make(map[string]*RunEntry),
-		Claimed:             make(map[string]struct{}),
-		RetryAttempts:       make(map[string]*RetryEntry),
-		PausedIdentifiers:   make(map[string]string),
+		PollIntervalMs:        cfg.Polling.IntervalMs,
+		MaxConcurrentAgents:   cfg.Agent.MaxConcurrentAgents,
+		Running:               make(map[string]*RunEntry),
+		Claimed:               make(map[string]struct{}),
+		RetryAttempts:         make(map[string]*RetryEntry),
+		PausedIdentifiers:     make(map[string]string),
 		IssueProfiles:         make(map[string]string),
 		PausedOpenPRs:         make(map[string]string),
 		ForceReanalyze:        make(map[string]struct{}),

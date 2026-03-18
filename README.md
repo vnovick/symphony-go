@@ -14,7 +14,7 @@
 [![Web CI](https://github.com/vnovick/symphony-go/actions/workflows/ci-web.yml/badge.svg)](https://github.com/vnovick/symphony-go/actions/workflows/ci-web.yml)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/vnovick/symphony-go)](go.mod)
 [![Latest Release](https://img.shields.io/github/v/release/vnovick/symphony-go)](https://github.com/vnovick/symphony-go/releases/latest)
-[![License](https://img.shields.io/github/license/vnovick/symphony-go)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Go Report Card](https://goreportcard.com/badge/github.com/vnovick/symphony-go)](https://goreportcard.com/report/github.com/vnovick/symphony-go)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/Q6FrQSrP)
 [![codecov](https://codecov.io/gh/vnovick/symphony-go/graph/badge.svg?token=2KGN4P0WPG)](https://codecov.io/gh/vnovick/symphony-go)
