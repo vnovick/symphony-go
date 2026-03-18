@@ -1,0 +1,30 @@
+pre-commit:
+  parallel: true
+  commands:
+    go-vet:
+      run: go vet ./...
+    go-lint:
+      run: golangci-lint run --timeout=5m
+    web-typecheck:
+      root: web/
+      run: pnpm exec tsc --noEmit -p tsconfig.app.json
+    web-lint:
+      root: web/
+      run: pnpm lint
+    web-format:
+      root: web/
+      run: pnpm format:check
+
+pre-push:
+  parallel: true
+  commands:
+    go-test:
+      run: go test -race -count=1 ./...
+    go-build:
+      run: go build ./...
+    web-test:
+      root: web/
+      run: pnpm test
+    web-build:
+      root: web/
+      run: pnpm build

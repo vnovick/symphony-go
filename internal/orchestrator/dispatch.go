@@ -1,0 +1,194 @@
+package orchestrator
+
+import (
+	"sort"
+	"strings"
+
+	"github.com/vnovick/symphony-go/internal/config"
+	"github.com/vnovick/symphony-go/internal/domain"
+)
+
+// IneligibleReason returns a short string explaining why an issue cannot be
+// dispatched, or "" if it is eligible. Useful for diagnostic logging.
+func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) string {
+	if issue.ID == "" || issue.Identifier == "" || issue.Title == "" || issue.State == "" {
+		return "missing_fields"
+	}
+	if !isActiveState(issue.State, cfg) {
+		return "not_active_state"
+	}
+	if isTerminalState(issue.State, cfg) {
+		return "terminal_state"
+	}
+	if _, paused := state.PausedIdentifiers[issue.Identifier]; paused {
+		return "paused"
+	}
+	if _, running := state.Running[issue.ID]; running {
+		return "already_running"
+	}
+	if _, claimed := state.Claimed[issue.ID]; claimed {
+		return "claimed"
+	}
+	if AvailableSlots(state, cfg) <= 0 {
+		return "no_slots"
+	}
+	stateKey := strings.ToLower(issue.State)
+	if limit, ok := cfg.Agent.MaxConcurrentAgentsByState[stateKey]; ok {
+		if countRunningInState(state, issue.State) >= limit {
+			return "per_state_limit"
+		}
+	}
+	if strings.EqualFold(issue.State, "todo") {
+		for _, blocker := range issue.BlockedBy {
+			if blocker.State == nil {
+				continue
+			}
+			if isTerminalState(*blocker.State, cfg) {
+				continue
+			}
+			if blocker.Identifier != nil {
+				if _, autoPaused := state.PausedIdentifiers[*blocker.Identifier]; autoPaused {
+					continue
+				}
+			}
+			id := ""
+			if blocker.Identifier != nil {
+				id = *blocker.Identifier
+			}
+			return "blocked_by:" + id
+		}
+	}
+	return ""
+}
+
+// IsEligible returns true when an issue passes all dispatch eligibility checks.
+func IsEligible(issue domain.Issue, state State, cfg *config.Config) bool {
+	// 1. Required fields present
+	if issue.ID == "" || issue.Identifier == "" || issue.Title == "" || issue.State == "" {
+		return false
+	}
+
+	// 2. State in active_states and not in terminal_states
+	if !isActiveState(issue.State, cfg) || isTerminalState(issue.State, cfg) {
+		return false
+	}
+
+	// 3. Not paused by user
+	if _, paused := state.PausedIdentifiers[issue.Identifier]; paused {
+		return false
+	}
+
+	// 4. Not already running or claimed
+	if _, running := state.Running[issue.ID]; running {
+		return false
+	}
+	if _, claimed := state.Claimed[issue.ID]; claimed {
+		return false
+	}
+
+	// 5. Global slots available
+	if AvailableSlots(state, cfg) <= 0 {
+		return false
+	}
+
+	// 5. Per-state slots
+	stateKey := strings.ToLower(issue.State)
+	if limit, ok := cfg.Agent.MaxConcurrentAgentsByState[stateKey]; ok {
+		count := countRunningInState(state, issue.State)
+		if count >= limit {
+			return false
+		}
+	}
+
+	// 6. Todo with non-terminal blockers.
+	// A blocker is considered resolved if its Linear state is terminal OR if
+	// Symphony has auto-paused it (open PR detected — work is done even if Linear
+	// still shows "In Progress").
+	if strings.EqualFold(issue.State, "todo") {
+		for _, blocker := range issue.BlockedBy {
+			if blocker.State == nil {
+				continue
+			}
+			if isTerminalState(*blocker.State, cfg) {
+				continue
+			}
+			if blocker.Identifier != nil {
+				if _, autoPaused := state.PausedIdentifiers[*blocker.Identifier]; autoPaused {
+					continue
+				}
+			}
+			return false
+		}
+	}
+
+	return true
+}
+
+// SortForDispatch sorts issues: priority ASC (nil last), then created_at oldest first,
+// then identifier lexicographic.
+func SortForDispatch(issues []domain.Issue) []domain.Issue {
+	out := make([]domain.Issue, len(issues))
+	copy(out, issues)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		switch {
+		case a.Priority == nil && b.Priority == nil:
+			// fall through
+		case a.Priority == nil:
+			return false
+		case b.Priority == nil:
+			return true
+		case *a.Priority != *b.Priority:
+			return *a.Priority < *b.Priority
+		}
+		switch {
+		case a.CreatedAt == nil && b.CreatedAt == nil:
+			// fall through
+		case a.CreatedAt == nil:
+			return false
+		case b.CreatedAt == nil:
+			return true
+		case !a.CreatedAt.Equal(*b.CreatedAt):
+			return a.CreatedAt.Before(*b.CreatedAt)
+		}
+		return a.Identifier < b.Identifier
+	})
+	return out
+}
+
+// AvailableSlots returns how many more agents can be dispatched globally.
+func AvailableSlots(state State, cfg *config.Config) int {
+	n := cfg.Agent.MaxConcurrentAgents - len(state.Running)
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+func isActiveState(s string, cfg *config.Config) bool {
+	for _, a := range cfg.Tracker.ActiveStates {
+		if strings.EqualFold(s, a) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTerminalState(s string, cfg *config.Config) bool {
+	for _, t := range cfg.Tracker.TerminalStates {
+		if strings.EqualFold(s, t) {
+			return true
+		}
+	}
+	return false
+}
+
+func countRunningInState(state State, issueState string) int {
+	count := 0
+	for _, entry := range state.Running {
+		if strings.EqualFold(entry.Issue.State, issueState) {
+			count++
+		}
+	}
+	return count
+}

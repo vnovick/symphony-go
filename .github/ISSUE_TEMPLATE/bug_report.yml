@@ -1,0 +1,64 @@
+name: Bug Report
+description: Something isn't working correctly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug. Please fill in as much detail as you can.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+      placeholder: "When I run `symphony`, it..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a WORKFLOW.md with...
+        2. Run `symphony`
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant WORKFLOW.md config
+      description: Paste the relevant section (redact API keys)
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / error output
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Symphony version
+      placeholder: "`symphony --version` output"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS / architecture
+      placeholder: "macOS 14 arm64, Ubuntu 22.04 x86_64, ..."
+    validations:
+      required: true

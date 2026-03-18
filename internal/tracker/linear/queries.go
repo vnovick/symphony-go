@@ -1,0 +1,158 @@
+package linear
+
+// noProjectSentinel is the sentinel value used in a project filter slice to
+// mean "issues that have no project assigned".
+const noProjectSentinel = "__no_project__"
+
+// QueryCandidateIssues fetches paginated issues by project + state filter.
+const QueryCandidateIssues = `
+query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+  issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      labels { nodes { name } }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier state { name } }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`
+
+// QueryIssueDetail fetches a single issue by ID with full details including comments.
+const QueryIssueDetail = `
+query SymphonyIssueDetail($id: String!) {
+  issue(id: $id) {
+    id
+    identifier
+    title
+    description
+    priority
+    state { name }
+    branchName
+    url
+    labels { nodes { name } }
+    inverseRelations(first: 50) {
+      nodes {
+        type
+        issue { id identifier state { name } }
+      }
+    }
+    comments(first: 50, orderBy: createdAt) {
+      nodes {
+        body
+        createdAt
+        user { name }
+      }
+    }
+    createdAt
+    updatedAt
+  }
+}`
+
+// QueryCandidateIssuesAll fetches paginated issues by state only — no project filter.
+// Used when the runtime project filter is set to "all issues".
+const QueryCandidateIssuesAll = `
+query SymphonyLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+  issues(filter: {state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      labels { nodes { name } }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier state { name } }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`
+
+// QueryCandidateIssuesNoProject fetches paginated issues that have no project
+// assigned, filtered by state.
+const QueryCandidateIssuesNoProject = `
+query SymphonyLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+  issues(filter: {project: {null: true}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      labels { nodes { name } }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier state { name } }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}`
+
+// QueryListProjects fetches up to 100 projects visible to the API key.
+// Used for the interactive project picker.
+const QueryListProjects = `
+query SymphonyListProjects {
+  projects(first: 100) {
+    nodes {
+      id
+      name
+      slugId
+    }
+  }
+}`
+
+// QueryIssuesByIDs fetches issues by ID list for reconciliation (uses [ID!] type).
+const QueryIssuesByIDs = `
+query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
+  issues(filter: {id: {in: $ids}}, first: $first) {
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      labels { nodes { name } }
+      inverseRelations(first: $relationFirst) {
+        nodes {
+          type
+          issue { id identifier state { name } }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+  }
+}`

@@ -1,0 +1,26 @@
+# Worktrees
+.worktrees/
+
+# Go build artifacts
+/symphony
+*.test
+
+# Node / Web
+web/node_modules/
+web/dist/
+web/coverage/
+internal/server/web/dist/*
+!internal/server/web/dist/.gitkeep
+
+# Logs
+log/
+*.log
+
+# Env
+.env
+.superpowers/
+
+# Planning docs (local only)
+planning/
+docs/superpowers/
+
