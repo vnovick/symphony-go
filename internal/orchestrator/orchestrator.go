@@ -30,7 +30,7 @@ type Orchestrator struct {
 
 	cfg       *config.Config
 	tracker   tracker.Tracker
-	runner    agent.Runner
+	runners   *agent.RunnerRegistry
 	workspace *workspace.Manager // nil is safe — workspace ops skipped (useful in tests)
 	logBuf    *logbuffer.Buffer  // nil is safe — log buffering disabled
 	events    chan OrchestratorEvent
@@ -88,11 +88,15 @@ type Orchestrator struct {
 }
 
 // New constructs an Orchestrator ready to Run. wm may be nil (workspace ops skipped).
-func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm *workspace.Manager) *Orchestrator {
+// runners is the multi-agent registry; if nil, a default registry (claude-code only) is created.
+func New(cfg *config.Config, tr tracker.Tracker, runners *agent.RunnerRegistry, wm *workspace.Manager) *Orchestrator {
+	if runners == nil {
+		runners = agent.NewRunnerRegistry(cfg.Agent.Runner)
+	}
 	return &Orchestrator{
 		cfg:               cfg,
 		tracker:           tr,
-		runner:            runner,
+		runners:           runners,
 		workspace:         wm,
 		events:            make(chan OrchestratorEvent, 64),
 		refresh:           make(chan struct{}, 1),
@@ -493,8 +497,13 @@ func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue
 		workerHost = hosts[0]
 	}
 
-	result, runErr := o.runner.RunTurn(ctx, workerLog, nil, nil, renderedPrompt, wsPath,
-		o.cfg.Agent.Command, workerHost, o.cfg.Agent.ReadTimeoutMs, o.cfg.Agent.TurnTimeoutMs)
+	reviewerRunner := o.runners.Get(agent.RunnerKindFrom(o.cfg.Agent.Runner))
+	reviewerCommand := o.cfg.Agent.Command
+	if reviewerCommand == "claude" && o.cfg.Agent.Runner != "" && o.cfg.Agent.Runner != "claude-code" {
+		reviewerCommand = agent.DefaultCommand(agent.RunnerKindFrom(o.cfg.Agent.Runner))
+	}
+	result, runErr := reviewerRunner.RunTurn(ctx, workerLog, nil, nil, renderedPrompt, wsPath,
+		reviewerCommand, workerHost, o.cfg.Agent.ReadTimeoutMs, o.cfg.Agent.TurnTimeoutMs)
 
 	if runErr != nil || result.Failed {
 		workerLog.Warn("reviewer: agent turn failed", "error", runErr, "failure", result.FailureText)
@@ -960,11 +969,23 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		}
 	}
 
+	// Resolve runner kind: check for per-ticket "agent:<runner>" label override,
+	// then fall back to global config.
+	runnerKind := agent.RunnerKind(o.cfg.Agent.Runner)
+	for _, label := range issue.Labels {
+		if kind, ok := agent.RunnerKindFromLabel(label); ok {
+			runnerKind = kind
+			slog.Info("orchestrator: per-ticket runner override from label",
+				"identifier", issue.Identifier, "runner", string(runnerKind), "label", label)
+			break
+		}
+	}
+
 	if o.DryRun {
 		workerCancel()
 		slog.Info("orchestrator: [DRY-RUN] would dispatch agent",
 			"identifier", issue.Identifier, "issue_id", issue.ID,
-			"command", agentCommand, "worker_host", workerHost)
+			"command", agentCommand, "worker_host", workerHost, "runner", string(runnerKind))
 		state.Claimed[issue.ID] = struct{}{} // claim so it doesn't re-dispatch this tick
 		return state
 	}
@@ -973,7 +994,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	state.Running[issue.ID] = &RunEntry{
 		Issue:        issue,
 		WorkerHost:   workerHost,
-		Backend:      "claude",
+		Backend:      string(runnerKind),
 		StartedAt:    time.Now(),
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
@@ -983,7 +1004,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		o.OnDispatch(issue.ID)
 	}
 
-	go o.runWorker(workerCtx, issue, attempt, workerHost, agentCommand, profileName, skipPRCheck)
+	go o.runWorker(workerCtx, issue, attempt, workerHost, agentCommand, profileName, skipPRCheck, runnerKind)
 	return state
 }
 
@@ -1016,7 +1037,8 @@ func (o *Orchestrator) transitionToWorking(ctx context.Context, issue domain.Iss
 // profileName is the active named profile for this issue (may be ""); used to
 // exclude the current agent from its own sub-agent context in teams mode.
 // skipPRCheck bypasses the open-PR guard (used when a forced re-analysis is requested).
-func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, profileName string, skipPRCheck bool) {
+// runnerKind specifies which agent backend to use for this worker.
+func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, profileName string, skipPRCheck bool, runnerKind agent.RunnerKind) {
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("worker panic: %v", r)
@@ -1223,8 +1245,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 		}
 		turnStart := time.Now()
-		result, runErr := o.runner.RunTurn(ctx, workerLog, onProgress, sessionID, renderedPrompt, wsPath,
-			agentCommand, workerHost, o.cfg.Agent.ReadTimeoutMs, o.cfg.Agent.TurnTimeoutMs)
+		workerRunner := o.runners.Get(runnerKind)
+		// Use the runner's default command if config still has "claude" but runner is different.
+		effectiveCommand := agentCommand
+		if effectiveCommand == "claude" && runnerKind != agent.RunnerClaudeCode {
+			effectiveCommand = agent.DefaultCommand(runnerKind)
+		}
+		result, runErr := workerRunner.RunTurn(ctx, workerLog, onProgress, sessionID, renderedPrompt, wsPath,
+			effectiveCommand, workerHost, o.cfg.Agent.ReadTimeoutMs, o.cfg.Agent.TurnTimeoutMs)
 
 		if result.SessionID != "" {
 			s := result.SessionID

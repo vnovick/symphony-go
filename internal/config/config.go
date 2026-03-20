@@ -74,7 +74,10 @@ type AgentConfig struct {
 	MaxConcurrentAgentsByState map[string]int
 	MaxRetryBackoffMs          int
 	MaxTurns                   int
-	Command                    string
+	// Runner is the agent backend to use (e.g. "claude-code", "codex", "gemini", "opencode").
+	// Defaults to "claude-code". Can be overridden per-ticket via "agent:<runner>" label.
+	Runner  string
+	Command string
 	TurnTimeoutMs              int
 	ReadTimeoutMs              int
 	StallTimeoutMs             int
@@ -178,6 +181,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.MaxConcurrentAgents = positiveIntField(agent, "max_concurrent_agents", 10)
 	cfg.Agent.MaxRetryBackoffMs = positiveIntField(agent, "max_retry_backoff_ms", 300000)
 	cfg.Agent.MaxTurns = positiveIntField(agent, "max_turns", 20)
+	cfg.Agent.Runner = strField(agent, "runner", "claude-code")
 	cfg.Agent.Command = strField(agent, "command", "claude")
 	cfg.Agent.TurnTimeoutMs = positiveIntField(agent, "turn_timeout_ms", 3600000)
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)

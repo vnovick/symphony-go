@@ -157,7 +157,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	}
 
 	cfg.Agent.Command = resolveAgentCommand(cfg.Agent.Command)
-	runner := agent.NewClaudeRunner()
+	runners := agent.NewRunnerRegistry(cfg.Agent.Runner)
 	wm := workspace.NewManager(cfg)
 
 	// Remove workspaces for issues that were terminal when we last shut down.
@@ -172,7 +172,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	if logFile != "" {
 		logBuf.SetLogDir(filepath.Join(filepath.Dir(logFile), "issues"))
 	}
-	orch := orchestrator.New(cfg, tr, runner, wm)
+	orch := orchestrator.New(cfg, tr, runners, wm)
 	if os.Getenv("SYMPHONY_DRY_RUN") == "1" {
 		orch.DryRun = true
 		slog.Info("symphony: dry-run mode enabled — agents will not be dispatched")

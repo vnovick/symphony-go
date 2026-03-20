@@ -35,7 +35,7 @@ func TestOrchestratorDispatchesOnTick(t *testing.T) {
 		{Type: "result", SessionID: "s1"},
 	})
 
-	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(fake), nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -64,7 +64,7 @@ func TestOrchestratorNoDuplicateDispatch(t *testing.T) {
 	// Stall = true keeps the worker goroutine blocked, so the issue stays in Running state.
 	fake := &agenttest.FakeRunner{Stall: true}
 
-	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(fake), nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
@@ -84,7 +84,7 @@ func TestCancelResumeRace(t *testing.T) {
 	fake := &agenttest.FakeRunner{Stall: true}
 
 	dir := t.TempDir()
-	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(fake), nil)
 	orch.SetPausedFile(filepath.Join(dir, "paused.json"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -117,7 +117,7 @@ func TestReviewerRespectsCancellation(t *testing.T) {
 	mt := singleIssueTracker(t, "In Review")
 	fake := &agenttest.FakeRunner{Stall: true}
 
-	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(fake), nil)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	runDone := make(chan struct{})
@@ -147,7 +147,7 @@ func TestReanalyzeIssueRace(t *testing.T) {
 	fake := &agenttest.FakeRunner{Stall: true}
 
 	dir := t.TempDir()
-	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(fake), nil)
 	orch.SetPausedFile(filepath.Join(dir, "paused.json"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -174,7 +174,7 @@ func TestCancelIssue_NotRunning(t *testing.T) {
 	cfg := baseConfig()
 	mt := singleIssueTracker(t, "In Progress")
 	fake := &agenttest.FakeRunner{Stall: true}
-	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(fake), nil)
 	// Do not call Run — no workers are dispatched.
 
 	ok := orch.CancelIssue("ENG-99")
@@ -191,7 +191,7 @@ func TestCancelIssue_Running(t *testing.T) {
 	mt := singleIssueTracker(t, "In Progress")
 	fake := &agenttest.FakeRunner{Stall: true}
 
-	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(fake), nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -224,7 +224,7 @@ func TestDispatchReviewer_IssueNotFound(t *testing.T) {
 	cfg := baseConfig()
 	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 	fake := agenttest.NewFakeRunner(nil)
-	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(fake), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -265,7 +265,7 @@ func TestDispatchReviewer_Success(t *testing.T) {
 		}),
 		done: done,
 	}
-	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch := orchestrator.New(cfg, mt, agent.NewSingleRunnerRegistry(wrapped), nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

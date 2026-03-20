@@ -277,7 +277,8 @@ The file has two sections separated by `---` front matter delimiters:
 
 | Field | Default | Description |
 |---|---|---|
-| `command` | `claude` | Claude CLI command (can include flags, e.g. `claude --model claude-opus-4-6`) |
+| `runner` | `claude-code` | Agent backend to use: `claude-code`, `codex`, `gemini`, or `opencode`. Can be overridden per-ticket via `agent:<runner>` label. |
+| `command` | `claude` | CLI command (can include flags, e.g. `claude --model claude-opus-4-6`). When `runner` is set, defaults to the runner's binary name. |
 | `max_concurrent_agents` | `10` | Global concurrency cap — max issues running simultaneously |
 | `max_concurrent_agents_by_state` | `{}` | Per-state concurrency caps. State keys are normalized to lowercase. Example: `{"in progress": 3}` |
 | `max_turns` | `20` | Max turns per agent session before ending and scheduling a retry |
@@ -302,6 +303,31 @@ agent:
       command: claude --model claude-haiku-4-5
       prompt: "You are a rapid bug fixer. Move fast and write a test for each fix."
 ```
+
+#### Multi-Agent Support
+
+Symphony supports multiple agent backends beyond Claude Code. You can configure which agent runs globally or override per-ticket using labels.
+
+**Supported runners:**
+
+| Runner | CLI Binary | Command Example | Notes |
+|---|---|---|---|
+| `claude-code` | `claude` | `claude -p "<prompt>" --output-format stream-json` | Default. Full stream-json support, session resume via `--resume`. |
+| `codex` | `codex` | `codex --approval-mode full-auto --quiet "<prompt>"` | OpenAI Codex CLI. Plain text output. No session resume. |
+| `gemini` | `gemini` | `gemini --prompt "<prompt>"` | Google Gemini CLI. Plain text output. No session resume. |
+| `opencode` | `opencode` | `opencode --prompt "<prompt>"` | OpenCode CLI (stub — exact flags may change). |
+
+**Global configuration** in `WORKFLOW.md`:
+
+```yaml
+agent:
+  runner: codex          # use Codex for all tickets
+  # command: codex       # optional: override the binary name/path
+```
+
+**Per-ticket override** via label: add an `agent:codex`, `agent:gemini`, or `agent:opencode` label to any Linear or GitHub issue. The label takes precedence over the global `runner` setting.
+
+The TUI and web dashboard show which runner is active for each issue. Non-default runners display a badge (e.g. `[codex]`) next to the issue identifier.
 
 #### SSH Worker Hosts
 

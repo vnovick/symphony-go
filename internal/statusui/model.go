@@ -1262,8 +1262,12 @@ func (m *Model) renderLeft() string {
 				elapsed := time.Duration(h.ElapsedMs) * time.Millisecond
 				tok := fmtCount(h.TotalTokens)
 				idStr := truncate(h.Identifier, 13)
-				row := fmt.Sprintf("  %s %-13s t%-2d %5s %s",
-					statusGlyph, idStr, h.TurnCount, tok, fmtDuration(elapsed))
+				backendSuffix := ""
+				if h.Backend != "" && h.Backend != "claude-code" {
+					backendSuffix = " " + h.Backend
+				}
+				row := fmt.Sprintf("  %s %-13s t%-2d %5s %s%s",
+					statusGlyph, idStr, h.TurnCount, tok, fmtDuration(elapsed), backendSuffix)
 				if isCursor {
 					padded := fmt.Sprintf("%-*s", leftPaneWidth-2, "► "+row[2:])
 					if len(padded) > leftPaneWidth-2 {
@@ -1322,9 +1326,15 @@ func (m *Model) renderLeft() string {
 		turns := fmt.Sprintf("t%-2d", r.TurnCount)
 		tok := fmtCount(r.InputTokens + r.OutputTokens)
 
+		// Show runner backend badge when not claude-code (the default).
+		backendBadge := ""
+		if r.Backend != "" && r.Backend != "claude-code" {
+			backendBadge = " " + stylePurple.Render("["+r.Backend+"]")
+		}
+
 		if selected {
 			id := styleReverse.Render("▶ " + truncate(r.Identifier, 13))
-			row := fmt.Sprintf("%s %s %s %4s %s", id, expandMark, turns, tok, stateBadge)
+			row := fmt.Sprintf("%s %s %s %4s %s%s", id, expandMark, turns, tok, stateBadge, backendBadge)
 			padded := fmt.Sprintf("%-*s", leftPaneWidth, row)
 			if len(padded) > leftPaneWidth {
 				padded = padded[:leftPaneWidth]
@@ -1332,7 +1342,7 @@ func (m *Model) renderLeft() string {
 			add(padded)
 		} else {
 			id := styleMuted.Render("  " + truncate(r.Identifier, 13))
-			row := fmt.Sprintf("%s %s %s %4s %s", id, expandMark, turns, tok, stateBadge)
+			row := fmt.Sprintf("%s %s %s %4s %s%s", id, expandMark, turns, tok, stateBadge, backendBadge)
 			add(row)
 		}
 
