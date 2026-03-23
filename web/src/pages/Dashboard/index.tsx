@@ -15,6 +15,7 @@ import RunningSessionsTable from '../../components/symphony/RunningSessionsTable
 import StatusStrip from '../../components/symphony/StatusStrip';
 import IssueCard from '../../components/symphony/IssueCard';
 import BoardColumn from '../../components/symphony/BoardColumn';
+import AgentQueueView from '../../components/symphony/AgentQueueView';
 import Badge from '../../components/ui/badge/Badge';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import type { TrackerIssue } from '../../types/symphony';
@@ -22,6 +23,7 @@ import {
   useIssues,
   useInvalidateIssues,
   useUpdateIssueState,
+  useSetIssueProfile,
   useCancelIssue,
   useResumeIssue,
 } from '../../queries/issues';
@@ -33,9 +35,17 @@ interface BoardProps {
   issues: TrackerIssue[];
   onSelect: (id: string) => void;
   onStateChange: (identifier: string, newState: string) => void;
+  availableProfiles: string[];
+  onProfileChange: (identifier: string, profile: string) => void;
 }
 
-function BoardView({ issues, onSelect, onStateChange }: BoardProps) {
+function BoardView({
+  issues,
+  onSelect,
+  onStateChange,
+  availableProfiles,
+  onProfileChange,
+}: BoardProps) {
   const snapshot = useSymphonyStore((s) => s.snapshot);
   const snapshotLoaded = snapshot !== null;
   const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
@@ -124,6 +134,8 @@ function BoardView({ issues, onSelect, onStateChange }: BoardProps) {
             issues={colIssues}
             isOver={overId === state}
             onSelect={onSelect}
+            availableProfiles={availableProfiles}
+            onProfileChange={onProfileChange}
           />
         ))}
       </div>
@@ -150,9 +162,13 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 function ListView({
   issues,
   onSelect,
+  availableProfiles,
+  onProfileChange,
 }: {
   issues: TrackerIssue[];
   onSelect: (id: string) => void;
+  availableProfiles: string[];
+  onProfileChange: (identifier: string, profile: string) => void;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>('identifier');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -262,13 +278,35 @@ function ListView({
                     {issue.state}
                   </Badge>
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <span className={`inline-flex items-center gap-1 text-xs`}>
-                    <span
-                      className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`}
-                    />
-                    {issue.orchestratorState}
-                  </span>
+                <td
+                  className="px-4 py-3 whitespace-nowrap"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                  }}
+                >
+                  {availableProfiles.length > 0 ? (
+                    <select
+                      value={issue.agentProfile ?? ''}
+                      onChange={(e) => {
+                        onProfileChange(issue.identifier, e.target.value);
+                      }}
+                      className="rounded border border-gray-200 bg-transparent px-1.5 py-0.5 text-xs text-gray-600 focus:outline-none dark:border-gray-700 dark:text-gray-400"
+                    >
+                      <option value="">No agent</option>
+                      {availableProfiles.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-xs text-gray-400">
+                      <span
+                        className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`}
+                      />
+                      {issue.orchestratorState}
+                    </span>
+                  )}
                 </td>
                 <td
                   className="px-4 py-3 whitespace-nowrap"
@@ -314,8 +352,12 @@ export default function Dashboard() {
   const invalidateIssues = useInvalidateIssues();
   const setSelectedIdentifier = useSymphonyStore((s) => s.setSelectedIdentifier);
   const updateIssueStateMutation = useUpdateIssueState();
+  const setIssueProfileMutation = useSetIssueProfile();
 
-  const [viewMode, setViewMode] = useState<'board' | 'list'>('board');
+  const availableProfiles = useMemo(() => snapshot?.availableProfiles ?? [], [snapshot]);
+  const backlogStates = useMemo(() => snapshot?.backlogStates ?? [], [snapshot]);
+
+  const [viewMode, setViewMode] = useState<'board' | 'list' | 'agents'>('board');
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState('all');
   const [loading, setLoading] = useState(false);
@@ -373,6 +415,13 @@ export default function Dashboard() {
       // Invalidation handled by the mutation's onSuccess
     },
     [updateIssueStateMutation],
+  );
+
+  const handleProfileChange = useCallback(
+    (identifier: string, profile: string) => {
+      setIssueProfileMutation.mutate({ identifier, profile });
+    },
+    [setIssueProfileMutation],
   );
 
   const btnBase = 'px-3 py-1.5 text-xs font-medium rounded-full transition-colors';
@@ -466,6 +515,16 @@ export default function Dashboard() {
                 >
                   ☰ List
                 </button>
+                {availableProfiles.length > 0 && (
+                  <button
+                    className={viewMode === 'agents' ? btnActive : btnInactive}
+                    onClick={() => {
+                      setViewMode('agents');
+                    }}
+                  >
+                    ◈ Agents
+                  </button>
+                )}
               </div>
               {/* Refresh */}
               <button
@@ -505,16 +564,35 @@ export default function Dashboard() {
             </select>
           </div>
 
-          {viewMode === 'board' ? (
+          {viewMode === 'board' && (
             <div className="-mx-4 overflow-x-auto px-4 pb-2 md:-mx-6 md:px-6">
               <BoardView
                 issues={filtered}
                 onSelect={setSelectedIdentifier}
                 onStateChange={handleStateChange}
+                availableProfiles={availableProfiles}
+                onProfileChange={handleProfileChange}
               />
             </div>
-          ) : (
-            <ListView issues={filtered} onSelect={setSelectedIdentifier} />
+          )}
+          {viewMode === 'list' && (
+            <ListView
+              issues={filtered}
+              onSelect={setSelectedIdentifier}
+              availableProfiles={availableProfiles}
+              onProfileChange={handleProfileChange}
+            />
+          )}
+          {viewMode === 'agents' && (
+            <div className="-mx-4 overflow-x-auto px-4 pb-2 md:-mx-6 md:px-6">
+              <AgentQueueView
+                issues={issues}
+                backlogStates={backlogStates}
+                availableProfiles={availableProfiles}
+                onProfileChange={handleProfileChange}
+                onSelect={setSelectedIdentifier}
+              />
+            </div>
           )}
         </div>
       </div>

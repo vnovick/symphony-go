@@ -1,0 +1,35 @@
+# Open picker via picker-loaded, toggle first item (All), apply.
+run observe=(view,filter)
+picker-loaded
+key space
+key enter
+----
+TEA WINDOW SIZE: {100 30}
+-- view:
+╔═[ SYM//PHONY ]═══════════════════════════════════════════════════════════════════════════════════╗␤
+║ AGENTS ▸ 0/5   TOKENS ▸ ↑0 ↓0 ∑0   RETRY ▸ 0␤
+●─[ ISSUES · history ]  h:toggle              ║◆─[ LOGS: PROJ-1 ]  t:tools  d:details               ␤
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━║  [◉ RUNNING]                                        ␤
+  x pause  r resume  D discard                ║━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
+▶ PROJ-1  t0     0 [◉ RUNNING]                ║                                                     ␤
+  ⏱ 0s                                        ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+                                              ║                                                     ␤
+◆─[ TIMELINE ]  tab to focus━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
+► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████ 2562047h47m16s␤
+                0s                                   1281023h53m38s                       2562047h47m1␤
+╚══════════════════════════════════════════════════════════════════════════════════════════════════╝␤
+↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • t tools view • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o open PR in browser • w open web UI • q quit␤
+-- filter:
+all

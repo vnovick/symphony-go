@@ -118,16 +118,35 @@ describe('patchSnapshot', () => {
     expect(snap.terminalStates).toEqual(['Done']); // unchanged
   });
 
-  it('no-ops when snapshot is null', () => {
+  it('applies patch even when snapshot is null (optimistic pre-SSE update)', () => {
     useSymphonyStore.setState({ snapshot: null });
     useSymphonyStore.getState().patchSnapshot({ agentMode: 'teams' });
-    expect(useSymphonyStore.getState().snapshot).toBeNull();
+    // FE-7 fix: patch is applied to an empty base so optimistic updates are not dropped
+    expect(useSymphonyStore.getState().snapshot?.agentMode).toBe('teams');
   });
 });
 
 describe('refreshSnapshot', () => {
   it('fetches /api/v1/state and updates snapshot', async () => {
-    const mockSnap = { ...EMPTY_SNAP, running: [{ tokens: 99 }] };
+    const mockSnap = {
+      ...EMPTY_SNAP,
+      running: [
+        {
+          identifier: 'ENG-1',
+          state: 'running',
+          turnCount: 0,
+          tokens: 99,
+          inputTokens: 0,
+          outputTokens: 0,
+          lastEvent: '',
+          sessionId: '',
+          workerHost: '',
+          backend: 'claude',
+          elapsedMs: 0,
+          startedAt: '2024-01-01T00:00:00Z',
+        },
+      ],
+    };
     global.fetch = vi
       .fn()
       .mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue(mockSnap) });

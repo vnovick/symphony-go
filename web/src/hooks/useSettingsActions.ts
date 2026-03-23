@@ -7,13 +7,14 @@ export function useSettingsActions() {
   const upsertProfile = async (
     name: string,
     command: string,
+    backend?: string,
     prompt?: string,
   ): Promise<boolean> => {
     try {
       const res = await fetch(`/api/v1/settings/profiles/${encodeURIComponent(name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, prompt: prompt ?? '' }),
+        body: JSON.stringify({ command, backend: backend ?? '', prompt: prompt ?? '' }),
       });
       if (res.ok) await refreshSnapshot();
       return res.ok;
@@ -72,5 +73,19 @@ export function useSettingsActions() {
     }
   };
 
-  return { upsertProfile, deleteProfile, setAgentMode, updateTrackerStates };
+  const setAutoClearWorkspace = async (enabled: boolean): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/v1/settings/workspace/auto-clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      if (res.ok) patchSnapshot({ autoClearWorkspace: enabled });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  return { upsertProfile, deleteProfile, setAgentMode, updateTrackerStates, setAutoClearWorkspace };
 }

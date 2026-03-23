@@ -39,6 +39,14 @@ import (
 type Config struct {
 	DashboardURL string
 	MaxAgents    int
+	// TrackerKind is "linear" or "github", shown in the header.
+	TrackerKind string
+	// BacklogStates are the states considered "backlog" (not ready for work).
+	// Issues in these states are shown in the BACKLOG section of the backlog panel.
+	BacklogStates []string
+	// TodoStates are the states considered "todo" (ready for work).
+	// Issues in these states are shown in the TODO section of the backlog panel.
+	TodoStates []string
 	// FetchProjects loads the project list for the interactive picker.
 	// If nil, the 'p' key is disabled. The function must not block indefinitely.
 	FetchProjects func() ([]ProjectItem, error)
@@ -75,10 +83,18 @@ type ProjectItem struct {
 
 // BacklogIssueItem is one issue in the backlog/todo panel.
 type BacklogIssueItem struct {
-	Identifier string
-	Title      string
-	State      string
-	Priority   int // 0=none, 1=urgent, 2=high, 3=medium, 4=low
+	Identifier  string
+	Title       string
+	State       string
+	Priority    int           // 0=none, 1=urgent, 2=high, 3=medium, 4=low
+	Description string        // Issue description
+	Comments    []CommentItem // Issue comments
+}
+
+// CommentItem is one comment on an issue.
+type CommentItem struct {
+	Author string
+	Body   string
 }
 
 // tickMsg fires every second to refresh the snapshot.
@@ -148,7 +164,7 @@ func defaultKeys() keyMap {
 		),
 		Kill: key.NewBinding(
 			key.WithKeys("x"),
-			key.WithHelp("x", "pause agent"),
+			key.WithHelp("x", "pause"),
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("q", "ctrl+c"),
@@ -195,16 +211,16 @@ func defaultKeys() keyMap {
 			key.WithHelp("b", "backlog"),
 		),
 		Dispatch: key.NewBinding(
-			key.WithKeys("enter"),
-			key.WithHelp("enter", "dispatch"),
+			key.WithKeys("d", "enter"),
+			key.WithHelp("d/enter", "dispatch/details"),
 		),
 		Resume: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "resume paused"),
 		),
 		Terminate: key.NewBinding(
-			key.WithKeys("d"),
-			key.WithHelp("d", "discard paused"),
+			key.WithKeys("D"),
+			key.WithHelp("D", "discard paused"),
 		),
 		ToolsPane: key.NewBinding(
 			key.WithKeys("t"),
@@ -227,7 +243,7 @@ func defaultKeys() keyMap {
 
 // ShortHelp implements key.Map and returns the compact help binding list.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.ListUp, k.ListDown, k.PanelNext, k.DrillDown, k.EscKey, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.ToolsPane, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.OpenPicker, k.OpenURL, k.OpenWebUI, k.Quit}
+	return []key.Binding{k.ListUp, k.ListDown, k.PanelNext, k.DrillDown, k.EscKey, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.ToolsPane, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.OpenURL, k.OpenWebUI, k.Quit}
 }
 
 // FullHelp implements key.Map and returns the full help binding list.
@@ -360,7 +376,7 @@ type Model struct {
 	// history section navigation
 	historyCursor int
 
-	// right pane display mode: "logs" (default) or "tools"
+	// right pane display mode: "logs" (default), "tools", or "details"
 	rightPaneView string
 
 	// Panel focus: 0=left, 1=right, 2=bottom(timeline)
@@ -384,7 +400,7 @@ type Model struct {
 }
 
 // New constructs the root model.
-// cancelFn is called when the user presses x to pause the selected session; nil disables kill.
+// cancelFn is called when the user presses x to pause the selected running session.
 func New(snap func() server.StateSnapshot, buf *logbuffer.Buffer, cfg Config, cancelFn func(string) bool) Model {
 	if cfg.MaxAgents <= 0 {
 		cfg.MaxAgents = 10
@@ -540,6 +556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.backlogCursor++
 				}
 			case key.Matches(msg, m.keys.Dispatch):
+				// Dispatch key (d/enter): dispatch the selected issue
 				if m.cfg.DispatchIssue != nil && m.backlogCursor < len(m.backlogItems) {
 					item := m.backlogItems[m.backlogCursor]
 					if err := m.cfg.DispatchIssue(item.Identifier); err != nil {
@@ -550,9 +567,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if m.backlogCursor > 0 && m.backlogCursor >= len(m.backlogItems) {
 							m.backlogCursor = len(m.backlogItems) - 1
 						}
+						// Trigger an immediate orchestrator poll so the newly-dispatched
+						// issue appears without waiting for the next scheduled poll cycle.
+						if m.cfg.TriggerPoll != nil {
+							m.cfg.TriggerPoll()
+							m.lastPollTrigger = time.Now()
+						}
 					}
 				}
-			case key.Matches(msg, m.keys.BacklogToggle), key.Matches(msg, m.keys.PickerClose):
+			case key.Matches(msg, m.keys.EscKey), key.Matches(msg, m.keys.BacklogToggle), key.Matches(msg, m.keys.PickerClose):
 				m.backlogOpen = false
 				m.dispatchMsg = ""
 			}
@@ -741,7 +764,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case key.Matches(msg, m.keys.DrillDown):
-			// Enter: drill down into tool detail, timeline phases, or focus right pane for paused.
+			// Enter: drill down into tool detail, timeline phases, focus right pane for paused,
+			// or toggle details view for normal left-pane items.
 			if m.activePanel == 0 && m.inPausedSection {
 				// Focus right pane to read paused session logs.
 				m.activePanel = 1
@@ -756,6 +780,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if m.activePanel == 2 && m.ganttVisible() && !m.timelineDetail {
 				// Show phases for the cursor row (history mode) or selected session (normal mode).
 				m.timelineDetail = true
+			} else if m.activePanel == 0 && !m.inPausedSection && !m.backlogOpen {
+				// Toggle details/logs for the selected running/history session.
+				if m.rightPaneView == "details" {
+					m.rightPaneView = "logs"
+				} else {
+					m.rightPaneView = "details"
+				}
 			}
 		case key.Matches(msg, m.keys.LogUp):
 			pageSize := m.logVP.Height / 2
@@ -795,7 +826,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.killMsg = "↗ Opening web UI: " + m.cfg.DashboardURL
 			}
 		case key.Matches(msg, m.keys.Kill):
-			if m.cancelFn != nil {
+			if m.inPausedSection {
+				m.killMsg = "⏸ x pauses running issues — use r to resume or D to discard"
+			} else if m.cancelFn != nil {
 				if item, ok := m.currentNavItem(); ok && item.issueIdx < len(m.sessions) {
 					id := m.sessions[item.issueIdx].Identifier
 					if m.cancelFn(id) {
@@ -803,7 +836,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.killMsg = "✗ Could not pause " + id
 					}
+				} else {
+					m.killMsg = "⏸ Select a running issue to pause"
 				}
+			} else {
+				m.killMsg = "⏸ Pause is not configured"
 			}
 		case key.Matches(msg, m.keys.Resume):
 			if m.cfg.ResumeIssue != nil && len(m.paused) > 0 {
@@ -885,7 +922,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case key.Matches(msg, m.keys.Dispatch):
-			// Handled in backlog section above; nothing to do here.
+			// Dispatch key (d/enter): toggle issue details view for running/paused/history issues
+			if !m.backlogOpen {
+				if m.rightPaneView == "details" {
+					m.rightPaneView = "logs"
+				} else {
+					m.rightPaneView = "details"
+				}
+			}
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		}
@@ -944,6 +988,10 @@ const ganttSectionLines = maxGanttBars + 3
 
 // ganttVisible reports whether the Gantt section should be rendered.
 func (m *Model) ganttVisible() bool {
+	// Hide timeline when backlog panel is open
+	if m.backlogOpen || m.backlogLoading {
+		return false
+	}
 	return len(m.sessions) > 0 || len(m.history) > 0
 }
 
@@ -1121,6 +1169,25 @@ func (m Model) View() string {
 		modePart = stylePurple.Bold(true).Render("  ◈ TEAMS")
 	}
 
+	// Backend display: collect unique backends from running sessions
+	backendSet := make(map[string]bool)
+	for _, r := range s.Running {
+		if r.Backend != "" {
+			backendSet[r.Backend] = true
+		}
+	}
+	backendPart := ""
+	if len(backendSet) > 0 {
+		backends := make([]string, 0, len(backendSet))
+		for b := range backendSet {
+			backends = append(backends, b)
+		}
+		sort.Strings(backends)
+		backendPart = styleGray.Render("   ") +
+			styleLabel.Render("BACKEND") + styleGray.Render(" ▸ ") +
+			styleCyan.Render(strings.Join(backends, ", "))
+	}
+
 	// Agent / token / retry row
 	agentVal := styleGreen.Render(fmt.Sprintf("%d", s.Counts.Running)) +
 		styleGray.Render(fmt.Sprintf("/%d", m.cfg.MaxAgents))
@@ -1139,7 +1206,7 @@ func (m Model) View() string {
 		styleLabel.Render("TOKENS") + styleGray.Render(" ▸ ") + tokenVal +
 		styleGray.Render("   ") +
 		styleLabel.Render("RETRY") + styleGray.Render(" ▸ ") + retryVal +
-		modePart
+		modePart + backendPart
 
 	var hdr strings.Builder
 	hdr.WriteString(hdrTop + "\n")
@@ -1151,6 +1218,15 @@ func (m Model) View() string {
 			styleCyan.Render(osc8Link(m.cfg.DashboardURL, m.cfg.DashboardURL)) +
 			styleMuted.Render("  w:open") + "\n")
 	}
+
+	// GitHub tracker warning: remind user to select project filter
+	if m.cfg.TrackerKind == "github" && len(s.ActiveProjectFilter) == 0 {
+		hdr.WriteString(styleGray.Render("║ ") +
+			styleYellow.Render("⚠ GitHub: press ") +
+			styleCyan.Render("p") +
+			styleYellow.Render(" to select a project, or states are labels") + "\n")
+	}
+
 	statusMsg := m.killMsg
 	if m.dispatchMsg != "" {
 		statusMsg = m.dispatchMsg
@@ -1226,6 +1302,7 @@ func (m *Model) renderLeft() string {
 	hHint := styleMuted.Render("  h:toggle")
 	add(leftHdrStyle.Render(leftHeader) + filterHint + hHint)
 	add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
+	add(styleMuted.Render("  x pause  r resume  D discard"))
 
 	// ── History sub-tab ──────────────────────────────────────────────────
 	if m.leftTab == "history" {
@@ -1402,7 +1479,7 @@ func (m *Model) renderLeft() string {
 	// Paused section.
 	if len(m.paused) > 0 && len(lines) < bh {
 		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
-		add(styleRed.Render("◆─[ PAUSED ]") + styleMuted.Render("  j↓ k↑ r resume  d discard"))
+		add(styleRed.Render("◆─[ PAUSED ]") + styleMuted.Render("  j↓ k↑ r resume  D discard"))
 		for i, id := range m.paused {
 			if len(lines) >= bh {
 				break
@@ -1441,10 +1518,21 @@ func (m *Model) renderDivider() string {
 
 // renderRight builds the right pane: title + separator + log viewport or tools view.
 // Works for running, paused, and history sessions.
+// When backlog panel is open, automatically shows selected issue details.
 func (m *Model) renderRight() string {
 	rightW := m.logVP.Width
 	rightStyle := lipgloss.NewStyle().Width(rightW).MaxWidth(rightW)
 	sep := rightStyle.Render(styleGray.Render(strings.Repeat("━", rightW)))
+
+	// If backlog panel is open, always show issue details (auto-select).
+	if m.backlogOpen && len(m.backlogItems) > 0 && m.backlogCursor >= 0 && m.backlogCursor < len(m.backlogItems) {
+		return m.renderBacklogDetails()
+	}
+
+	// If details view is active, show issue details for selected session.
+	if m.rightPaneView == "details" {
+		return m.renderSessionDetails()
+	}
 
 	// Collect metadata for the selected session regardless of its kind.
 	selID, selKind := m.selectedSessionID()
@@ -1487,10 +1575,13 @@ func (m *Model) renderRight() string {
 	}
 
 	inTools := m.rightPaneView == "tools" && selID != "" && m.buf != nil
+	inDetails := m.rightPaneView == "details"
 
-	toggleHint := styleMuted.Render("  t:tools")
+	toggleHint := styleMuted.Render("  t:tools  d:details")
 	if inTools {
-		toggleHint = styleMuted.Render("  t:logs")
+		toggleHint = styleMuted.Render("  t:logs  d:details")
+	} else if inDetails {
+		toggleHint = styleMuted.Render("  d:logs  t:tools")
 	}
 
 	// Kind badge appended to title.
@@ -1511,7 +1602,10 @@ func (m *Model) renderRight() string {
 
 	var titleText string
 	if selID == "" {
-		titleText = rightHdrStyle.Render(rightHeader + "[ LOGS ]")
+		titleText = rightHdrStyle.Render(rightHeader+"[ LOGS ]") + styleMuted.Render("  d:details")
+	} else if inDetails {
+		titleText = rightHdrStyle.Render(rightHeader+"[ DETAILS: "+selID+subLabel+" ]") +
+			kindBadge + toggleHint
 	} else if inTools {
 		if m.toolDetailTool != "" {
 			titleText = rightHdrStyle.Render(rightHeader+"[ TOOLS: "+selID+" › "+m.toolDetailTool+" ]") +
@@ -1589,13 +1683,13 @@ func termLine(pfx, pfxColor, msg, msgColor string) string {
 // Returns "" for noise/lifecycle events that should not appear in the log pane.
 func colorLine(line string) string {
 	switch {
-	case strings.HasPrefix(line, "INFO claude: text"):
+	case strings.HasPrefix(line, "INFO claude: text") || strings.HasPrefix(line, "INFO codex: text"):
 		if v := extractAttr(line, "text"); v != "" {
 			return termLine(">", "#00ff88", v, "#e2e8f0")
 		}
 		return termLine(">", "#00ff88", line, "#e2e8f0")
 
-	case strings.HasPrefix(line, "INFO claude: subagent"):
+	case strings.HasPrefix(line, "INFO claude: subagent") || strings.HasPrefix(line, "INFO codex: subagent"):
 		desc := extractAttr(line, "description")
 		tool := extractAttr(line, "tool")
 		msg := desc
@@ -1604,7 +1698,21 @@ func colorLine(line string) string {
 		}
 		return termLine("◈", "#bf5af2", msg, "#d8b4fe")
 
-	case strings.HasPrefix(line, "INFO claude: action"):
+	// action_started and action_detail must appear before the generic action case
+	// because "action_started"/"action_detail" both have prefix "action".
+	case strings.HasPrefix(line, "INFO codex: action_detail"):
+		return "" // structured shell metadata — suppressed from display pane
+
+	case strings.HasPrefix(line, "INFO claude: action_started") || strings.HasPrefix(line, "INFO codex: action_started"):
+		tool := extractAttr(line, "tool")
+		desc := extractAttr(line, "description")
+		msg := tool + "…"
+		if desc != "" {
+			msg = tool + "  " + desc + "…"
+		}
+		return termLine("⧖", "#6b7280", msg, "#9ca3af")
+
+	case strings.HasPrefix(line, "INFO claude: action") || strings.HasPrefix(line, "INFO codex: action"):
 		tool := extractAttr(line, "tool")
 		desc := extractAttr(line, "description")
 		msg := tool
@@ -1616,7 +1724,7 @@ func colorLine(line string) string {
 		}
 		return termLine("$", "#ffb000", msg, "#cbd5e1")
 
-	case strings.HasPrefix(line, "INFO claude: todo"):
+	case strings.HasPrefix(line, "INFO claude: todo") || strings.HasPrefix(line, "INFO codex: todo"):
 		task := extractAttr(line, "task")
 		if task == "" {
 			task = line
@@ -1625,7 +1733,10 @@ func colorLine(line string) string {
 
 	case strings.HasPrefix(line, "INFO claude: session started"),
 		strings.HasPrefix(line, "INFO claude: turn done"),
-		strings.HasPrefix(line, "INFO claude: result error"):
+		strings.HasPrefix(line, "WARN claude: result error"),
+		strings.HasPrefix(line, "INFO codex: session started"),
+		strings.HasPrefix(line, "INFO codex: turn done"),
+		strings.HasPrefix(line, "WARN codex: result error"):
 		return "" // skip internal lifecycle noise
 
 	case strings.HasPrefix(line, "INFO worker:"):
@@ -1679,12 +1790,12 @@ func extractAttr(line, key string) string {
 }
 
 // extractSubagents scans log lines and returns one subagentInfo per
-// "INFO claude: subagent" boundary found. Lines between consecutive
+// "INFO claude: subagent" or "INFO codex: subagent" boundary found. Lines between consecutive
 // subagent markers (or to end-of-slice) belong to that subagent.
 func extractSubagents(lines []string) []subagentInfo {
 	subs := make([]subagentInfo, 0, len(lines))
 	for i, line := range lines {
-		if !strings.HasPrefix(line, "INFO claude: subagent") {
+		if !strings.HasPrefix(line, "INFO claude: subagent") && !strings.HasPrefix(line, "INFO codex: subagent") {
 			continue
 		}
 		desc := extractAttr(line, "description")
@@ -1754,7 +1865,11 @@ func buildToolStats(lines []string) []toolStat {
 
 	for _, line := range lines {
 		switch {
-		case strings.HasPrefix(line, "INFO claude: action"):
+		case strings.HasPrefix(line, "INFO claude: action_detail") || strings.HasPrefix(line, "INFO codex: action_detail"):
+			// Structured shell metadata — the paired action line already counted this call.
+			// Skip to avoid double-counting when tool= is present.
+
+		case strings.HasPrefix(line, "INFO claude: action") || strings.HasPrefix(line, "INFO codex: action"):
 			tool := extractAttr(line, "tool")
 			if tool == "" {
 				continue
@@ -1768,13 +1883,14 @@ func buildToolStats(lines []string) []toolStat {
 			stats[tool].lastDesc = desc
 			lastTool = tool
 
-		case strings.HasPrefix(line, "INFO claude: result error"):
+		case strings.HasPrefix(line, "WARN claude: result error") || strings.HasPrefix(line, "WARN codex: result error"):
 			if lastTool == "" {
 				continue
 			}
 			msg := extractAttr(line, "msg")
 			if msg == "" {
-				msg = strings.TrimPrefix(line, "INFO claude: result error ")
+				_, after, _ := strings.Cut(line, ": result error ")
+				msg = after
 			}
 			stats[lastTool].failCount++
 			if len(stats[lastTool].failMsgs) < 3 {
@@ -1938,7 +2054,11 @@ func buildToolCalls(lines []string, toolName string) []toolCall {
 
 	for _, line := range lines {
 		switch {
-		case strings.HasPrefix(line, "INFO claude: action"):
+		case strings.HasPrefix(line, "INFO claude: action_detail") || strings.HasPrefix(line, "INFO codex: action_detail"):
+			// Structured shell metadata — the paired action line already recorded this call.
+			// Skip to avoid creating a duplicate toolCall entry.
+
+		case strings.HasPrefix(line, "INFO claude: action") || strings.HasPrefix(line, "INFO codex: action"):
 			tool := extractAttr(line, "tool")
 			if tool == "" {
 				continue
@@ -1955,11 +2075,12 @@ func buildToolCalls(lines []string, toolName string) []toolCall {
 					desc: extractAttr(line, "description"),
 				}
 			}
-		case strings.HasPrefix(line, "INFO claude: result error"):
+		case strings.HasPrefix(line, "WARN claude: result error") || strings.HasPrefix(line, "WARN codex: result error"):
 			if lastTool == toolName && pending != nil {
 				msg := extractAttr(line, "msg")
 				if msg == "" {
-					msg = strings.TrimPrefix(line, "INFO claude: result error ")
+					_, after, _ := strings.Cut(line, ": result error ")
+					msg = after
 				}
 				pending.failed = true
 				pending.errMsg = msg
@@ -2124,7 +2245,28 @@ func (m *Model) renderProjectPicker() string {
 	return strings.Join(lines, "\n")
 }
 
+// isTodoState checks if a state is a TODO (active) state.
+func (m *Model) isTodoState(state string) bool {
+	for _, s := range m.cfg.TodoStates {
+		if strings.EqualFold(s, state) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBacklogState checks if a state is a BACKLOG state.
+func (m *Model) isBacklogState(state string) bool {
+	for _, s := range m.cfg.BacklogStates {
+		if strings.EqualFold(s, state) {
+			return true
+		}
+	}
+	return false
+}
+
 // renderBacklogPanel replaces the left pane with the interactive backlog issue list.
+// Shows BACKLOG items first, then ACTIVE items (configured active states) in separate sections.
 func (m *Model) renderBacklogPanel() string {
 	bh := m.bodyHeight()
 	leftStyle := lipgloss.NewStyle().Width(leftPaneWidth).MaxWidth(leftPaneWidth)
@@ -2135,55 +2277,359 @@ func (m *Model) renderBacklogPanel() string {
 		}
 	}
 
-	add(styleLabel.Render("◆─[ BACKLOG ]") + styleMuted.Render("  k↑ j↓  enter dispatch  b close"))
-	add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
+	// Split items into ACTIVE and BACKLOG sections.
+	var todoItems, backlogItems []BacklogIssueItem
+	for _, item := range m.backlogItems {
+		if m.isTodoState(item.State) {
+			todoItems = append(todoItems, item)
+		} else {
+			backlogItems = append(backlogItems, item)
+		}
+	}
+
+	// Cursor position calculation:
+	// 0..len(backlogItems)-1 = BACKLOG section (first)
+	// len(backlogItems)..len(backlogItems)+len(todoItems)-1 = ACTIVE section (second)
+	backlogCount := len(backlogItems)
+
+	// Header - single line with key hints
+	add(styleLabel.Render("◆─[ BACKLOG & ACTIVE ]") + " " + styleMuted.Render("↑↓ nav  d dispatch  esc close"))
 
 	switch {
 	case m.backlogLoading:
-		add(styleMuted.Render("  · loading backlog..."))
+		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
+		add(styleMuted.Render("  · loading..."))
 	case m.backlogErr != "":
+		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
 		add(styleRed.Render("  ✗ " + truncate(m.backlogErr, leftPaneWidth-4)))
-	case len(m.backlogItems) == 0:
-		add(styleMuted.Render("  ○ backlog is empty"))
-		add(styleMuted.Render("  · all issues queued"))
 	default:
-		for i, item := range m.backlogItems {
-			if len(lines) >= bh {
-				break
-			}
-			// Priority symbol.
-			var priSym string
-			switch item.Priority {
-			case 1:
-				priSym = styleRed.Render("!")
-			case 2:
-				priSym = styleYellow.Render("▲")
-			case 3:
-				priSym = styleMuted.Render("●")
-			default:
-				priSym = styleGray.Render("·")
-			}
-			idStr := fmt.Sprintf("%-11s", truncate(item.Identifier, 11))
-			stateStr := styleMuted.Render("[" + truncate(strings.ToUpper(item.State), 6) + "]")
-			titleStr := truncate(item.Title, leftPaneWidth-28)
-
-			if i == m.backlogCursor {
-				row := fmt.Sprintf("▶ %s %s %s %s", priSym, idStr, stateStr, titleStr)
-				padded := fmt.Sprintf("%-*s", leftPaneWidth, row)
-				if len(padded) > leftPaneWidth {
-					padded = padded[:leftPaneWidth]
+		// BACKLOG section (first)
+		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
+		add(styleMuted.Render("◆─ BACKLOG (needs planning)"))
+		if len(backlogItems) == 0 {
+			add(styleMuted.Render("  ○ backlog is empty"))
+		} else {
+			for i, item := range backlogItems {
+				if len(lines) >= bh-3 { // Reserve space for ACTIVE section header
+					add(styleMuted.Render("  ..."))
+					break
 				}
-				add(styleCyan.Bold(true).Render(padded))
-			} else {
-				row := fmt.Sprintf("  %s %s %s %s", priSym, idStr, stateStr, titleStr)
-				add(styleMuted.Render(row))
+				m.renderBacklogItem(item, i == m.backlogCursor, add)
+			}
+		}
+
+		if len(lines) >= bh-2 {
+			goto done
+		}
+
+		// ACTIVE section (second)
+		add("")
+		add(styleMuted.Render("●─ ACTIVE (ready for work)"))
+		if len(todoItems) == 0 {
+			add(styleMuted.Render("  ○ no active items"))
+		} else {
+			for i, item := range todoItems {
+				if len(lines) >= bh {
+					break
+				}
+				// Cursor in ACTIVE section: offset by backlogCount
+				cursorIdx := backlogCount + i
+				m.renderBacklogItem(item, cursorIdx == m.backlogCursor, add)
 			}
 		}
 	}
 
+done:
 	for len(lines) < bh {
 		lines = append(lines, leftStyle.Render(""))
 	}
+	return strings.Join(lines, "\n")
+}
+
+// renderBacklogItem renders a single backlog/todo item.
+func (m *Model) renderBacklogItem(item BacklogIssueItem, selected bool, add func(string)) {
+	// Priority symbol (1 char)
+	priSym := "·"
+	switch item.Priority {
+	case 1:
+		priSym = "!"
+	case 2:
+		priSym = "▲"
+	case 3:
+		priSym = "●"
+	}
+
+	// Truncate fields to fit - no state column, just ID and title
+	idTrunc := truncate(item.Identifier, 12)
+	titleTrunc := truncate(item.Title, leftPaneWidth-18) // Reserve space for prefix and ID
+
+	if selected {
+		// Selected row with highlight
+		row := fmt.Sprintf("▶ %s %-12s %s", priSym, idTrunc, titleTrunc)
+		add(styleCyan.Bold(true).Render(row))
+	} else {
+		// Normal row
+		row := fmt.Sprintf("  %s %-12s %s", priSym, idTrunc, titleTrunc)
+		add(styleMuted.Render(row))
+	}
+}
+
+// renderBacklogDetails shows details of the selected backlog item in the right pane.
+func (m *Model) renderBacklogDetails() string {
+	rightW := m.logVP.Width
+	rightStyle := lipgloss.NewStyle().Width(rightW).MaxWidth(rightW)
+	bh := m.bodyHeight()
+
+	if m.backlogCursor < 0 || m.backlogCursor >= len(m.backlogItems) {
+		var lines []string
+		for len(lines) < bh {
+			lines = append(lines, rightStyle.Render(""))
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	item := m.backlogItems[m.backlogCursor]
+
+	var lines []string
+	add := func(content string) {
+		if len(lines) < bh {
+			lines = append(lines, rightStyle.Render(content))
+		}
+	}
+
+	// Header with key hint
+	add(styleLabel.Render("●─[ ISSUE DETAILS ]") + " " + styleMuted.Render("d dispatch  b close"))
+	add(styleGray.Render(strings.Repeat("━", rightW)))
+	add("")
+
+	// Identifier and state
+	add(styleCyan.Bold(true).Render(item.Identifier) + " " + styleMuted.Render("["+item.State+"]"))
+	add("")
+
+	// Priority
+	priText := "No priority"
+	switch item.Priority {
+	case 1:
+		priText = styleRed.Render("Urgent")
+	case 2:
+		priText = styleYellow.Render("High")
+	case 3:
+		priText = styleMuted.Render("Medium")
+	case 4:
+		priText = "Low"
+	}
+	add(styleMuted.Render("Priority: ") + priText)
+	add("")
+
+	// Title
+	add(styleMuted.Render("Title:"))
+	titleLines := wrapText(item.Title, rightW-2)
+	for _, line := range titleLines {
+		if len(lines) >= bh-2 {
+			break
+		}
+		add("  " + line)
+	}
+	add("")
+
+	// Description
+	if item.Description != "" {
+		add(styleMuted.Render("Description:"))
+		descLines := wrapText(item.Description, rightW-2)
+		maxDescLines := bh - len(lines) - 4 // Reserve space for comments
+		for i, line := range descLines {
+			if i >= maxDescLines {
+				add("  ...")
+				break
+			}
+			add("  " + line)
+		}
+		add("")
+	}
+
+	// Comments
+	if len(item.Comments) > 0 && len(lines) < bh-2 {
+		add(styleMuted.Render(fmt.Sprintf("Comments (%d):", len(item.Comments))))
+		maxComments := bh - len(lines) - 1
+		commentCount := 0
+		for _, c := range item.Comments {
+			if commentCount >= maxComments {
+				add(styleMuted.Render("  ..."))
+				break
+			}
+			author := truncate(c.Author, 12)
+			add(styleCyan.Render(author+":") + " " + truncate(c.Body, rightW-16))
+			commentCount++
+		}
+	}
+
+	// Fill remaining space
+	for len(lines) < bh {
+		lines = append(lines, rightStyle.Render(""))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// wrapText wraps text to the given width, returning lines.
+func wrapText(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{}
+	}
+
+	var lines []string
+	var currentLine strings.Builder
+
+	for _, word := range words {
+		if currentLine.Len() == 0 {
+			currentLine.WriteString(word)
+		} else if currentLine.Len()+1+len(word) <= width {
+			currentLine.WriteString(" ")
+			currentLine.WriteString(word)
+		} else {
+			lines = append(lines, currentLine.String())
+			currentLine.Reset()
+			currentLine.WriteString(word)
+		}
+	}
+	if currentLine.Len() > 0 {
+		lines = append(lines, currentLine.String())
+	}
+
+	return lines
+}
+
+// renderSessionDetails shows details of the selected running/paused/history session.
+func (m *Model) renderSessionDetails() string {
+	rightW := m.logVP.Width
+	rightStyle := lipgloss.NewStyle().Width(rightW).MaxWidth(rightW)
+	bh := m.bodyHeight()
+
+	selID, selKind := m.selectedSessionID()
+	if selID == "" {
+		var lines []string
+		add := func(content string) {
+			if len(lines) < bh {
+				lines = append(lines, rightStyle.Render(content))
+			}
+		}
+		add(styleLabel.Render("●─[ SESSION DETAILS ]") + " " + styleMuted.Render("d logs  t tools"))
+		add(styleGray.Render(strings.Repeat("━", rightW)))
+		add("")
+		add(styleMuted.Render("No session selected."))
+		add("")
+		add(styleMuted.Render("Use k/j or ↑/↓ to select an issue"))
+		add(styleMuted.Render("from the left panel."))
+		add("")
+		add(styleMuted.Render("Press 'd' to return to logs view."))
+		for len(lines) < bh {
+			lines = append(lines, rightStyle.Render(""))
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	var lines []string
+	add := func(content string) {
+		if len(lines) < bh {
+			lines = append(lines, rightStyle.Render(content))
+		}
+	}
+
+	// Header
+	add(styleLabel.Render("●─[ SESSION DETAILS ]") + " " + styleMuted.Render("d logs  t tools"))
+	add(styleGray.Render(strings.Repeat("━", rightW)))
+	add("")
+
+	// Identifier
+	add(styleCyan.Bold(true).Render(selID))
+
+	// State based on session kind
+	switch selKind {
+	case "running":
+		item, ok := m.currentNavItem()
+		if ok && item.issueIdx < len(m.sessions) {
+			r := m.sessions[item.issueIdx]
+			add(styleMuted.Render("State: " + r.State + " (running)"))
+			add("")
+			add(styleMuted.Render("Turns: ") + fmt.Sprintf("%d", r.TurnCount))
+			add(styleMuted.Render("Tokens: ") + fmt.Sprintf("↑%d ↓%d ∑%d", r.InputTokens, r.OutputTokens, r.InputTokens+r.OutputTokens))
+			add(styleMuted.Render("Backend: ") + r.Backend)
+			if r.WorkerHost != "" {
+				add(styleMuted.Render("Worker: ") + r.WorkerHost)
+			}
+			// Per-agent subagent list.
+			subs := m.subagents[r.Identifier]
+			if len(subs) > 0 {
+				add("")
+				add(styleMuted.Render(fmt.Sprintf("Subagents (%d):", len(subs))))
+				for _, sub := range subs {
+					if len(lines) >= bh {
+						break
+					}
+					add(styleCyan.Render("  ↗ ") + truncate(sub.description, rightW-6))
+				}
+				add("")
+				add(styleMuted.Render("↑/↓ to select a subagent row in the left"))
+				add(styleMuted.Render("panel for filtered logs · enter to close"))
+			}
+		}
+	case "paused":
+		add(styleMuted.Render("State: paused"))
+		add("")
+		add(styleMuted.Render("Press 'r' to resume"))
+		add(styleMuted.Render("Press 'D' to discard"))
+	case "history":
+		if m.historyCursor < len(m.history) {
+			hi := len(m.history) - 1 - m.historyCursor
+			h := m.history[hi]
+			add(styleMuted.Render("Status: " + h.Status))
+			add("")
+			add(styleMuted.Render("Turns: ") + fmt.Sprintf("%d", h.TurnCount))
+			add(styleMuted.Render("Tokens: ") + fmt.Sprintf("↑%d ↓%d ∑%d", h.InputTokens, h.OutputTokens, h.TotalTokens))
+			if h.Title != "" {
+				add("")
+				add(styleMuted.Render("Title:"))
+				titleLines := wrapText(h.Title, rightW-2)
+				for _, line := range titleLines {
+					if len(lines) >= bh {
+						break
+					}
+					add("  " + line)
+				}
+			}
+			if h.Backend != "" {
+				add(styleMuted.Render("Backend: ") + h.Backend)
+			}
+			// Per-agent subagent list from log buffer (same fallback the timeline uses).
+			subs := m.subagents[h.Identifier]
+			if len(subs) == 0 && m.buf != nil {
+				subs = extractSubagents(m.buf.Get(h.Identifier))
+			}
+			if len(subs) > 0 {
+				add("")
+				add(styleMuted.Render(fmt.Sprintf("Subagents (%d):", len(subs))))
+				for _, sub := range subs {
+					if len(lines) >= bh {
+						break
+					}
+					add(styleCyan.Render("  ↗ ") + truncate(sub.description, rightW-6))
+				}
+			}
+		}
+	}
+
+	add("")
+	add(styleMuted.Render("View full details in web dashboard"))
+
+	// Fill remaining space
+	for len(lines) < bh {
+		lines = append(lines, rightStyle.Render(""))
+	}
+
 	return strings.Join(lines, "\n")
 }
 

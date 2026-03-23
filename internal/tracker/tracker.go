@@ -32,6 +32,11 @@ type Tracker interface {
 	// Used before rendering the agent prompt.
 	FetchIssueDetail(ctx context.Context, issueID string) (*domain.Issue, error)
 
+	// FetchIssueByIdentifier returns a single issue by its human-readable identifier
+	// (e.g. "ENG-42" for Linear, "#42" for GitHub). Used by the dashboard detail endpoint
+	// to avoid fetching all issues just to serve one.
+	FetchIssueByIdentifier(ctx context.Context, identifier string) (*domain.Issue, error)
+
 	// SetIssueBranch records the feature branch name on the tracker issue so
 	// that retried workers can resume from the same branch instead of starting
 	// over from the default branch. Errors are non-fatal — callers log and ignore.

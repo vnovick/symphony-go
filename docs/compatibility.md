@@ -1,0 +1,69 @@
+# Compatibility Matrix
+
+This document records which external tool versions Symphony Go is developed and tested against.
+Use it to understand what upgrades are safe and where silent breakage can occur.
+
+---
+
+## Go runtime
+
+| Component | Tested version | Notes |
+|---|---|---|
+| Go toolchain | **1.25.8** | Minimum required to build (`go.mod`). Uses `min()` builtin (available since 1.21) and `log/slog` (available since 1.21). Older toolchains will fail at compile time. |
+
+---
+
+## Agent CLIs
+
+Symphony spawns an agent subprocess per issue. Each CLI has its own release cadence; Symphony does not pin a version.
+
+| CLI | Tested against | Breaking-change risk |
+|---|---|---|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | **latest** | Symphony checks for `--resume` and `--dangerously-skip-permissions` flags; a flag rename in a Claude Code release would break resume behavior. Watch Claude Code release notes. |
+| [Codex](https://github.com/openai/codex) (`codex`) | **latest** | Symphony passes `--approval-mode full-auto`. Flag renames in Codex releases would break dispatch. |
+
+> **How to detect breakage:** If agents exit immediately with a non-zero code, check the log for "unknown flag" or "unrecognised option". Run `claude --help` / `codex --help` to verify flag names match what Symphony sends.
+
+---
+
+## Tracker APIs
+
+| Tracker | API surface | Pinned version | Notes |
+|---|---|---|---|
+| [Linear](https://linear.app) | GraphQL | **Unversioned** (`api.linear.app/graphql`) | Linear's GraphQL schema is unversioned and evolves without breaking existing queries in practice. Queries use a stable subset: `issues`, `pageInfo`, `labels`, `inverseRelations`. Field additions are safe; field removals or renames would surface as JSON decode failures. |
+| [GitHub Issues](https://docs.github.com/en/rest) | REST | **2022-11-28** (`X-GitHub-Api-Version: 2022-11-28`) | Pinned via request header. GitHub guarantees 24-month support for dated API versions. This version is valid until at least late 2026. Symphony uses `GET /repos/{owner}/{repo}/issues`, `POST /repos/{owner}/{repo}/issues/{number}/comments`, `GET /repos/{owner}/{repo}/pulls`. |
+
+---
+
+## Web dashboard build
+
+The dashboard is embedded in the Go binary at build time (`go generate ./internal/server/`).
+Pre-built dashboards are included in release binaries — Node.js is **not** required at runtime.
+
+| Component | Tested version | Notes |
+|---|---|---|
+| Node.js | **20 LTS** | Required only to build the dashboard from source. |
+| pnpm | **9+** | Used as the package manager (`web/` directory). |
+| Vite | See `web/package.json` | Bundler; version pinned in lockfile. |
+
+---
+
+## Operating systems
+
+| OS | Status | Notes |
+|---|---|---|
+| macOS (arm64, x86_64) | **Supported** | Primary development platform. |
+| Linux (x86_64, arm64) | **Supported** | Used in CI (`ubuntu-latest`). |
+| Windows | **Unsupported** | Agent CLIs (Claude Code, Codex) do not support Windows. Symphony's workspace/shell plumbing assumes a POSIX shell. |
+
+---
+
+## Upgrade guidance
+
+| Scenario | Risk | Action |
+|---|---|---|
+| New minor Go release | Low | Update `go.mod`, run `go test ./...` and `go test -race ./...`. |
+| New Claude Code release | Medium | Check Claude Code changelog for flag renames. Run `symphony --dry-run` and verify dispatch logs show agent starting. |
+| New Codex release | Medium | Same as above. |
+| Linear GraphQL schema change | Low | Monitor [Linear changelog](https://linear.app/changelog). If `FetchCandidateIssues` starts returning unexpected shapes, Zod-style errors will surface in logs. |
+| GitHub API version expiry (2026+) | High | Update `X-GitHub-Api-Version` header in `internal/tracker/github/client.go` to a current dated version. |

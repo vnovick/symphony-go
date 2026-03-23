@@ -8,8 +8,9 @@ import (
 
 // UsageSnapshot holds token counts from a stream-json usage payload.
 type UsageSnapshot struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens       int `json:"input_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
 }
 
 // ToolCall represents a single tool_use content block from an assistant message.
@@ -18,7 +19,7 @@ type ToolCall struct {
 	Input json.RawMessage
 }
 
-// StreamEvent is a parsed line from the claude stream-json output.
+// StreamEvent is a normalized parsed line from a supported agent CLI stream.
 type StreamEvent struct {
 	Type            string
 	SessionID       string
@@ -29,6 +30,9 @@ type StreamEvent struct {
 	Usage           UsageSnapshot
 	IsError         bool
 	IsInputRequired bool
+	// InProgress indicates the action is still running (e.g. from item.started).
+	// Callers should log it differently from a completed action.
+	InProgress bool
 }
 
 type rawEvent struct {
@@ -104,10 +108,24 @@ func ParseLine(line []byte) (StreamEvent, error) {
 	case "result":
 		ev.IsError = raw.IsError || raw.Subtype == "error"
 		ev.ResultText = raw.Result
-		if ev.IsError && strings.Contains(strings.ToLower(raw.Result), "human turn") {
-			ev.IsInputRequired = true
+		if ev.IsError {
+			ev.IsInputRequired = isInputRequiredMsg(raw.Result)
 		}
 	}
 
 	return ev, nil
+}
+
+// isInputRequiredMsg returns true when an error message indicates the agent
+// is blocked waiting for human input. Shared by all backend parsers.
+func isInputRequiredMsg(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "human turn") ||
+		strings.Contains(lower, "approval") ||
+		strings.Contains(lower, "waiting for input") ||
+		strings.Contains(lower, "requires approval") ||
+		strings.Contains(lower, "pending approval") ||
+		strings.Contains(lower, "interactive") ||
+		strings.Contains(lower, "user input") ||
+		strings.Contains(lower, "confirmation required")
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import Badge from '../ui/badge/Badge';
 import type { IssueLogEntry, RunningRow } from '../../types/symphony';
@@ -7,35 +7,49 @@ import {
   useTerminateIssue,
   useResumeIssue,
   useReanalyzeIssue,
+  useSetIssueProfile,
+  useIssues,
 } from '../../queries/issues';
 import { useIssueLogs } from '../../queries/logs';
 import { fmtMs, stateBadgeColor } from '../../utils/format';
 import { entryStyle } from '../../utils/logFormatting';
 
-// Prevents SSE-reconnect flicker: keeps last non-empty array for 5 s before clearing.
+// Stable empty references — avoids creating new array/object instances on every render,
+// which would break the reference-equality guards in useStableRunning's render-phase setState.
+const EMPTY_RUNNING: RunningRow[] = [];
+const EMPTY_PAUSED: string[] = [];
+const EMPTY_PAUSED_WITH_PR: Record<string, string> = {};
+const EMPTY_PROFILES: string[] = [];
+
 function useStableRunning(running: RunningRow[]): RunningRow[] {
-  const stableRef = useRef<RunningRow[]>([]);
-  const [, forceUpdate] = useState(0);
+  const [stable, setStable] = useState<RunningRow[]>(running);
+  const [prevRunning, setPrevRunning] = useState(running);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
+  // Render-phase derived-state: sync stable whenever running changes while non-empty.
+  // This is React's getDerivedStateFromProps equivalent for hooks (see React docs on
+  // "Storing information from previous renders").
+  if (running !== prevRunning) {
+    setPrevRunning(running);
     if (running.length > 0) {
-      stableRef.current = running;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    } else if (stableRef.current.length > 0 && timerRef.current === null) {
+      setStable(running);
+    }
+  }
+
+  useEffect(() => {
+    if (running.length === 0 && timerRef.current === null) {
+      // Delay clearing stable by 5 s to avoid layout flicker on transient empty states.
       timerRef.current = setTimeout(() => {
-        stableRef.current = [];
+        setStable([]);
         timerRef.current = null;
-        forceUpdate((n) => n + 1);
       }, 5000);
+    } else if (running.length > 0 && timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
     }
   }, [running]);
 
-  // eslint-disable-next-line react-hooks/refs
-  return running.length > 0 ? running : stableRef.current;
+  return running.length > 0 ? running : stable;
 }
 
 interface LogSection {
@@ -44,7 +58,6 @@ interface LogSection {
   entries: IssueLogEntry[];
 }
 
-// Split log entries into sections: one "Main" section + one per subagent boundary.
 function buildSections(entries: IssueLogEntry[]): LogSection[] {
   const sections: LogSection[] = [{ label: 'Main', isSubagent: false, entries: [] }];
   for (const entry of entries) {
@@ -61,7 +74,6 @@ function buildSections(entries: IssueLogEntry[]): LogSection[] {
   return sections;
 }
 
-// LogPanel: auto-scrolls to bottom unless user has scrolled up (follow mode).
 function LogPanel({ entries }: { entries: IssueLogEntry[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
@@ -80,24 +92,27 @@ function LogPanel({ entries }: { entries: IssueLogEntry[] }) {
 
   if (entries.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-gray-400 dark:text-gray-500">
+      <div className="flex h-full items-center justify-center text-xs text-gray-400">
         No entries yet
       </div>
     );
   }
 
   return (
-    <div ref={containerRef} onScroll={onScroll} className="h-full space-y-1 overflow-y-auto">
+    <div
+      ref={containerRef}
+      onScroll={onScroll}
+      className="h-full space-y-0.5 overflow-y-auto p-3 font-mono text-xs leading-relaxed"
+    >
       {entries.map((entry, i) => {
         const style = entryStyle(entry.event, entry.level);
         return (
-          <div
-            key={i}
-            className={`flex gap-1.5 border-l-2 pl-2 font-mono text-xs leading-relaxed ${style.borderClass}`}
-          >
+          <div key={i} className="flex gap-2">
+            {entry.time && (
+              <span className="w-14 shrink-0 text-right text-gray-500">{entry.time}</span>
+            )}
+            <span className={`shrink-0 ${style.textClass}`}>{style.prefixChar}</span>
             <span className={`flex-1 break-words whitespace-pre-wrap ${style.textClass}`}>
-              {style.prefixChar}
-              {style.prefixChar !== '·' ? ' ' : ''}
               {entry.message}
             </span>
           </div>
@@ -107,43 +122,36 @@ function LogPanel({ entries }: { entries: IssueLogEntry[] }) {
   );
 }
 
-// SessionAccordion: expanded panel showing subagent sections + logs.
 function SessionAccordion({
   identifier,
   workerHost,
   sessionId,
 }: {
   identifier: string;
-  workerHost: string;
-  sessionId: string;
+  workerHost: string | undefined;
+  sessionId: string | undefined;
 }) {
   const [selectedIdx, setSelectedIdx] = useState(0);
-  const prevSectionCountRef = useRef(0);
-
-  // Sessions in the accordion are always live (running), so isLive = true
+  const [prevSectionCount, setPrevSectionCount] = useState(0);
   const { data: logs = [] } = useIssueLogs(identifier, true);
-
   const sections = buildSections(logs);
 
-  // Auto-advance selection to the newest subagent when a new one appears.
-  useEffect(() => {
-    const count = sections.length;
-    if (count > prevSectionCountRef.current) {
-      // Only follow if user was already on the last section.
-      if (selectedIdx === prevSectionCountRef.current - 1 || prevSectionCountRef.current === 0) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setSelectedIdx(count - 1);
-      }
-      prevSectionCountRef.current = count;
+  // Render-phase derived state: auto-advance to newest subagent when sections grow.
+  if (sections.length !== prevSectionCount) {
+    setPrevSectionCount(sections.length);
+    if (
+      sections.length > prevSectionCount &&
+      (selectedIdx === prevSectionCount - 1 || prevSectionCount === 0)
+    ) {
+      setSelectedIdx(sections.length - 1);
     }
-  }, [sections.length, selectedIdx]);
+  }
 
   const active = sections[selectedIdx] ?? sections[0];
 
   return (
-    <div className="flex flex-col bg-gray-50 dark:bg-gray-900/40" style={{ height: 308 }}>
-      {/* Metadata strip — full width above the two-column layout */}
-      <div className="flex flex-shrink-0 gap-6 border-b border-gray-200 px-4 py-2 font-mono text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+    <div className="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/30">
+      <div className="flex items-center gap-6 border-b border-gray-200 px-4 py-2 font-mono text-xs text-gray-500 dark:border-gray-700">
         <span>
           Worker: <span className="text-gray-700 dark:text-gray-300">{workerHost || 'local'}</span>
         </span>
@@ -154,15 +162,14 @@ function SessionAccordion({
           </span>
         )}
       </div>
-      <div className="flex" style={{ height: 280 }}>
-        {/* Left: section list */}
-        <div className="flex w-52 flex-shrink-0 flex-col border-r border-gray-200 dark:border-gray-700">
+      <div className="flex" style={{ height: 240 }}>
+        <div className="flex w-48 flex-shrink-0 flex-col border-r border-gray-200 dark:border-gray-700">
           <div className="border-b border-gray-200 px-3 py-2 dark:border-gray-700">
-            <p className="text-xs font-semibold tracking-wider text-gray-500 uppercase dark:text-gray-400">
+            <span className="text-[10px] font-semibold tracking-wider text-gray-400 uppercase">
               {sections.length > 1
                 ? `${String(sections.length - 1)} subagent${sections.length > 2 ? 's' : ''}`
                 : 'Logs'}
-            </p>
+            </span>
           </div>
           <div className="flex-1 overflow-y-auto">
             {sections.map((sec, i) => (
@@ -171,24 +178,22 @@ function SessionAccordion({
                 onClick={() => {
                   setSelectedIdx(i);
                 }}
-                className={`flex w-full items-start gap-1.5 border-b border-gray-100 px-3 py-2 text-left text-xs dark:border-gray-800 ${
+                className={`flex w-full items-center gap-2 border-b border-gray-100 px-3 py-2 text-left text-xs transition-colors dark:border-gray-800 ${
                   i === selectedIdx
-                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300'
-                    : 'text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800'
+                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
+                    : 'text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/50'
                 }`}
               >
-                <span className="mt-0.5 flex-shrink-0 text-gray-400">
+                <span className={`text-xs ${sec.isSubagent ? 'text-purple-500' : 'text-gray-400'}`}>
                   {sec.isSubagent ? '↗' : '◈'}
                 </span>
                 <span className="flex-1 truncate font-mono">{sec.label}</span>
-                <span className="flex-shrink-0 text-gray-400">{sec.entries.length}</span>
+                <span className="text-gray-400">{sec.entries.length}</span>
               </button>
             ))}
           </div>
         </div>
-
-        {/* Right: log entries */}
-        <div className="flex-1 overflow-hidden p-3">
+        <div className="flex-1 overflow-hidden">
           <LogPanel entries={active.entries} />
         </div>
       </div>
@@ -202,10 +207,22 @@ export default function RunningSessionsTable() {
   const terminateIssueMutation = useTerminateIssue();
   const resumeIssueMutation = useResumeIssue();
   const reanalyzeIssueMutation = useReanalyzeIssue();
-  const rawRunning = snapshot?.running ?? [];
+  const setIssueProfileMutation = useSetIssueProfile();
+  const { data: issues } = useIssues();
+  const rawRunning = snapshot?.running ?? EMPTY_RUNNING;
   const running = useStableRunning(rawRunning);
-  const paused = snapshot?.paused ?? [];
-  const pausedWithPR = snapshot?.pausedWithPR ?? {};
+  const paused = snapshot?.paused ?? EMPTY_PAUSED;
+  const pausedWithPR = snapshot?.pausedWithPR ?? EMPTY_PAUSED_WITH_PR;
+  const availableProfiles = snapshot?.availableProfiles ?? EMPTY_PROFILES;
+  const profileMap = useMemo(
+    () =>
+      Object.fromEntries(
+        (issues ?? [])
+          .filter((i): i is typeof i & { agentProfile: string } => Boolean(i.agentProfile))
+          .map((i) => [i.identifier, i.agentProfile]),
+      ),
+    [issues],
+  );
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const sorted = [...running].sort(
@@ -216,112 +233,100 @@ export default function RunningSessionsTable() {
     setExpandedId((prev) => (prev === id ? null : id));
   };
 
-  const colGrid =
-    'grid grid-cols-[24px_140px_110px_64px_48px_minmax(0,1fr)_72px_120px] gap-x-4 min-w-[720px]';
+  if (sorted.length === 0 && paused.length === 0) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-900">
+        No agents running
+      </div>
+    );
+  }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-      {/* Header */}
-      <div className="border-b border-gray-200 px-6 py-4 dark:border-gray-800">
-        <h3 className="text-base font-semibold text-gray-900 dark:text-white">
-          Running Sessions
-          {sorted.length > 0 && (
-            <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-              {sorted.length}
+    <div className="space-y-3">
+      {sorted.length > 0 && (
+        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
+          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+              Running Sessions
+            </h3>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+              {sorted.length} active
             </span>
-          )}
-        </h3>
-      </div>
-
-      {sorted.length === 0 ? (
-        <p className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">
-          No agents running
-        </p>
-      ) : (
-        <>
-          {/* Column headers */}
-          <div className="overflow-x-auto border-b border-gray-100 dark:border-gray-800">
-            <div className={`${colGrid} bg-gray-50 px-4 py-2 dark:bg-gray-900/50`}>
-              {[
-                '',
-                'Identifier',
-                'State',
-                'Backend',
-                'Turn',
-                'Last Activity',
-                'Elapsed',
-                'Actions',
-              ].map((h) => (
-                <span
-                  key={h}
-                  className="text-xs font-medium tracking-wider text-gray-500 uppercase dark:text-gray-400"
-                >
-                  {h}
-                </span>
-              ))}
-            </div>
           </div>
 
-          {/* Rows — each row scrolls horizontally as a unit; accordion stays full-width */}
-          {sorted.map((row) => (
-            <div
-              key={row.identifier}
-              className="border-b border-gray-100 last:border-b-0 dark:border-gray-800"
-            >
-              <div className="overflow-x-auto">
+          <div>
+            {sorted.map((row) => (
+              <div
+                key={row.identifier}
+                className="border-b border-gray-100 last:border-b-0 dark:border-gray-800"
+              >
                 <div
                   onClick={() => {
                     toggle(row.identifier);
                   }}
-                  className={`${colGrid} cursor-pointer items-center px-4 py-3 select-none hover:bg-gray-50 dark:hover:bg-gray-900/30`}
+                  className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/30"
                 >
-                  <span
-                    className={`text-xs text-gray-400 transition-transform duration-150 ${expandedId === row.identifier ? 'rotate-90' : ''}`}
-                  >
-                    ▶
-                  </span>
-                  <span className="truncate font-mono text-sm font-medium text-gray-900 dark:text-white">
+                  <button className="text-xs text-gray-400 transition-transform duration-150">
+                    <span
+                      className={`inline-block transition-transform ${expandedId === row.identifier ? 'rotate-90' : ''}`}
+                    >
+                      ▶
+                    </span>
+                  </button>
+
+                  <span className="min-w-[100px] font-mono text-sm font-medium text-gray-900 dark:text-white">
                     {row.identifier}
                   </span>
-                  <span>
-                    <Badge color={stateBadgeColor(row.state)} size="sm">
-                      {row.state}
-                    </Badge>
+
+                  <Badge color={stateBadgeColor(row.state)} size="sm">
+                    {row.state}
+                  </Badge>
+
+                  {row.backend && (
+                    <span
+                      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${
+                        row.backend === 'claude'
+                          ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400'
+                          : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                      }`}
+                    >
+                      {row.backend}
+                    </span>
+                  )}
+
+                  {profileMap[row.identifier] && (
+                    <span className="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+                      {profileMap[row.identifier]}
+                    </span>
+                  )}
+
+                  <span className="w-12 text-center text-sm text-gray-500 dark:text-gray-400">
+                    t{row.turnCount}
                   </span>
-                  <span>
-                    {row.backend && (
-                      <span
-                        className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
-                          row.backend === 'claude'
-                            ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400'
-                            : 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                        }`}
-                      >
-                        {row.backend}
-                      </span>
-                    )}
-                  </span>
-                  <span className="text-sm text-gray-600 dark:text-gray-400">{row.turnCount}</span>
+
                   <span
-                    className="min-w-0 truncate text-sm text-gray-600 dark:text-gray-400"
+                    className="min-w-0 flex-1 truncate text-sm text-gray-500 dark:text-gray-400"
                     title={row.lastEvent}
                   >
-                    {row.lastEvent ? row.lastEvent.slice(0, 80) : '—'}
+                    {row.lastEvent ? row.lastEvent.slice(0, 60) : '—'}
                   </span>
-                  <span className="font-mono text-xs text-gray-600 dark:text-gray-400">
+
+                  <span className="w-16 font-mono text-xs text-gray-500 dark:text-gray-400">
                     {fmtMs(row.elapsedMs)}
                   </span>
-                  <span
+
+                  <div
+                    className="flex gap-2"
                     onClick={(e) => {
                       e.stopPropagation();
                     }}
-                    className="flex gap-1"
                   >
                     <button
                       onClick={() => {
                         cancelIssueMutation.mutate(row.identifier);
                       }}
-                      className="rounded border border-amber-200 px-2 py-1 text-xs text-amber-600 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-900/20"
+                      className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400 dark:hover:bg-amber-900/30"
                     >
                       ⏸ Pause
                     </button>
@@ -329,30 +334,30 @@ export default function RunningSessionsTable() {
                       onClick={() => {
                         terminateIssueMutation.mutate(row.identifier);
                       }}
-                      className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+                      className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30"
                     >
                       ✕ Cancel
                     </button>
-                  </span>
+                  </div>
                 </div>
+
+                {expandedId === row.identifier && (
+                  <SessionAccordion
+                    identifier={row.identifier}
+                    workerHost={row.workerHost}
+                    sessionId={row.sessionId}
+                  />
+                )}
               </div>
-              {expandedId === row.identifier && (
-                <SessionAccordion
-                  identifier={row.identifier}
-                  workerHost={row.workerHost}
-                  sessionId={row.sessionId}
-                />
-              )}
-            </div>
-          ))}
-        </>
+            ))}
+          </div>
+        </div>
       )}
 
-      {/* Paused agents section — always rendered when there are paused issues */}
       {paused.length > 0 && (
-        <>
-          <div className="border-t border-red-100 bg-red-50/40 px-6 py-2 dark:border-red-900/30 dark:bg-red-900/10">
-            <span className="text-xs font-semibold tracking-wider text-red-600 uppercase dark:text-red-400">
+        <div className="overflow-hidden rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/10">
+          <div className="flex items-center gap-2 border-b border-amber-200 px-4 py-2 dark:border-amber-800">
+            <span className="text-xs font-semibold tracking-wider text-amber-700 uppercase dark:text-amber-400">
               ⏸ Paused ({paused.length})
             </span>
           </div>
@@ -361,10 +366,10 @@ export default function RunningSessionsTable() {
             return (
               <div
                 key={identifier}
-                className="flex items-center justify-between border-t border-gray-100 bg-red-50/20 px-4 py-3 dark:border-gray-800 dark:bg-red-900/5"
+                className="flex items-center justify-between border-t border-amber-200 px-4 py-3 first:border-t-0 dark:border-amber-800"
               >
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-medium text-red-700 dark:text-red-400">
+                  <span className="font-mono text-sm font-medium text-amber-800 dark:text-amber-300">
                     {identifier}
                   </span>
                   {prURL && (
@@ -372,13 +377,29 @@ export default function RunningSessionsTable() {
                       href={prURL}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center rounded bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700 hover:underline dark:bg-purple-900/30 dark:text-purple-400"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
+                      className="inline-flex items-center rounded-md bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-300"
                     >
                       Open PR
                     </a>
+                  )}
+                  {availableProfiles.length > 0 && (
+                    <select
+                      value={profileMap[identifier] ?? ''}
+                      onChange={(e) => {
+                        setIssueProfileMutation.mutate({ identifier, profile: e.target.value });
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                      }}
+                      className="rounded border border-amber-200 bg-white px-2 py-0.5 text-xs text-amber-800 focus:outline-none dark:border-amber-700 dark:bg-transparent dark:text-amber-300"
+                    >
+                      <option value="">No agent</option>
+                      {availableProfiles.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
                   )}
                 </div>
                 <div className="flex gap-2">
@@ -387,7 +408,7 @@ export default function RunningSessionsTable() {
                       onClick={() => {
                         reanalyzeIssueMutation.mutate(identifier);
                       }}
-                      className="rounded border border-purple-300 px-2 py-1 text-xs text-purple-700 hover:bg-purple-50 dark:border-purple-700 dark:text-purple-400 dark:hover:bg-purple-900/20"
+                      className="rounded-md border border-purple-200 bg-white px-2 py-1 text-xs font-medium text-purple-700 transition-colors hover:bg-purple-50 dark:border-purple-700 dark:bg-transparent dark:text-purple-400"
                     >
                       🔄 Re-analyze
                     </button>
@@ -396,7 +417,7 @@ export default function RunningSessionsTable() {
                     onClick={() => {
                       resumeIssueMutation.mutate(identifier);
                     }}
-                    className="rounded border border-green-300 px-2 py-1 text-xs text-green-700 hover:bg-green-50 dark:border-green-700 dark:text-green-400 dark:hover:bg-green-900/20"
+                    className="rounded-md border border-green-200 bg-white px-2 py-1 text-xs font-medium text-green-700 transition-colors hover:bg-green-50 dark:border-green-700 dark:text-green-400"
                   >
                     ▶ Resume
                   </button>
@@ -404,7 +425,7 @@ export default function RunningSessionsTable() {
                     onClick={() => {
                       terminateIssueMutation.mutate(identifier);
                     }}
-                    className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+                    className="rounded-md border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-800 dark:text-red-400"
                   >
                     ✕ Discard
                   </button>
@@ -412,7 +433,7 @@ export default function RunningSessionsTable() {
               </div>
             );
           })}
-        </>
+        </div>
       )}
     </div>
   );

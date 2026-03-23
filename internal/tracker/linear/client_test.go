@@ -3,6 +3,7 @@ package linear_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/symphony-go/internal/tracker"
 	"github.com/vnovick/symphony-go/internal/tracker/linear"
 )
 
@@ -199,7 +201,10 @@ func TestFetchCandidateIssuesNon200Error(t *testing.T) {
 	})
 	_, err := client.FetchCandidateIssues(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "linear_api_status")
+	var apiErr *tracker.APIStatusError
+	require.True(t, errors.As(err, &apiErr), "expected *tracker.APIStatusError, got %T: %v", err, err)
+	assert.Equal(t, "linear", apiErr.Adapter)
+	assert.Equal(t, 401, apiErr.Status)
 }
 
 func TestFetchCandidateIssuesGraphQLErrors(t *testing.T) {
@@ -218,7 +223,9 @@ func TestFetchCandidateIssuesGraphQLErrors(t *testing.T) {
 	})
 	_, err := client.FetchCandidateIssues(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "linear_graphql_errors")
+	var gqlErr *tracker.GraphQLError
+	require.True(t, errors.As(err, &gqlErr), "expected *tracker.GraphQLError, got %T: %v", err, err)
+	assert.Contains(t, gqlErr.Message, "Not authorized")
 }
 
 func TestFetchCandidateIssuesUnknownPayload(t *testing.T) {

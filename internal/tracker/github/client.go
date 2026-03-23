@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/symphony-go/internal/tracker"
 )
 
 const defaultEndpoint = "https://api.github.com"
@@ -27,9 +28,6 @@ var linkNextRe = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
 
 // ErrMissingPageLink is returned when a non-empty Link header contains no rel="next" entry.
 var ErrMissingPageLink = errors.New("github_missing_page_link")
-
-// ErrNotFound is returned by get() when the API responds with HTTP 404.
-var ErrNotFound = errors.New("github_not_found")
 
 // ClientConfig holds configuration for the GitHub REST tracker adapter.
 type ClientConfig struct {
@@ -186,7 +184,7 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 	issues := make([]domain.Issue, len(issueIDs))
 	for r := range ch {
 		if r.err != nil {
-			if errors.Is(r.err, ErrNotFound) {
+			if errors.Is(r.err, tracker.ErrNotFound) {
 				continue // deleted or transferred — reconciler will stop the worker
 			}
 			return nil, r.err
@@ -264,7 +262,7 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 			}
 			comment := domain.Comment{
 				Body:       body,
-				CreatedAt:  parseTime(cm["created_at"]),
+				CreatedAt:  tracker.ParseTime(cm["created_at"]),
 				AuthorName: authorName,
 			}
 			issue.Comments = append(issue.Comments, comment)
@@ -428,6 +426,13 @@ func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string)
 	return c.CreateComment(ctx, issueID, body)
 }
 
+// FetchIssueByIdentifier returns a single issue by its human-readable identifier
+// (e.g. "#42"). The leading "#" is stripped before calling FetchIssueDetail.
+func (c *Client) FetchIssueByIdentifier(ctx context.Context, identifier string) (*domain.Issue, error) {
+	issueID := strings.TrimPrefix(identifier, "#")
+	return c.FetchIssueDetail(ctx, issueID)
+}
+
 // CreateComment posts a comment on the GitHub issue identified by issueID.
 // issueID is expected to be the numeric issue number (as a string, e.g. "42").
 func (c *Client) CreateComment(ctx context.Context, issueID, body string) error {
@@ -473,10 +478,10 @@ func (c *Client) get(ctx context.Context, url string) (any, string, error) {
 	c.snapshotRateLimit(resp)
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, "", ErrNotFound
+		return nil, "", &tracker.NotFoundError{Adapter: "github"}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("github_api_status: %d", resp.StatusCode)
+		return nil, "", &tracker.APIStatusError{Adapter: "github", Status: resp.StatusCode}
 	}
 
 	rawBody, err := io.ReadAll(resp.Body)

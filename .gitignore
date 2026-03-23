@@ -18,6 +18,7 @@ log/
 
 # Env
 .env
+.symphony/.env
 .superpowers/
 
 # Planning docs (local only)

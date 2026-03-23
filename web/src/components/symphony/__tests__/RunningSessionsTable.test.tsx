@@ -16,6 +16,8 @@ vi.mock('../../../queries/issues', () => ({
   useTerminateIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useResumeIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useReanalyzeIssue: () => ({ mutate: vi.fn(), isPending: false }),
+  useSetIssueProfile: () => ({ mutate: vi.fn(), isPending: false }),
+  useIssues: () => ({ data: [] }),
 }));
 
 vi.mock('../../../queries/logs', () => ({
@@ -59,157 +61,98 @@ describe('RunningSessionsTable', () => {
     );
   });
 
+  function withSnapshot(snapshot: {
+    running?: RunningRow[];
+    paused?: string[];
+    pausedWithPR?: Record<string, string>;
+  }) {
+    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
+      selector({
+        snapshot: {
+          running: snapshot.running ?? [],
+          paused: snapshot.paused ?? [],
+          pausedWithPR: snapshot.pausedWithPR ?? {},
+        },
+      }),
+    );
+  }
+
   it('renders empty state when no running sessions', () => {
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('No agents running')).toBeInTheDocument();
   });
 
-  it('renders "Running Sessions" heading', () => {
+  it('renders "Running Sessions" heading when running sessions exist', () => {
+    withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('Running Sessions')).toBeInTheDocument();
   });
 
   it('renders session row when running sessions provided', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [baseRow],
-          paused: [],
-          pausedWithPR: {},
-        },
-      }),
-    );
+    withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('ISS-42')).toBeInTheDocument();
   });
 
   it('shows session identifier in the row', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [baseRow],
-          paused: [],
-          pausedWithPR: {},
-        },
-      }),
-    );
+    withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('ISS-42')).toBeInTheDocument();
   });
 
   it('shows session state badge', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [baseRow],
-          paused: [],
-          pausedWithPR: {},
-        },
-      }),
-    );
+    withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('In Progress')).toBeInTheDocument();
   });
 
   it('shows count badge when sessions exist', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [baseRow],
-          paused: [],
-          pausedWithPR: {},
-        },
-      }),
-    );
+    withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
-    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('1 active')).toBeInTheDocument();
   });
 
   it('shows Pause and Cancel action buttons per row', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [baseRow],
-          paused: [],
-          pausedWithPR: {},
-        },
-      }),
-    );
+    withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText(/Pause/)).toBeInTheDocument();
     expect(screen.getByText(/Cancel/)).toBeInTheDocument();
   });
 
-  it('shows column headers when rows are present', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [baseRow],
-          paused: [],
-          pausedWithPR: {},
-        },
-      }),
-    );
+  it('shows running session summary fields when rows are present', () => {
+    withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
-    expect(screen.getByText('Identifier')).toBeInTheDocument();
-    expect(screen.getByText('State')).toBeInTheDocument();
+    expect(screen.getByText('claude')).toBeInTheDocument();
+    expect(screen.getByText('t5')).toBeInTheDocument();
+    expect(screen.getByText('1m 00s')).toBeInTheDocument();
   });
 
   it('shows paused section when paused identifiers exist', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [],
-          paused: ['ISS-99'],
-          pausedWithPR: {},
-        },
-      }),
-    );
+    withSnapshot({ paused: ['ISS-99'] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('ISS-99')).toBeInTheDocument();
     expect(screen.getByText(/Paused/)).toBeInTheDocument();
   });
 
   it('shows Resume and Discard buttons for paused items', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [],
-          paused: ['ISS-99'],
-          pausedWithPR: {},
-        },
-      }),
-    );
+    withSnapshot({ paused: ['ISS-99'] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText(/Resume/)).toBeInTheDocument();
     expect(screen.getByText(/Discard/)).toBeInTheDocument();
   });
 
   it('shows Open PR link and Re-analyze button when paused with PR', () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [],
-          paused: ['ISS-99'],
-          pausedWithPR: { 'ISS-99': 'https://github.com/org/repo/pull/5' },
-        },
-      }),
-    );
+    withSnapshot({
+      paused: ['ISS-99'],
+      pausedWithPR: { 'ISS-99': 'https://github.com/org/repo/pull/5' },
+    });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('Open PR')).toBeInTheDocument();
     expect(screen.getByText(/Re-analyze/)).toBeInTheDocument();
   });
 
   it('expands accordion on row click', async () => {
-    mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({
-        snapshot: {
-          running: [baseRow],
-          paused: [],
-          pausedWithPR: {},
-        },
-      }),
-    );
+    withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     const row = screen.getByText('ISS-42').closest('[class*="cursor-pointer"]') as HTMLElement;
     await userEvent.click(row);

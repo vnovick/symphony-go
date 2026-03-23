@@ -11,8 +11,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"errors"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/symphony-go/internal/tracker"
 	ghclient "github.com/vnovick/symphony-go/internal/tracker/github"
 )
 
@@ -447,7 +450,10 @@ func TestGHNon200FetchCandidateIssues(t *testing.T) {
 	client := ghclient.NewClient(defaultConfig(ts.URL))
 	_, err := client.FetchCandidateIssues(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "github_api_status")
+	var apiErr *tracker.APIStatusError
+	require.True(t, errors.As(err, &apiErr), "expected *tracker.APIStatusError, got %T: %v", err, err)
+	assert.Equal(t, "github", apiErr.Adapter)
+	assert.Equal(t, 401, apiErr.Status)
 }
 
 func TestGHIdentifierFormat(t *testing.T) {

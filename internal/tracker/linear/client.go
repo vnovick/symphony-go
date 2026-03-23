@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/symphony-go/internal/tracker"
 )
 
 const defaultEndpoint = "https://api.linear.app/graphql"
@@ -358,7 +359,7 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				if b == "" {
 					continue
 				}
-				c := domain.Comment{Body: b, CreatedAt: parseTime(node["createdAt"])}
+				c := domain.Comment{Body: b, CreatedAt: tracker.ParseTime(node["createdAt"])}
 				if user, ok := node["user"].(map[string]any); ok {
 					c.AuthorName, _ = user["name"].(string)
 				}
@@ -367,6 +368,13 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 		}
 	}
 	return issue, nil
+}
+
+// FetchIssueByIdentifier returns a single issue by its human-readable identifier
+// (e.g. "ENG-42"). The Linear GraphQL `issue(id:)` field accepts both UUIDs and
+// identifier strings, so this delegates directly to FetchIssueDetail.
+func (c *Client) FetchIssueByIdentifier(ctx context.Context, identifier string) (*domain.Issue, error) {
+	return c.FetchIssueDetail(ctx, identifier)
 }
 
 // fetchByStatesPage is a generic paginator for any candidate-issues query.
@@ -476,7 +484,7 @@ func decodeResponse(body map[string]any) ([]domain.Issue, error) {
 
 func decodeError(body map[string]any) error {
 	if errs, ok := body["errors"]; ok {
-		return fmt.Errorf("linear_graphql_errors: %v", errs)
+		return &tracker.GraphQLError{Message: fmt.Sprintf("%v", errs)}
 	}
 	return fmt.Errorf("linear_unknown_payload: %v", body)
 }
@@ -534,7 +542,7 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("linear_api_status: %d", resp.StatusCode)
+		return nil, &tracker.APIStatusError{Adapter: "linear", Status: resp.StatusCode}
 	}
 
 	// Capture rate limit headers when present.

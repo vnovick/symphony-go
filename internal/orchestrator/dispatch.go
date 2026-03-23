@@ -163,8 +163,11 @@ func SortForDispatch(issues []domain.Issue) []domain.Issue {
 }
 
 // AvailableSlots returns how many more agents can be dispatched globally.
+// It reads state.MaxConcurrentAgents (snapshotted from cfg at the start of
+// each tick under cfgMu) rather than cfg directly, so the event loop can call
+// it lock-free throughout a tick.
 func AvailableSlots(state State, cfg *config.Config) int {
-	n := cfg.Agent.MaxConcurrentAgents - len(state.Running)
+	n := state.MaxConcurrentAgents - len(state.Running)
 	if n < 0 {
 		return 0
 	}

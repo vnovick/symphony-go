@@ -10,6 +10,7 @@ export default function StatusStrip() {
   const paused = snapshot?.paused.length ?? 0;
   const retrying = snapshot?.retrying.length ?? 0;
   const maxAgents = snapshot?.maxConcurrentAgents ?? 0;
+  const agentMode = snapshot?.agentMode ?? '';
 
   const adjustWorkers = async (delta: number) => {
     if (adjusting) return;
@@ -60,6 +61,16 @@ export default function StatusStrip() {
           </span>
         </span>
       )}
+      {agentMode === 'subagents' && (
+        <span className="flex items-center gap-1.5 rounded-full bg-purple-50 px-2 py-0.5 dark:bg-purple-900/20">
+          <span className="font-medium text-purple-700 dark:text-purple-300">sub-agents</span>
+        </span>
+      )}
+      {agentMode === 'teams' && (
+        <span className="flex items-center gap-1.5 rounded-full bg-indigo-50 px-2 py-0.5 dark:bg-indigo-900/20">
+          <span className="font-medium text-indigo-700 dark:text-indigo-300">agent teams</span>
+        </span>
+      )}
 
       {/* Capacity bar */}
       {maxAgents > 0 && (
@@ -74,22 +85,6 @@ export default function StatusStrip() {
           <span className="font-mono text-xs font-medium text-gray-700 dark:text-gray-300">
             {running}/{maxAgents}
           </span>
-        </span>
-      )}
-
-      {/* Agent mode badge */}
-      {snapshot?.agentMode === 'subagents' && (
-        <span className="ml-1 flex items-center gap-1.5 rounded-full bg-violet-50 px-2 py-0.5 dark:bg-violet-900/20">
-          <span className="text-xs text-violet-500">⇄</span>
-          <span className="text-xs font-medium text-violet-700 dark:text-violet-300">
-            sub-agents
-          </span>
-        </span>
-      )}
-      {snapshot?.agentMode === 'teams' && (
-        <span className="ml-1 flex items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 dark:bg-blue-900/20">
-          <span className="text-xs text-blue-500">⊞</span>
-          <span className="text-xs font-medium text-blue-700 dark:text-blue-300">agent teams</span>
         </span>
       )}
 

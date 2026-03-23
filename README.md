@@ -1,7 +1,7 @@
 # Symphony Go
 
 > A full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) —
-> a long-running daemon that polls Linear or GitHub, spawns Claude Code agents per issue,
+> a long-running daemon that polls Linear or GitHub, spawns Claude Code or Codex agents per issue,
 > and gives you a live Kanban dashboard + terminal UI while they work.
 
 [![Symphony Go — full demo](https://img.youtube.com/vi/rzBZkc9Cvh0/maxresdefault.jpg)](https://www.youtube.com/watch?v=rzBZkc9Cvh0)
@@ -29,7 +29,7 @@
 | **TUI** | Bubbletea split-panel — issue tree + streaming agent logs |
 | **Config** | One `WORKFLOW.md` file — YAML front matter + Liquid prompt template |
 | **Trackers** | Linear GraphQL + GitHub Issues |
-| **Agents** | Named profiles — run different Claude models per issue type |
+| **Agents** | Named profiles — run different backends and models per issue type |
 | **Hot reload** | Edit `WORKFLOW.md` while running — config updates without restart |
 | **Logs** | Persistent per-issue logs — survive restarts, streamed from disk |
 | **Timeline** | Full run history — every agent session across all issues |
@@ -43,8 +43,8 @@
 
 | Requirement | Version | Notes |
 |---|---|---|
-| [Go](https://go.dev/dl/) | 1.23+ | Required to build from source |
-| [Claude Code CLI](https://claude.ai/code) | latest | `claude --version` must succeed; must be authenticated |
+| [Go](https://go.dev/dl/) | 1.25.8 | Required to build from source |
+| Agent CLI | latest | Install the CLI referenced by `agent.command`. Claude Code and Codex are supported today; the chosen CLI must be authenticated and available in PATH |
 | [gh CLI](https://cli.github.com/) | latest | Required for automatic PR detection and PR link comments on tracker issues |
 | `git` | any | Must be available in PATH inside each workspace |
 
@@ -54,6 +54,8 @@
 |---|---|---|
 | Linear | Personal API key | Full access (read issues, write comments and state) |
 | GitHub Issues | Personal Access Token or fine-grained token | `repo` (or `issues: write` + `contents: read` for fine-grained) |
+
+Store credentials in `.symphony/.env` (gitignored by default) or export them in your shell. See [Quick start → step 3](#quick-start) for details.
 
 ### Web dashboard dev loop (contributors)
 
@@ -73,6 +75,25 @@ cd web && pnpm dev               # opens at http://localhost:5173
 | [pnpm](https://pnpm.io/) | 9+ |
 
 The pre-built dashboard is embedded in the binary when you `go install` or download a release. Node.js and pnpm are only needed if you are building from source (`go generate ./internal/server/`).
+
+### Platform support
+
+Symphony does not have identical runtime support on every OS. The current support boundary is:
+
+| Surface | macOS | Linux | Windows |
+|---|---|---|---|
+| Build from source | Supported | Supported | Best effort |
+| Local orchestrator + web dashboard | Supported | Supported | Limited |
+| TUI | Supported | Supported | Limited |
+| Local agent execution (`claude` / `codex`) | Supported | Supported | Limited — requires a POSIX shell environment |
+| Lifecycle hooks | Supported | Supported | Limited — hooks are executed via `bash -lc` |
+| SSH workers | Supported | Supported | Limited — worker hosts should be POSIX environments with `bash` |
+
+Notes:
+
+- Primary supported operator environments are macOS and Linux.
+- Windows is currently best-effort. The codebase includes some Windows-specific handling, but hooks and most shell-based agent launches assume `$SHELL` or `bash`.
+- If you need to operate from Windows, use WSL2 or run Symphony against Linux/macOS worker hosts.
 
 ---
 
@@ -139,8 +160,8 @@ Symphony runs a continuous orchestration loop:
 
 See the [Requirements](#requirements) section at the top of this document for the full list. Quick checklist:
 
-- Go 1.23+, `git`, `gh` CLI — all in PATH and authenticated
-- [Claude Code CLI](https://claude.ai/code) installed and authenticated (`claude --version`)
+- Go 1.25.8, `git`, `gh` CLI — all in PATH and authenticated
+- the agent CLI referenced by `agent.command` installed and authenticated (`claude --version` or `codex --version`)
 - A Linear workspace **or** a GitHub repository with API credentials
 
 ### Install
@@ -165,7 +186,7 @@ Or build from source:
 git clone https://github.com/vnovick/symphony-go
 cd symphony-go
 
-# Build the web dashboard (requires Node.js 20+ and pnpm 10+)
+# Build the web dashboard (requires Node.js 20+ and pnpm 9+)
 cd web && pnpm install --frozen-lockfile && pnpm build && cd ..
 
 # Embed the dashboard and compile the binary
@@ -194,14 +215,15 @@ For contributors, `make dev` runs the Go server and the Vite dev server together
 | Flag | Default | Description |
 |---|---|---|
 | `-workflow` | `WORKFLOW.md` | Path to your WORKFLOW.md |
-| `-logs-dir` | `log` | Directory for rotating log files |
-| `-verbose` | false | Enable DEBUG-level logging (includes Claude output) |
+| `-logs-dir` | `~/.simphony/logs/<kind>/<slug>` | Directory for rotating log files (derived from tracker kind and project slug; falls back to `~/.simphony/logs` if config is unreadable) |
+| `-verbose` | false | Enable DEBUG-level logging (includes agent output) |
 
 **`symphony init` flags:**
 
 | Flag | Default | Description |
 |---|---|---|
 | `--tracker` | required | `linear` or `github` |
+| `--runner` | `claude` | Default runner backend written into the generated WORKFLOW.md: `claude` or `codex` |
 | `--output` | `WORKFLOW.md` | Output file path |
 | `--dir` | `.` | Directory to scan for repo metadata |
 | `--force` | false | Overwrite existing output file |
@@ -228,14 +250,24 @@ tracker:
   api_key: $LINEAR_API_KEY   # or paste the key directly
 ```
 
-3. Export your credentials and run:
+3. Store your credentials and run:
 
 ```bash
+# Option A — project-local file (recommended, gitignored automatically)
+mkdir -p .symphony
+cp .env.example .symphony/.env
+# edit .symphony/.env and fill in LINEAR_API_KEY / GITHUB_TOKEN
+symphony
+
+# Option B — shell export (CI-friendly; existing exports always win over any .env file)
 export LINEAR_API_KEY=lin_api_...
 symphony
-# or with an explicit path:
+
+# or with an explicit workflow path:
 symphony -workflow path/to/WORKFLOW.md
 ```
+
+Symphony auto-loads `.symphony/.env` (preferred) or `.env` from the current directory before parsing `WORKFLOW.md`. Variables already present in the environment are never overwritten, so CI secrets injected via `export` or your CI provider always take precedence.
 
 ---
 
@@ -277,7 +309,8 @@ The file has two sections separated by `---` front matter delimiters:
 
 | Field | Default | Description |
 |---|---|---|
-| `command` | `claude` | Claude CLI command (can include flags, e.g. `claude --model claude-opus-4-6`) |
+| `command` | `claude` | Agent CLI command (for example `claude --model claude-opus-4-6` or `codex --model gpt-5.3-codex`) |
+| `backend` | `""` | Optional backend override when the command is a wrapper script or alias. Today: `claude` or `codex` |
 | `max_concurrent_agents` | `10` | Global concurrency cap — max issues running simultaneously |
 | `max_concurrent_agents_by_state` | `{}` | Per-state concurrency caps. State keys are normalized to lowercase. Example: `{"in progress": 3}` |
 | `max_turns` | `20` | Max turns per agent session before ending and scheduling a retry |
@@ -285,8 +318,8 @@ The file has two sections separated by `---` front matter delimiters:
 | `read_timeout_ms` | `30000` | Per-line idle timeout (ms). Triggers stall detection if no output is received. |
 | `stall_timeout_ms` | `300000` | Total silence budget before a session is killed (5 min). Set `0` to disable stall detection. |
 | `max_retry_backoff_ms` | `300000` | Caps the exponential retry backoff at this value (5 min). |
-| `agent_mode` | `""` | Agent collaboration model. `""` = solo (default). `"teams"` = profile role context injected into the prompt so Claude knows which specialised sub-agents are available. |
-| `profiles` | `{}` | Named agent profiles. Each profile can override `command` and provide a role `prompt`. Select per-issue from the web UI. See example below. |
+| `agent_mode` | `""` | Agent collaboration model. `""` = solo. `"subagents"` = allow the active backend to use its native delegation tool. `"teams"` = inject profile role context into the prompt and allow delegation. |
+| `profiles` | `{}` | Named agent profiles. Each profile can override `command`, `backend`, and `prompt`. Select per-issue from the web UI. See example below. |
 | `reviewer_prompt` | built-in | Liquid template for AI reviewer worker dispatched via the "AI Review" button. Falls back to a built-in prompt that reviews the PR and moves the issue. |
 | `ssh_hosts` | `[]` | Optional list of `"host"` or `"host:port"` addresses. When set, agent turns are executed on these hosts via SSH in order, falling back to the next on failure. Empty = run locally. See [SSH worker hosts](#ssh-worker-hosts). |
 
@@ -298,6 +331,10 @@ agent:
     code-reviewer:
       command: claude --model claude-opus-4-6
       prompt: "You are a senior code reviewer. Focus on correctness and test coverage."
+    codex-research:
+      command: run-codex-wrapper --json
+      backend: codex
+      prompt: "You are a long-horizon coding and investigation agent."
     fast-fixer:
       command: claude --model claude-haiku-4-5
       prompt: "You are a rapid bug fixer. Move fast and write a test for each fix."
@@ -305,7 +342,7 @@ agent:
 
 #### SSH Worker Hosts
 
-When `agent.ssh_hosts` is set, Symphony executes each Claude turn on a remote machine over SSH instead of locally. The workspace path must exist on the remote host (e.g. via an NFS share or prior provisioning hook).
+When `agent.ssh_hosts` is set, Symphony executes each agent turn on a remote machine over SSH instead of locally. The workspace path must exist on the remote host (e.g. via an NFS share or prior provisioning hook).
 
 ```yaml
 agent:
@@ -327,7 +364,8 @@ ssh-keyscan -p 2222 build-worker-2.internal >> ~/.ssh/known_hosts
 
 | Field | Default | Description |
 |---|---|---|
-| `root` | `~/.symphony/workspaces` | Root directory for per-issue workspaces. Supports `~` expansion and `$ENV_VAR` references. |
+| `root` | `~/.simphony/workspaces` | Root directory for per-issue workspaces. Supports `~` expansion and `$ENV_VAR` references. |
+| `auto_clear_workspace` | `false` | When `true`, the workspace directory is automatically deleted after a task reaches the completion state. Togglable at runtime from the Settings page. |
 
 #### `hooks`
 
@@ -506,6 +544,7 @@ The dashboard shows a Kanban board (drag to move issues between states), a list 
 | `POST /api/v1/issues/{identifier}/profile` | Set per-issue agent profile override |
 | `GET /api/v1/issues/{identifier}/logs` | Stream log entries for an issue |
 | `POST /api/v1/settings/workers` | Adjust max concurrent agents at runtime |
+| `POST /api/v1/settings/workspace/auto-clear` | Toggle auto-clear workspace on success |
 | `GET /api/v1/events` | SSE stream — push state snapshots to the browser |
 
 The server binds `127.0.0.1` only and is not intended for public exposure.

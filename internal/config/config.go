@@ -40,6 +40,15 @@ type PollingConfig struct {
 // WorkspaceConfig holds workspace settings.
 type WorkspaceConfig struct {
 	Root string
+	// AutoClearWorkspace removes the cloned workspace directory after a task
+	// succeeds (reaches the completion state) so disk space is reclaimed
+	// automatically. Logs are kept separately and unaffected.
+	AutoClearWorkspace bool
+	// Worktree enables git worktree mode. When true, Symphony manages
+	// per-issue git worktrees inside workspace.root instead of creating
+	// one empty directory per issue. Requires the base git clone at
+	// workspace.root to already exist. Default: false.
+	Worktree bool
 }
 
 // DefaultReviewerPrompt is used when reviewer_prompt is absent from WORKFLOW.md.
@@ -66,18 +75,43 @@ type AgentProfile struct {
 	// Prompt is a role description for this sub-agent, appended to the main
 	// WORKFLOW.md prompt as context when agent teams are enabled.
 	Prompt string
+	// Backend optionally overrides runner selection when it cannot be inferred
+	// from the command binary alone (for example, a wrapper script around codex).
+	Backend string
 }
 
 // AgentConfig holds agent runner settings.
 type AgentConfig struct {
 	MaxConcurrentAgents        int
 	MaxConcurrentAgentsByState map[string]int
+	// MaxRetryBackoffMs caps the exponential back-off between agent retries.
+	// The progression is 10 s × 2^(attempt-1): 10 s, 20 s, 40 s, 80 s, 160 s,
+	// then capped at MaxRetryBackoffMs for all subsequent attempts.
+	// Default: 300 000 ms (5 min). Set to 0 to disable retries entirely.
 	MaxRetryBackoffMs          int
 	MaxTurns                   int
 	Command                    string
-	TurnTimeoutMs              int
-	ReadTimeoutMs              int
-	StallTimeoutMs             int
+	// Backend optionally overrides runner selection for the default agent command
+	// when it cannot be inferred from the command string alone.
+	Backend        string
+	// TurnTimeoutMs is the hard wall-clock limit for an entire agent session
+	// (all turns combined). When the limit is exceeded the subprocess is killed
+	// and the issue is scheduled for retry. Default: 3 600 000 ms (1 hour).
+	// Set to 0 to disable.
+	TurnTimeoutMs int
+	// ReadTimeoutMs is the per-read timeout on the subprocess stdout pipe. If
+	// no bytes arrive within this window the read is considered stalled and the
+	// subprocess is killed. This catches hangs at the OS/pipe level before the
+	// higher-level stall detector fires. Default: 30 000 ms (30 s).
+	ReadTimeoutMs int
+	// StallTimeoutMs is the orchestrator-level inactivity timeout. The
+	// orchestrator checks every tick whether any running worker has produced an
+	// SSE event within this window; if not, it cancels the worker context and
+	// schedules a retry. Unlike ReadTimeoutMs (pipe-level), this operates on
+	// the parsed event stream and can detect semantic stalls (e.g. the agent is
+	// looping without making progress). Default: 300 000 ms (5 min).
+	// Set to ≤ 0 to disable stall detection entirely.
+	StallTimeoutMs int
 	// SSHHosts is an optional list of "host" or "host:port" addresses.
 	// When set, agent turns are executed on these hosts via SSH in order,
 	// falling back to the next host on failure. Empty = run locally.
@@ -90,10 +124,10 @@ type AgentConfig struct {
 	// from the web UI.
 	Profiles map[string]AgentProfile
 	// AgentMode controls the agent collaboration model.
-	// "" (solo): Claude runs alone with no profile context injected.
-	// "teams":   profile role context injected into the prompt so Claude knows
-	//            which specialised sub-agents it can call. Task tool available
-	//            via --dangerously-skip-permissions (YOLO mode).
+	// "" (solo):      agent runs alone with no profile context injected.
+	// "subagents":    agent may use its native helper/subagent tool.
+	// "teams":        profile role context injected into the prompt so the agent
+	//                 knows which specialised sub-agents it can call.
 	AgentMode string
 }
 
@@ -172,6 +206,8 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	ws := nestedMap(raw, "workspace")
 	defaultWSRoot := defaultWorkspaceRoot()
 	cfg.Workspace.Root = resolvePathValue(strField(ws, "root", ""), defaultWSRoot)
+	cfg.Workspace.AutoClearWorkspace = boolField(ws, "auto_clear", false)
+	cfg.Workspace.Worktree = boolField(ws, "worktree", false)
 
 	// Agent
 	agent := nestedMap(raw, "agent")
@@ -179,6 +215,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.MaxRetryBackoffMs = positiveIntField(agent, "max_retry_backoff_ms", 300000)
 	cfg.Agent.MaxTurns = positiveIntField(agent, "max_turns", 20)
 	cfg.Agent.Command = strField(agent, "command", "claude")
+	cfg.Agent.Backend = strField(agent, "backend", "")
 	cfg.Agent.TurnTimeoutMs = positiveIntField(agent, "turn_timeout_ms", 3600000)
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)
@@ -298,6 +335,7 @@ func parseAgentProfiles(raw map[string]any) map[string]AgentProfile {
 		profiles[name] = AgentProfile{
 			Command: cmd,
 			Prompt:  strField(m, "prompt", ""),
+			Backend: strField(m, "backend", ""),
 		}
 	}
 	if len(profiles) == 0 {

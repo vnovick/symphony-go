@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -107,10 +108,6 @@ func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher) erro
 // POST /api/v1/issues/{identifier}/reanalyze
 func (s *Server) handleReanalyzeIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if s.reanalyzeIssue == nil {
-		writeError(w, http.StatusNotFound, "not_configured", "reanalyze not configured")
-		return
-	}
 	if !s.reanalyzeIssue(identifier) {
 		writeError(w, http.StatusNotFound, "not_paused", "issue "+identifier+" is not paused")
 		return
@@ -120,10 +117,6 @@ func (s *Server) handleReanalyzeIssue(w http.ResponseWriter, r *http.Request) {
 
 // handleResumeIssue removes a paused issue from the pause set so it can be dispatched again.
 func (s *Server) handleResumeIssue(w http.ResponseWriter, r *http.Request) {
-	if s.resumeIssue == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "resume not supported")
-		return
-	}
 	identifier := chi.URLParam(r, "identifier")
 	if s.resumeIssue(identifier) {
 		writeJSON(w, http.StatusOK, map[string]any{"resumed": true, "identifier": identifier})
@@ -134,10 +127,6 @@ func (s *Server) handleResumeIssue(w http.ResponseWriter, r *http.Request) {
 
 // handleCancelIssue cancels the running worker for the given issue identifier.
 func (s *Server) handleCancelIssue(w http.ResponseWriter, r *http.Request) {
-	if s.cancelIssue == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "cancel not supported")
-		return
-	}
 	identifier := chi.URLParam(r, "identifier")
 	if s.cancelIssue(identifier) {
 		writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "identifier": identifier})
@@ -148,10 +137,6 @@ func (s *Server) handleCancelIssue(w http.ResponseWriter, r *http.Request) {
 
 // handleTerminateIssue hard-stops a running or paused issue without adding it to PausedIdentifiers.
 func (s *Server) handleTerminateIssue(w http.ResponseWriter, r *http.Request) {
-	if s.terminateIssue == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "terminate not supported")
-		return
-	}
 	identifier := chi.URLParam(r, "identifier")
 	if s.terminateIssue(identifier) {
 		writeJSON(w, http.StatusOK, map[string]any{"terminated": true, "identifier": identifier})
@@ -162,11 +147,24 @@ func (s *Server) handleTerminateIssue(w http.ResponseWriter, r *http.Request) {
 
 // handleIssueDetail returns a single issue by identifier, enriched with orchestrator state.
 func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
-	if s.fetchIssues == nil {
-		writeError(w, http.StatusNotFound, "not_configured", "issues endpoint not configured")
+	identifier := chi.URLParam(r, "identifier")
+
+	// Fast path: use the single-item callback when available.
+	if s.fetchIssue != nil {
+		issue, err := s.fetchIssue(r.Context(), identifier)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+			return
+		}
+		if issue == nil {
+			writeError(w, http.StatusNotFound, "not_found", "issue "+identifier+" not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, *issue)
 		return
 	}
-	identifier := chi.URLParam(r, "identifier")
+
+	// Slow path: scan all issues.
 	issues, err := s.fetchIssues(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
@@ -183,10 +181,6 @@ func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 
 // handleIssues returns all project issues enriched with orchestrator state.
 func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
-	if s.fetchIssues == nil {
-		writeError(w, http.StatusNotFound, "not_configured", "issues endpoint not configured")
-		return
-	}
 	issues, err := s.fetchIssues(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
@@ -238,8 +232,12 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 
+	// maxPending caps the incomplete-line carry buffer so a runaway log stream
+	// without newlines cannot grow pending unboundedly.
+	const maxPending = 256 * 1024 // 256 KB
+
 	readBuf := make([]byte, 32*1024)
-	pending := ""
+	var pending bytes.Buffer
 
 	// Optional identifier filter: only emit lines containing this string.
 	filterID := r.URL.Query().Get("identifier")
@@ -248,16 +246,18 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		for {
 			n, err := f.Read(readBuf)
 			if n > 0 {
-				pending += string(readBuf[:n])
+				if pending.Len()+n <= maxPending {
+					pending.Write(readBuf[:n])
+				}
 			}
 			// Send complete lines.
 			for {
-				idx := strings.IndexByte(pending, '\n')
+				idx := bytes.IndexByte(pending.Bytes(), '\n')
 				if idx < 0 {
 					break
 				}
-				line := pending[:idx]
-				pending = pending[idx+1:]
+				line := string(pending.Next(idx + 1))
+				line = strings.TrimRight(line, "\n")
 				if line == "" {
 					continue
 				}
@@ -287,10 +287,6 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 // handleIssueLogs returns parsed log entries for a specific issue identifier
 // from the in-memory log buffer (only available for currently-running sessions).
 func (s *Server) handleIssueLogs(w http.ResponseWriter, r *http.Request) {
-	if s.fetchLogs == nil {
-		writeError(w, http.StatusNotFound, "not_configured", "issue logs endpoint not configured")
-		return
-	}
 	identifier := chi.URLParam(r, "identifier")
 	lines := s.fetchLogs(identifier)
 	entries := make([]IssueLogEntry, 0, len(lines))
@@ -307,10 +303,6 @@ func (s *Server) handleIssueLogs(w http.ResponseWriter, r *http.Request) {
 // handleClearIssueLogs deletes the in-memory and on-disk log buffer for an issue.
 // DELETE /api/v1/issues/{identifier}/logs
 func (s *Server) handleClearIssueLogs(w http.ResponseWriter, r *http.Request) {
-	if s.clearLogs == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "log clearing not configured")
-		return
-	}
 	identifier := chi.URLParam(r, "identifier")
 	if err := s.clearLogs(identifier); err != nil {
 		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
@@ -323,117 +315,140 @@ func (s *Server) handleClearIssueLogs(w http.ResponseWriter, r *http.Request) {
 func skipLine(line string) bool {
 	return strings.HasPrefix(line, "INFO claude: session started") ||
 		strings.HasPrefix(line, "INFO claude: turn done") ||
+		strings.HasPrefix(line, "INFO codex: session started") ||
+		strings.HasPrefix(line, "INFO codex: turn done") ||
 		strings.HasPrefix(line, "DEBUG ")
 }
 
-// parseLogLine converts a slog-formatted buffer line into a structured IssueLogEntry.
-// Returns (entry, false) for valid entries, (zero, true) to signal skip.
-func parseLogLine(line string) (IssueLogEntry, bool) {
-	if skipLine(line) {
-		return IssueLogEntry{}, true
+// buildDetailJSON builds a compact JSON detail string for shell completions.
+// Fields are omitted when empty so the Detail field stays minimal.
+// Uses a struct for deterministic key ordering in the JSON output.
+func buildDetailJSON(status, exitCode, outputSize string) string {
+	type detail struct {
+		Status     string `json:"status,omitempty"`
+		ExitCode   *int   `json:"exit_code,omitempty"`
+		OutputSize *int   `json:"output_size,omitempty"`
 	}
-	var entry IssueLogEntry
-	switch {
-	case strings.HasPrefix(line, "INFO claude: text"):
-		msg := extractAttrValue(line, "text")
-		entry = IssueLogEntry{Level: "INFO", Event: "text", Message: msg}
-	case strings.HasPrefix(line, "INFO claude: subagent"):
-		tool := extractAttrValue(line, "tool")
-		desc := extractAttrValue(line, "description")
-		msg := desc
-		if msg == "" {
-			msg = tool + " (subagent)"
+	d := detail{Status: status}
+	if exitCode != "" {
+		if n, err := strconv.Atoi(exitCode); err == nil {
+			d.ExitCode = &n
 		}
-		entry = IssueLogEntry{Level: "INFO", Event: "subagent", Message: msg, Tool: tool}
-	case strings.HasPrefix(line, "INFO claude: action"):
-		tool := extractAttrValue(line, "tool")
-		desc := extractAttrValue(line, "description")
-		msg := tool
-		if desc != "" {
-			msg = tool + " — " + desc
-		}
-		entry = IssueLogEntry{Level: "INFO", Event: "action", Message: msg, Tool: tool}
-	case strings.HasPrefix(line, "INFO claude: todo"):
-		task := extractAttrValue(line, "task")
-		if task == "" {
-			task = line
-		}
-		entry = IssueLogEntry{Level: "INFO", Event: "action", Message: "☐ " + task, Tool: "TodoWrite"}
-	case strings.HasPrefix(line, "INFO worker: pr_opened"):
-		url := extractAttrValue(line, "url")
-		entry = IssueLogEntry{Level: "INFO", Event: "pr", Message: "✓ PR opened: " + url}
-	case strings.HasPrefix(line, "INFO worker: turn_summary"):
-		msg := extractAttrValue(line, "summary")
-		entry = IssueLogEntry{Level: "INFO", Event: "turn", Message: msg}
-	case strings.HasPrefix(line, "ERROR"):
-		_, rest, _ := strings.Cut(line, "ERROR ")
-		if idx := strings.LastIndex(rest, " time="); idx > 0 {
-			rest = rest[:idx]
-		}
-		entry = IssueLogEntry{Level: "ERROR", Event: "error", Message: rest}
-	case strings.HasPrefix(line, "WARN"):
-		_, rest, _ := strings.Cut(line, "WARN ")
-		// Strip trailing time= attribute from the message for cleaner display.
-		if idx := strings.LastIndex(rest, " time="); idx > 0 {
-			rest = rest[:idx]
-		}
-		entry = IssueLogEntry{Level: "WARN", Event: "warn", Message: rest}
-	case strings.HasPrefix(line, "INFO worker:"):
-		_, rest, _ := strings.Cut(line, "INFO ")
-		if idx := strings.LastIndex(rest, " time="); idx > 0 {
-			rest = rest[:idx]
-		}
-		entry = IssueLogEntry{Level: "INFO", Event: "info", Message: rest}
-	default:
-		_, rest, _ := strings.Cut(line, "INFO ")
-		if rest == "" {
-			rest = line
-		}
-		if idx := strings.LastIndex(rest, " time="); idx > 0 {
-			rest = rest[:idx]
-		}
-		entry = IssueLogEntry{Level: "INFO", Event: "info", Message: rest}
 	}
-	// Extract wall-clock timestamp appended by formatBufLine / makeBufLine.
-	entry.Time = extractAttrValue(line, "time")
-	return entry, false
-}
-
-// extractAttrValue finds key="quoted value" or key=word in a slog line.
-func extractAttrValue(line, key string) string {
-	_, rest, found := strings.Cut(line, key+"=")
-	if !found || len(rest) == 0 {
+	if outputSize != "" {
+		if n, err := strconv.Atoi(outputSize); err == nil {
+			d.OutputSize = &n
+		}
+	}
+	if d.Status == "" && d.ExitCode == nil && d.OutputSize == nil {
 		return ""
 	}
-	if rest[0] == '"' {
-		end := 1
-		for end < len(rest) {
-			if rest[end] == '\\' {
-				end += 2
-				continue
-			}
-			if rest[end] == '"' {
-				break
-			}
-			end++
-		}
-		unescaped := strings.ReplaceAll(rest[1:end], `\n`, "\n")
-		unescaped = strings.ReplaceAll(unescaped, `\t`, "\t")
-		unescaped = strings.ReplaceAll(unescaped, `\"`, "\"")
-		unescaped = strings.ReplaceAll(unescaped, `\\`, "\\")
-		return unescaped
+	b, err := json.Marshal(d)
+	if err != nil {
+		return ""
 	}
-	val, _, _ := strings.Cut(rest, " ")
-	return val
+	return string(b)
+}
+
+// bufLogEntry mirrors orchestrator.bufLogEntry. Both sides must stay in sync.
+// Using a local type avoids an import cycle between server and orchestrator.
+type bufLogEntry struct {
+	Level       string `json:"level"`
+	Msg         string `json:"msg"`
+	Time        string `json:"time"`
+	Text        string `json:"text,omitempty"`
+	Tool        string `json:"tool,omitempty"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status,omitempty"`
+	ExitCode    string `json:"exit_code,omitempty"`
+	OutputSize  string `json:"output_size,omitempty"`
+	Task        string `json:"task,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+}
+
+// parseLogLine converts a JSON log buffer line into a structured IssueLogEntry.
+// Returns (entry, false) for valid entries, (zero, true) to signal skip.
+func parseLogLine(line string) (IssueLogEntry, bool) {
+	var e bufLogEntry
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		// Non-JSON line (e.g. legacy entry) — skip rather than panic.
+		return IssueLogEntry{}, true
+	}
+
+	if skipLine(e.Level + " " + e.Msg) {
+		return IssueLogEntry{}, true
+	}
+
+	entry := IssueLogEntry{Level: e.Level, Time: e.Time}
+
+	switch e.Msg {
+	case "claude: text", "codex: text":
+		entry.Event = "text"
+		entry.Message = e.Text
+	case "claude: subagent", "codex: subagent":
+		entry.Event = "subagent"
+		entry.Tool = e.Tool
+		entry.Message = e.Description
+		if entry.Message == "" {
+			entry.Message = e.Tool + " (subagent)"
+		}
+	case "claude: action_started", "codex: action_started":
+		entry.Event = "action"
+		entry.Tool = e.Tool
+		entry.Message = e.Tool + "…"
+		if e.Description != "" {
+			entry.Message = e.Tool + " — " + e.Description + "…"
+		}
+	case "claude: action_detail", "codex: action_detail":
+		entry.Event = "action"
+		entry.Tool = e.Tool
+		entry.Detail = buildDetailJSON(e.Status, e.ExitCode, e.OutputSize)
+		entry.Message = e.Tool + " completed"
+		if e.ExitCode != "" && e.ExitCode != "0" {
+			entry.Message = e.Tool + " failed (exit:" + e.ExitCode + ")"
+		}
+	case "claude: action", "codex: action":
+		entry.Event = "action"
+		entry.Tool = e.Tool
+		entry.Message = e.Tool
+		if e.Description != "" {
+			entry.Message = e.Tool + " — " + e.Description
+		}
+	case "claude: todo", "codex: todo":
+		entry.Event = "action"
+		entry.Tool = "TodoWrite"
+		task := e.Task
+		if task == "" {
+			task = e.Msg
+		}
+		entry.Message = "☐ " + task
+	case "worker: pr_opened":
+		entry.Event = "pr"
+		entry.Message = "✓ PR opened: " + e.URL
+	case "worker: turn_summary":
+		entry.Event = "turn"
+		entry.Message = e.Summary
+	default:
+		switch e.Level {
+		case "ERROR":
+			entry.Event = "error"
+			entry.Message = e.Msg
+		case "WARN":
+			entry.Event = "warn"
+			entry.Message = e.Msg
+		default:
+			entry.Event = "info"
+			entry.Message = e.Msg
+		}
+	}
+
+	return entry, false
 }
 
 // handleAIReview dispatches a reviewer worker for the given issue identifier.
 // POST /api/v1/issues/{identifier}/ai-review
 func (s *Server) handleAIReview(w http.ResponseWriter, r *http.Request) {
-	if s.dispatchReviewer == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "AI review not supported")
-		return
-	}
 	identifier := chi.URLParam(r, "identifier")
 	if err := s.dispatchReviewer(identifier); err != nil {
 		writeError(w, http.StatusInternalServerError, "dispatch_failed", err.Error())
@@ -495,10 +510,6 @@ func (s *Server) handleSetProjectFilter(w http.ResponseWriter, r *http.Request) 
 
 // handleUpdateIssueState transitions an issue to a new state in the upstream tracker.
 func (s *Server) handleUpdateIssueState(w http.ResponseWriter, r *http.Request) {
-	if s.updateIssueState == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "state update not supported")
-		return
-	}
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
 		State string `json:"state"`
@@ -524,10 +535,6 @@ func (s *Server) handleUpdateIssueState(w http.ResponseWriter, r *http.Request) 
 // POST /api/v1/issues/{identifier}/profile
 // Body: {"profile": "fast"} to set; {"profile": ""} to reset to default.
 func (s *Server) handleSetIssueProfile(w http.ResponseWriter, r *http.Request) {
-	if s.setIssueProfile == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "profiles not supported")
-		return
-	}
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
 		Profile string `json:"profile"`
@@ -544,10 +551,6 @@ func (s *Server) handleSetIssueProfile(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/settings/workers
 // Body: {"workers": 5} for absolute, {"delta": 1} or {"delta": -1} for relative.
 func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
-	if s.setWorkers == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "worker control not available")
-		return
-	}
 	var body struct {
 		Workers int `json:"workers"`
 		Delta   int `json:"delta"`
@@ -576,26 +579,19 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 // handleListProfiles returns the current profile definitions.
 // GET /api/v1/settings/profiles
 func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
-	if s.profileDefs == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "profiles not supported")
-		return
-	}
 	defs := s.profileDefs()
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": defs})
 }
 
 // handleUpsertProfile creates or updates a named agent profile.
 // PUT /api/v1/settings/profiles/{name}
-// Body: {"command": "claude --model ...", "prompt": "..."}
+// Body: {"command": "claude --model ...", "prompt": "...", "backend": "codex"}
 func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
-	if s.upsertProfile == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "profiles not supported")
-		return
-	}
 	name := chi.URLParam(r, "name")
 	var body struct {
 		Command string `json:"command"`
 		Prompt  string `json:"prompt"`
+		Backend string `json:"backend"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Command == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "command field required")
@@ -604,6 +600,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 	def := ProfileDef{
 		Command: body.Command,
 		Prompt:  body.Prompt,
+		Backend: body.Backend,
 	}
 	if err := s.upsertProfile(name, def); err != nil {
 		writeError(w, http.StatusInternalServerError, "upsert_failed", err.Error())
@@ -615,10 +612,6 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 // handleDeleteProfile removes a named agent profile.
 // DELETE /api/v1/settings/profiles/{name}
 func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
-	if s.deleteProfile == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "profiles not supported")
-		return
-	}
 	name := chi.URLParam(r, "name")
 	if err := s.deleteProfile(name); err != nil {
 		writeError(w, http.StatusInternalServerError, "delete_failed", err.Error())
@@ -631,10 +624,6 @@ func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/settings/agent-mode
 // Body: {"mode": "" | "subagents" | "teams"}
 func (s *Server) handleSetAgentMode(w http.ResponseWriter, r *http.Request) {
-	if s.setAgentMode == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "agent mode not available")
-		return
-	}
 	var body struct {
 		Mode string `json:"mode"`
 	}
@@ -653,14 +642,28 @@ func (s *Server) handleSetAgentMode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "agentMode": body.Mode})
 }
 
+// handleSetAutoClearWorkspace toggles automatic workspace cleanup after task success.
+// POST /api/v1/settings/workspace/auto-clear
+// Body: {"enabled": true|false}
+func (s *Server) handleSetAutoClearWorkspace(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "enabled field required")
+		return
+	}
+	if err := s.setAutoClearWorkspace(body.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoClearWorkspace": body.Enabled})
+}
+
 // handleUpdateTrackerStates updates active/terminal/completion states in-memory and in WORKFLOW.md.
 // PUT /api/v1/settings/tracker/states
 // Body: {"activeStates": [...], "terminalStates": [...], "completionState": "..."}
 func (s *Server) handleUpdateTrackerStates(w http.ResponseWriter, r *http.Request) {
-	if s.updateTrackerStates == nil {
-		writeError(w, http.StatusNotImplemented, "not_configured", "state updates not supported")
-		return
-	}
 	var body struct {
 		ActiveStates    []string `json:"activeStates"`
 		TerminalStates  []string `json:"terminalStates"`

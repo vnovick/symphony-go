@@ -67,7 +67,15 @@ describe('useSymphonySSE', () => {
       useSymphonySSE();
     });
     act(() => {
-      MockEventSource.instances[0].triggerMessage({ running: [], paused: [], retrying: [] });
+      MockEventSource.instances[0].triggerMessage({
+        generatedAt: '2024-01-01T00:00:00Z',
+        counts: { running: 0, retrying: 0, paused: 0 },
+        running: [],
+        retrying: [],
+        paused: [],
+        maxConcurrentAgents: 3,
+        rateLimits: null,
+      });
     });
     expect(mockSetSnapshot).toHaveBeenCalled();
   });

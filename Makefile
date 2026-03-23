@@ -1,4 +1,8 @@
-.PHONY: all build verify dev test lint lint-go fmt vet web-build web-test coverage clean benchmark
+.PHONY: all build verify dev test lint lint-go fmt vet web-build web-test coverage clean benchmark tui-golden
+
+# Pin to the toolchain declared in go.mod so `go tool cover` and other tools
+# always use go1.25.8, even on machines where /usr/local/go is an older version.
+export GOTOOLCHAIN := go1.25.8
 
 all: build verify
 
@@ -32,6 +36,10 @@ coverage:
 clean:
 	rm -f symphony coverage.out coverage.html
 	go clean ./...
+
+# Regenerate catwalk golden files after intentional TUI render changes.
+tui-golden:
+	go test ./internal/statusui/... -args -rewrite
 
 # Run benchmarks with memory allocation stats.
 benchmark:

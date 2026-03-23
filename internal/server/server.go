@@ -2,12 +2,19 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 )
+
+// errNotConfigured is returned by no-op callback stubs installed in New()
+// for optional Config fields that were left nil by the caller.
+var errNotConfigured = errors.New("not configured")
 
 // RunningRow is a single row in the active sessions table.
 type RunningRow struct {
@@ -105,9 +112,9 @@ type StateSnapshot struct {
 	// ProfileDefs is the map of named agent profile definitions from WORKFLOW.md.
 	ProfileDefs map[string]ProfileDef `json:"profileDefs,omitempty"`
 	// AgentMode is the active agent collaboration mode.
-	// "" (off/solo): Claude runs alone.
-	// "subagents":   Claude may spawn helpers via the Task tool.
-	// "teams":       Task tool + profile role context injected into the prompt.
+	// "" (off/solo): agent runs alone.
+	// "subagents":   agent may spawn helpers via its native delegation tool.
+	// "teams":       delegation tool + profile role context injected into the prompt.
 	AgentMode string `json:"agentMode,omitempty"`
 	// ActiveStates is the list of tracker states the orchestrator will pick up.
 	ActiveStates []string `json:"activeStates,omitempty"`
@@ -123,12 +130,16 @@ type StateSnapshot struct {
 	// PollIntervalMs is the configured tracker poll interval in milliseconds.
 	// The TUI uses this to derive a safe background refresh rate.
 	PollIntervalMs int `json:"pollIntervalMs,omitempty"`
+	// AutoClearWorkspace indicates whether workspace directories are
+	// automatically deleted after a task succeeds.
+	AutoClearWorkspace bool `json:"autoClearWorkspace,omitempty"`
 }
 
 // ProfileDef is the JSON representation of one named agent profile.
 type ProfileDef struct {
 	Command string `json:"command"`
 	Prompt  string `json:"prompt,omitempty"`
+	Backend string `json:"backend,omitempty"`
 }
 
 // CommentRow is one comment entry in a TrackerIssue response.
@@ -169,6 +180,9 @@ type IssueLogEntry struct {
 	Message string `json:"message"`
 	Tool    string `json:"tool,omitempty"`
 	Time    string `json:"time,omitempty"` // HH:MM:SS wall-clock time of the event
+	// Detail carries backend-specific structured metadata as a JSON string.
+	// Populated for Codex shell completions (exit_code, status, output_size).
+	Detail string `json:"detail,omitempty"`
 }
 
 // broadcaster fans out state-change notifications to multiple SSE clients.
@@ -206,131 +220,171 @@ func (b *broadcaster) notify() {
 	}
 }
 
-// Server is an HTTP server exposing orchestrator state.
-type Server struct {
-	router              *chi.Mux
-	snapshot            func() StateSnapshot
-	refreshChan         chan struct{}
-	logFile             string // path to rotating log file; empty = logs endpoint disabled
-	fetchIssues         func(ctx context.Context) ([]TrackerIssue, error)
-	cancelIssue         func(identifier string) bool                                  // nil = cancel not supported
-	resumeIssue         func(identifier string) bool                                  // nil = resume not supported
-	terminateIssue      func(identifier string) bool                                  // nil = terminate not supported
-	fetchLogs           func(identifier string) []string                              // nil = issue logs endpoint disabled
-	clearLogs           func(identifier string) error                                 // nil = clear logs not supported
-	dispatchReviewer    func(identifier string) error                                 // nil = ai-review not supported
-	updateIssueState    func(ctx context.Context, identifier, stateName string) error // nil = state update not supported
-	setWorkers          func(n int)                                                   // nil = worker control not available
-	setIssueProfile     func(identifier, profile string)                              // nil = profiles not supported
-	profileDefs         func() map[string]ProfileDef                                  // returns current name→ProfileDef map; nil = not supported
-	upsertProfile       func(name string, def ProfileDef) error                       // create or update
-	deleteProfile       func(name string) error                                       // delete
-	setAgentMode        func(mode string) error                                       // nil = agent mode toggle not supported
-	updateTrackerStates func(active, terminal []string, completion string) error      // nil = state update not supported
-	reanalyzeIssue      func(identifier string) bool                                  // nil = reanalyze not supported
-	projectManager      ProjectManager                                                // nil for GitHub (no project support)
-	bc                  *broadcaster
+// Config holds all constructor parameters for a Server.
+// Required fields: Snapshot, RefreshChan.
+// Optional callback fields left nil are replaced with no-op stubs in New() so that
+// handler bodies never need to nil-check before calling a function field.
+// Exceptions: ProjectManager (interface; nil = GitHub tracker) and FetchIssue
+// (fast-path optimisation; nil falls back to FetchIssues).
+type Config struct {
+	// Required
+	Snapshot    func() StateSnapshot
+	RefreshChan chan struct{}
+	// LogFile is the path to the rotating log file for /api/v1/logs; empty disables it.
+	LogFile string
+
+	// Optional – nil fields are replaced with no-op stubs by New()
+	FetchIssues           func(ctx context.Context) ([]TrackerIssue, error)
+	FetchIssue            func(ctx context.Context, identifier string) (*TrackerIssue, error)
+	CancelIssue           func(identifier string) bool
+	ResumeIssue           func(identifier string) bool
+	TerminateIssue        func(identifier string) bool
+	ReanalyzeIssue        func(identifier string) bool
+	FetchLogs             func(identifier string) []string
+	ClearLogs             func(identifier string) error
+	DispatchReviewer      func(identifier string) error
+	UpdateIssueState      func(ctx context.Context, identifier, stateName string) error
+	SetWorkers            func(n int)
+	SetIssueProfile       func(identifier, profile string)
+	ProfileDefs           func() map[string]ProfileDef
+	UpsertProfile         func(name string, def ProfileDef) error
+	DeleteProfile         func(name string) error
+	SetAgentMode          func(mode string) error
+	SetAutoClearWorkspace func(enabled bool) error
+	UpdateTrackerStates   func(active, terminal []string, completion string) error
+	ProjectManager        ProjectManager
 }
 
-// New constructs a Server with the given snapshot function and refresh channel.
-// logFile is the path to the rotating log file for the /api/v1/logs endpoint.
-// fetchIssues is called by GET /api/v1/issues; nil disables the endpoint.
-// cancelIssue is called by DELETE /api/v1/issues/{identifier}; nil disables cancellation.
-// resumeIssue is called by POST /api/v1/issues/{identifier}/resume; nil disables resume.
-// fetchLogs is called by GET /api/v1/issues/{identifier}/logs; nil disables the endpoint.
-func New(snapshot func() StateSnapshot, refreshChan chan struct{}, logFile string, fetchIssues func(ctx context.Context) ([]TrackerIssue, error), cancelIssue func(string) bool, resumeIssue func(string) bool, fetchLogs func(string) []string) *Server {
-	s := &Server{
-		router:      chi.NewRouter(),
-		snapshot:    snapshot,
-		refreshChan: refreshChan,
-		logFile:     logFile,
-		fetchIssues: fetchIssues,
-		cancelIssue: cancelIssue,
-		resumeIssue: resumeIssue,
-		fetchLogs:   fetchLogs,
-		bc:          newBroadcaster(),
-	}
+// Server is an HTTP server exposing orchestrator state.
+type Server struct {
+	router               *chi.Mux
+	snapshot             func() StateSnapshot
+	refreshChan          chan struct{}
+	logFile              string
+	fetchIssues          func(ctx context.Context) ([]TrackerIssue, error)
+	fetchIssue           func(ctx context.Context, identifier string) (*TrackerIssue, error)
+	cancelIssue          func(identifier string) bool
+	resumeIssue          func(identifier string) bool
+	terminateIssue       func(identifier string) bool
+	fetchLogs            func(identifier string) []string
+	clearLogs            func(identifier string) error
+	dispatchReviewer     func(identifier string) error
+	updateIssueState     func(ctx context.Context, identifier, stateName string) error
+	setWorkers           func(n int)
+	setIssueProfile      func(identifier, profile string)
+	profileDefs          func() map[string]ProfileDef
+	upsertProfile        func(name string, def ProfileDef) error
+	deleteProfile        func(name string) error
+	setAgentMode         func(mode string) error
+	setAutoClearWorkspace func(enabled bool) error
+	updateTrackerStates  func(active, terminal []string, completion string) error
+	reanalyzeIssue       func(identifier string) bool
+	projectManager       ProjectManager
+	bc                   *broadcaster
+}
 
+// New constructs a Server from a Config. Snapshot and RefreshChan must be non-nil.
+func New(cfg Config) *Server {
+	s := &Server{
+		router:               chi.NewRouter(),
+		snapshot:             cfg.Snapshot,
+		refreshChan:          cfg.RefreshChan,
+		logFile:              cfg.LogFile,
+		fetchIssues:          cfg.FetchIssues,
+		fetchIssue:           cfg.FetchIssue,
+		cancelIssue:          cfg.CancelIssue,
+		resumeIssue:          cfg.ResumeIssue,
+		terminateIssue:       cfg.TerminateIssue,
+		reanalyzeIssue:       cfg.ReanalyzeIssue,
+		fetchLogs:            cfg.FetchLogs,
+		clearLogs:            cfg.ClearLogs,
+		dispatchReviewer:     cfg.DispatchReviewer,
+		updateIssueState:     cfg.UpdateIssueState,
+		setWorkers:           cfg.SetWorkers,
+		setIssueProfile:      cfg.SetIssueProfile,
+		profileDefs:          cfg.ProfileDefs,
+		upsertProfile:        cfg.UpsertProfile,
+		deleteProfile:        cfg.DeleteProfile,
+		setAgentMode:         cfg.SetAgentMode,
+		setAutoClearWorkspace: cfg.SetAutoClearWorkspace,
+		updateTrackerStates:  cfg.UpdateTrackerStates,
+		projectManager:       cfg.ProjectManager,
+		bc:                   newBroadcaster(),
+	}
+	// Install no-op stubs for nil optional callbacks so handler bodies can call
+	// function fields unconditionally without nil guards.
+	// projectManager and fetchIssue are deliberately excluded:
+	//   - projectManager is a legitimate optional (nil = GitHub tracker, no project API)
+	//   - fetchIssue is a fast-path optimisation; nil simply falls back to fetchIssues
+	if s.cancelIssue == nil {
+		s.cancelIssue = func(string) bool { return false }
+	}
+	if s.resumeIssue == nil {
+		s.resumeIssue = func(string) bool { return false }
+	}
+	if s.terminateIssue == nil {
+		s.terminateIssue = func(string) bool { return false }
+	}
+	if s.reanalyzeIssue == nil {
+		s.reanalyzeIssue = func(string) bool { return false }
+	}
+	if s.fetchIssues == nil {
+		s.fetchIssues = func(context.Context) ([]TrackerIssue, error) { return nil, errNotConfigured }
+	}
+	if s.fetchLogs == nil {
+		s.fetchLogs = func(string) []string { return nil }
+	}
+	if s.clearLogs == nil {
+		s.clearLogs = func(string) error { return errNotConfigured }
+	}
+	if s.dispatchReviewer == nil {
+		s.dispatchReviewer = func(string) error { return errNotConfigured }
+	}
+	if s.updateIssueState == nil {
+		s.updateIssueState = func(context.Context, string, string) error { return errNotConfigured }
+	}
+	if s.setWorkers == nil {
+		s.setWorkers = func(int) {}
+	}
+	if s.setIssueProfile == nil {
+		s.setIssueProfile = func(string, string) {}
+	}
+	if s.profileDefs == nil {
+		s.profileDefs = func() map[string]ProfileDef { return nil }
+	}
+	if s.upsertProfile == nil {
+		s.upsertProfile = func(string, ProfileDef) error { return errNotConfigured }
+	}
+	if s.deleteProfile == nil {
+		s.deleteProfile = func(string) error { return errNotConfigured }
+	}
+	if s.setAgentMode == nil {
+		s.setAgentMode = func(string) error { return errNotConfigured }
+	}
+	if s.setAutoClearWorkspace == nil {
+		s.setAutoClearWorkspace = func(bool) error { return errNotConfigured }
+	}
+	if s.updateTrackerStates == nil {
+		s.updateTrackerStates = func([]string, []string, string) error { return errNotConfigured }
+	}
 	s.routes()
 	return s
 }
 
-// SetProjectManager attaches a project manager (Linear only).
-// Must be called before the server starts accepting requests.
-func (s *Server) SetProjectManager(pm ProjectManager) {
-	s.projectManager = pm
-}
-
-// SetDispatchReviewer attaches the AI reviewer dispatch callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetDispatchReviewer(fn func(identifier string) error) {
-	s.dispatchReviewer = fn
-}
-
-// SetUpdateIssueState attaches the issue state update callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetUpdateIssueState(fn func(ctx context.Context, identifier, stateName string) error) {
-	s.updateIssueState = fn
-}
-
-// SetWorkerSetter attaches the runtime max-workers setter callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetWorkerSetter(fn func(n int)) {
-	s.setWorkers = fn
-}
-
-// SetIssueProfileSetter attaches the per-issue agent profile setter callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetIssueProfileSetter(fn func(identifier, profile string)) {
-	s.setIssueProfile = fn
-}
-
-// SetProfileReader attaches the profile definitions reader callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetProfileReader(fn func() map[string]ProfileDef) {
-	s.profileDefs = fn
-}
-
-// SetProfileUpserter attaches the profile create/update callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetProfileUpserter(fn func(name string, def ProfileDef) error) {
-	s.upsertProfile = fn
-}
-
-// SetProfileDeleter attaches the profile delete callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetProfileDeleter(fn func(name string) error) {
-	s.deleteProfile = fn
-}
-
-// SetTerminateIssue attaches the hard-terminate callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetTerminateIssue(fn func(identifier string) bool) {
-	s.terminateIssue = fn
-}
-
-// SetClearLogs attaches the log-clear callback for DELETE /api/v1/issues/{identifier}/logs.
-func (s *Server) SetClearLogs(fn func(identifier string) error) {
-	s.clearLogs = fn
-}
-
-// SetAgentModeSetter attaches the agent mode setter callback.
-// mode is one of "" (off/solo), "subagents", or "teams".
-// Must be called before the server starts accepting requests.
-func (s *Server) SetAgentModeSetter(fn func(mode string) error) {
-	s.setAgentMode = fn
-}
-
-// SetTrackerStateUpdater attaches the tracker state update callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetTrackerStateUpdater(fn func(active, terminal []string, completion string) error) {
-	s.updateTrackerStates = fn
-}
-
-// SetReanalyzeIssue attaches the forced re-analysis callback.
-// Must be called before the server starts accepting requests.
-func (s *Server) SetReanalyzeIssue(fn func(identifier string) bool) {
-	s.reanalyzeIssue = fn
+// Validate checks that all required Config fields are set.
+// Call before starting the HTTP listener.
+func (s *Server) Validate() error {
+	var missing []string
+	if s.snapshot == nil {
+		missing = append(missing, "Snapshot")
+	}
+	if s.refreshChan == nil {
+		missing = append(missing, "RefreshChan")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("server: missing required Config fields: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // Notify signals all active SSE clients to push the current state immediately.
@@ -392,6 +446,7 @@ func (s *Server) routes() {
 		r.Put("/projects/filter", s.handleSetProjectFilter)
 		r.Post("/settings/workers", s.handleSetWorkers)
 		r.Post("/settings/agent-mode", s.handleSetAgentMode)
+		r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
 		r.Get("/settings/profiles", s.handleListProfiles)
 		r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
 		r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)

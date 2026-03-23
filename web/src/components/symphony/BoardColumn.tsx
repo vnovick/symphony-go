@@ -6,9 +6,13 @@ import type { TrackerIssue } from '../../types/symphony';
 function DraggableCard({
   issue,
   onSelect,
+  availableProfiles,
+  onProfileChange,
 }: {
   issue: TrackerIssue;
   onSelect: (id: string) => void;
+  availableProfiles?: string[];
+  onProfileChange?: (identifier: string, profile: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: issue.identifier,
@@ -24,7 +28,13 @@ function DraggableCard({
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <IssueCard issue={issue} isDragging={isDragging} onSelect={onSelect} />
+      <IssueCard
+        issue={issue}
+        isDragging={isDragging}
+        onSelect={onSelect}
+        availableProfiles={availableProfiles}
+        onProfileChange={onProfileChange}
+      />
     </div>
   );
 }
@@ -34,9 +44,18 @@ interface ColumnProps {
   issues: TrackerIssue[];
   isOver: boolean;
   onSelect: (id: string) => void;
+  availableProfiles?: string[];
+  onProfileChange?: (identifier: string, profile: string) => void;
 }
 
-export default function BoardColumn({ state, issues, isOver, onSelect }: ColumnProps) {
+export default function BoardColumn({
+  state,
+  issues,
+  isOver,
+  onSelect,
+  availableProfiles,
+  onProfileChange,
+}: ColumnProps) {
   const { setNodeRef } = useDroppable({ id: state });
 
   return (
@@ -58,7 +77,13 @@ export default function BoardColumn({ state, issues, isOver, onSelect }: ColumnP
       </div>
       <div className="max-h-[calc(100vh-300px)] min-h-[80px] flex-1 space-y-1.5 overflow-y-auto px-2 pb-2">
         {issues.map((issue) => (
-          <DraggableCard key={issue.identifier} issue={issue} onSelect={onSelect} />
+          <DraggableCard
+            key={issue.identifier}
+            issue={issue}
+            onSelect={onSelect}
+            availableProfiles={availableProfiles}
+            onProfileChange={onProfileChange}
+          />
         ))}
       </div>
     </div>

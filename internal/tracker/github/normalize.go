@@ -5,9 +5,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/symphony-go/internal/tracker"
 )
 
 var blockerRe = regexp.MustCompile(`(?i)blocked\s+by\s+#(\d+)`)
@@ -20,7 +20,7 @@ func normalizeIssue(raw map[string]any, derivedState string) *domain.Issue {
 	if !ok {
 		return nil
 	}
-	number, ok := toIntVal(numberRaw)
+	number, ok := tracker.ToIntVal(numberRaw)
 	if !ok {
 		return nil
 	}
@@ -39,8 +39,8 @@ func normalizeIssue(raw map[string]any, derivedState string) *domain.Issue {
 		State:      derivedState,
 		Labels:     extractLabels(raw),
 		BlockedBy:  extractBlockers(raw),
-		CreatedAt:  parseTime(raw["created_at"]),
-		UpdatedAt:  parseTime(raw["updated_at"]),
+		CreatedAt:  tracker.ParseTime(raw["created_at"]),
+		UpdatedAt:  tracker.ParseTime(raw["updated_at"]),
 	}
 
 	if body, ok := raw["body"].(string); ok && body != "" {
@@ -157,28 +157,4 @@ func deriveState(raw map[string]any, activeStates, terminalStates []string) stri
 		}
 	}
 	return ""
-}
-
-func parseTime(v any) *time.Time {
-	s, ok := v.(string)
-	if !ok || s == "" {
-		return nil
-	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return nil
-	}
-	return &t
-}
-
-func toIntVal(v any) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	case float64:
-		return int(n), true
-	}
-	return 0, false
 }

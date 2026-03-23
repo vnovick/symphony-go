@@ -43,7 +43,9 @@ and passed to the agent on every turn.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `command` | string | no | `claude` | The agent command to run (e.g. `claude`, `/path/to/agent`) |
+| `backend` | string | no | `""` | Explicit backend override when `command` is a wrapper script or alias. Accepted values: `claude`, `codex`. When empty, Symphony infers the backend from the command name. |
 | `max_concurrent_agents` | int | no | `10` | Maximum number of issues processed in parallel |
+| `max_concurrent_agents_by_state` | map[string]int | no | `{}` | Per-state concurrency caps. State keys are normalized to lowercase. Example: `{"in progress": 3}` |
 | `max_turns` | int | no | `20` | Maximum agent turns per issue before aborting |
 | `turn_timeout_ms` | int | no | `3600000` | Per-turn timeout in milliseconds (1 hour) |
 | `read_timeout_ms` | int | no | `30000` | Inactivity timeout — aborts turn if no output for this long |
@@ -56,7 +58,15 @@ and passed to the agent on every turn.
 
 ### Agent profiles
 
-Profiles allow per-issue command overrides. Reference a profile by name from the dashboard.
+Profiles allow per-issue command overrides. Reference a profile by name from the dashboard or the agent queue view.
+
+Each profile supports:
+
+| Field | Description |
+|---|---|
+| `command` | Agent command to run for this profile |
+| `backend` | Explicit backend override (`claude` or `codex`); inferred from `command` when absent |
+| `prompt` | Additional prompt text appended to the rendered template for this profile |
 
 ```yaml
 agent:
@@ -66,6 +76,10 @@ agent:
       prompt: "Fix this quickly with minimal changes."
     thorough:
       command: claude --model claude-opus-4-6
+    codex-research:
+      command: run-codex-wrapper --json
+      backend: codex
+      prompt: "You are a long-horizon coding and investigation agent."
 ```
 
 ---
@@ -103,7 +117,13 @@ server:
 ```yaml
 workspace:
   root: ~/.simphony/workspaces   # default
+  auto_clear_workspace: false    # set true to delete workspace after task succeeds
 ```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `root` | string | `~/.simphony/workspaces` | Root directory for per-issue workspaces. Supports `~` and `$ENV_VAR` expansion. |
+| `auto_clear_workspace` | bool | `false` | When `true`, the workspace directory is deleted after a task reaches the completion state. Togglable at runtime from the Settings page without restarting Symphony. |
 
 Each issue gets an isolated subdirectory under `root` that persists across runs.
 

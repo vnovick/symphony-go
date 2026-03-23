@@ -1,6 +1,7 @@
 package workspace_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +22,7 @@ func testManager(t *testing.T) (*workspace.Manager, string) {
 
 func TestEnsureWorkspaceCreatesDirectory(t *testing.T) {
 	mgr, root := testManager(t)
-	ws, err := mgr.EnsureWorkspace("ENG-1")
+	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "")
 	require.NoError(t, err)
 	assert.True(t, ws.CreatedNow)
 	assert.DirExists(t, filepath.Join(root, "ENG-1"))
@@ -29,15 +30,15 @@ func TestEnsureWorkspaceCreatesDirectory(t *testing.T) {
 
 func TestEnsureWorkspaceReusesExisting(t *testing.T) {
 	mgr, root := testManager(t)
-	ws1, err := mgr.EnsureWorkspace("ENG-1")
+	ws1, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "")
 	require.NoError(t, err)
 	assert.True(t, ws1.CreatedNow)
 
 	// Write a sentinel file to verify directory is not wiped
 	sentinel := filepath.Join(ws1.Path, "sentinel.txt")
-	require.NoError(t, os.WriteFile(sentinel, []byte("data"), 0644))
+	require.NoError(t, os.WriteFile(sentinel, []byte("data"), 0o644))
 
-	ws2, err := mgr.EnsureWorkspace("ENG-1")
+	ws2, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "")
 	require.NoError(t, err)
 	assert.False(t, ws2.CreatedNow)
 	assert.Equal(t, ws1.Path, ws2.Path)
@@ -47,24 +48,24 @@ func TestEnsureWorkspaceReusesExisting(t *testing.T) {
 
 func TestEnsureWorkspaceSanitizesIdentifier(t *testing.T) {
 	mgr, root := testManager(t)
-	ws, err := mgr.EnsureWorkspace("ENG 1/foo")
+	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG 1/foo", "")
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(root, "ENG_1_foo"), ws.Path)
 }
 
 func TestRemoveWorkspaceDeletesDirectory(t *testing.T) {
 	mgr, _ := testManager(t)
-	ws, err := mgr.EnsureWorkspace("ENG-2")
+	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-2", "")
 	require.NoError(t, err)
 	require.DirExists(t, ws.Path)
 
-	err = mgr.RemoveWorkspace("ENG-2")
+	err = mgr.RemoveWorkspace("ENG-2", "")
 	require.NoError(t, err)
 	assert.NoDirExists(t, ws.Path)
 }
 
 func TestRemoveWorkspaceNonExistentIsNoOp(t *testing.T) {
 	mgr, _ := testManager(t)
-	err := mgr.RemoveWorkspace("nonexistent-issue")
+	err := mgr.RemoveWorkspace("nonexistent-issue", "")
 	assert.NoError(t, err)
 }

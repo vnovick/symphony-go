@@ -1,11 +1,16 @@
 import { useEffect } from 'react';
 import { useSymphonyStore } from '../store/symphonyStore';
+import { StateSnapshotSchema } from '../types/schemas';
 import type { StateSnapshot } from '../types/symphony';
+
+const SSE_RECONNECT_BASE_MS = 5_000;
+const SSE_RECONNECT_MAX_MS = 30_000;
 
 /**
  * Connects to /api/v1/events (SSE) and keeps the Zustand snapshot up to date.
  * Falls back to polling /api/v1/state every 3s when SSE fails, so the
  * dashboard always shows data even if EventSource is unavailable.
+ * Reconnects with exponential backoff (5s → 10s → 20s → 30s cap).
  * Mounts once at app level.
  */
 export function useSymphonySSE() {
@@ -18,6 +23,7 @@ export function useSymphonySSE() {
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     let cancelled = false;
     let sseWorking = false;
+    let reconnectAttempt = 0;
 
     // Fallback: poll /api/v1/state while SSE is not connected.
     async function poll() {
@@ -55,13 +61,14 @@ export function useSymphonySSE() {
 
       es.onopen = () => {
         sseWorking = true;
+        reconnectAttempt = 0; // reset backoff on successful connection
         setSseConnected(true);
         stopPoll();
       };
 
       es.onmessage = (e: MessageEvent<string>) => {
         try {
-          const snap: StateSnapshot = JSON.parse(e.data) as StateSnapshot;
+          const snap: StateSnapshot = StateSnapshotSchema.parse(JSON.parse(e.data));
           setSnapshot(snap);
           if (!sseWorking) {
             sseWorking = true;
@@ -80,7 +87,12 @@ export function useSymphonySSE() {
         es = null;
         startPoll(); // fall back to polling while SSE is down
         if (!cancelled) {
-          reconnectTimer = setTimeout(connect, 5000);
+          const delay = Math.min(
+            SSE_RECONNECT_BASE_MS * 2 ** reconnectAttempt,
+            SSE_RECONNECT_MAX_MS,
+          );
+          reconnectAttempt++;
+          reconnectTimer = setTimeout(connect, delay);
         }
       };
     }

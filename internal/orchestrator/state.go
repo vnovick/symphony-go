@@ -56,7 +56,7 @@ type RunEntry struct {
 	Issue          domain.Issue
 	SessionID      string
 	WorkerHost     string // SSH host used for this worker, empty = local
-	Backend        string // "claude" | "codex" | "" for unknown
+	Backend        string // e.g. "claude", "codex", or "" when unknown
 	Kind           string // "worker" (default) | "reviewer"
 	TerminalReason TerminalReason
 	LastEventAt    *time.Time // when last EventWorkerUpdate was received
@@ -85,6 +85,11 @@ type CompletedRun struct {
 	WorkerHost   string
 	Backend      string
 	SessionID    string
+	// ProjectKey scopes this run to a specific project so that a shared
+	// history file does not leak runs across projects. Format: "<kind>:<slug>".
+	// Empty string means "unscoped" (legacy entries written before this field
+	// was added); these are retained so existing history is not silently dropped.
+	ProjectKey string
 }
 
 // RetryEntry represents a scheduled retry for an issue.

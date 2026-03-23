@@ -47,20 +47,22 @@ type Orchestrator struct {
 	lastSnap   State
 	sshHostIdx int // round-robin index for SSH host selection; only accessed in event loop
 
-	// workersMu guards SetMaxWorkers/MaxWorkers, which may be called from any goroutine.
-	workersMu sync.Mutex
-
-	// cfgMu guards the cfg fields mutated at runtime from HTTP handler goroutines:
-	// cfg.Agent.AgentMode, cfg.Agent.Profiles, cfg.Tracker.ActiveStates,
-	// cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState.
+	// cfgMu guards cfg fields mutated at runtime from HTTP handler goroutines:
+	// cfg.Agent.AgentMode, cfg.Agent.MaxConcurrentAgents, cfg.Agent.Profiles,
+	// cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState,
+	// cfg.Workspace.AutoClearWorkspace.
 	// All other cfg fields are read-only after startup and need no lock.
 	cfgMu sync.RWMutex
 
-	// historyMu guards completedRuns, which is written by the event loop and read by RunHistory.
+	// historyMu guards completedRuns, historyFile, and historyKey only.
 	historyMu     sync.RWMutex
 	completedRuns []CompletedRun
 	historyFile   string // optional path for persisting completedRuns to disk
-	pausedFile    string // optional path for persisting PausedIdentifiers across restarts
+	historyKey    string // project key used to scope history entries; format "<kind>:<slug>"
+
+	// pausedMu guards pausedFile, which is an unrelated concern from history.
+	pausedMu   sync.RWMutex
+	pausedFile string // optional path for persisting PausedIdentifiers across restarts
 
 	// userCancelledMu guards userCancelledIDs, which is written by CancelIssue
 	// (any goroutine) and read by handleEvent (event loop goroutine).
@@ -121,9 +123,9 @@ func (o *Orchestrator) SetMaxWorkers(n int) {
 	if n > 50 {
 		n = 50
 	}
-	o.workersMu.Lock()
+	o.cfgMu.Lock()
 	o.cfg.Agent.MaxConcurrentAgents = n
-	o.workersMu.Unlock()
+	o.cfgMu.Unlock()
 	slog.Info("orchestrator: max workers updated", "max_concurrent_agents", n)
 	if o.OnStateChange != nil {
 		o.OnStateChange()
@@ -133,8 +135,8 @@ func (o *Orchestrator) SetMaxWorkers(n int) {
 // MaxWorkers returns the current maximum concurrent agents setting.
 // Safe to call from any goroutine.
 func (o *Orchestrator) MaxWorkers() int {
-	o.workersMu.Lock()
-	defer o.workersMu.Unlock()
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
 	return o.cfg.Agent.MaxConcurrentAgents
 }
 
@@ -152,6 +154,22 @@ func (o *Orchestrator) SetAgentModeCfg(mode string) {
 	o.cfgMu.Lock()
 	o.cfg.Agent.AgentMode = mode
 	o.cfgMu.Unlock()
+}
+
+// SetAutoClearWorkspaceCfg toggles automatic workspace removal after a task succeeds.
+// Safe to call from any goroutine.
+func (o *Orchestrator) SetAutoClearWorkspaceCfg(enabled bool) {
+	o.cfgMu.Lock()
+	o.cfg.Workspace.AutoClearWorkspace = enabled
+	o.cfgMu.Unlock()
+}
+
+// AutoClearWorkspaceCfg returns the current auto-clear workspace setting.
+// Safe to call from any goroutine.
+func (o *Orchestrator) AutoClearWorkspaceCfg() bool {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Workspace.AutoClearWorkspace
 }
 
 // ProfilesCfg returns a shallow copy of cfg.Agent.Profiles under cfgMu.
@@ -230,32 +248,69 @@ func (l *bufLogger) Warn(msg string, args ...any) {
 	}
 }
 
-func formatBufLine(level, msg string, args []any) string {
-	var sb strings.Builder
-	sb.WriteString(level)
-	sb.WriteString(" ")
-	sb.WriteString(msg)
-	for i := 0; i+1 < len(args); i += 2 {
-		sb.WriteString(" ")
-		fmt.Fprintf(&sb, "%v", args[i])
-		sb.WriteString("=")
-		// Quote string values that contain spaces so parsers can extract them correctly.
-		v := fmt.Sprintf("%v", args[i+1])
-		if strings.ContainsAny(v, " \t\n\"") {
-			fmt.Fprintf(&sb, "%q", v)
-		} else {
-			sb.WriteString(v)
-		}
-	}
-	// Append wall-clock timestamp so the web/TUI can display HH:MM:SS per entry.
-	sb.WriteString(" time=")
-	sb.WriteString(time.Now().Format("15:04:05"))
-	return sb.String()
+// bufLogEntry is the JSON-encoded log buffer entry written by formatBufLine
+// and parsed by parseLogLine in the server package. Using a stable JSON schema
+// prevents format breakage when slog output format or Go version changes.
+type bufLogEntry struct {
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
+	Time  string `json:"time"`
+	// Optional k-v attributes from the slog call.
+	Text        string `json:"text,omitempty"`
+	Tool        string `json:"tool,omitempty"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status,omitempty"`
+	ExitCode    string `json:"exit_code,omitempty"`
+	OutputSize  string `json:"output_size,omitempty"`
+	Task        string `json:"task,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Summary     string `json:"summary,omitempty"`
 }
 
-// makeBufLine builds a timestamped log buffer line for direct (non-slog) entries.
+// formatBufLine serialises a log buffer entry as a single JSON line.
+// The schema is stable and parseable without string scanning.
+func formatBufLine(level, msg string, args []any) string {
+	e := bufLogEntry{
+		Level: level,
+		Msg:   msg,
+		Time:  time.Now().Format("15:04:05"),
+	}
+	// Map well-known attribute keys into the struct; unknown keys are ignored.
+	for i := 0; i+1 < len(args); i += 2 {
+		key := fmt.Sprintf("%v", args[i])
+		val := fmt.Sprintf("%v", args[i+1])
+		switch key {
+		case "text":
+			e.Text = val
+		case "tool":
+			e.Tool = val
+		case "description":
+			e.Description = val
+		case "status":
+			e.Status = val
+		case "exit_code":
+			e.ExitCode = val
+		case "output_size":
+			e.OutputSize = val
+		case "task":
+			e.Task = val
+		case "url":
+			e.URL = val
+		case "summary":
+			e.Summary = val
+		}
+	}
+	b, err := json.Marshal(e)
+	if err != nil {
+		// Fallback: return a minimal JSON object so the parser always gets valid JSON.
+		return `{"level":"` + level + `","msg":"` + msg + `","time":"` + e.Time + `"}`
+	}
+	return string(b)
+}
+
+// makeBufLine builds a timestamped JSON log buffer line for direct (non-slog) entries.
 func makeBufLine(level, msg string) string {
-	return fmt.Sprintf("%s %s time=%s", level, msg, time.Now().Format("15:04:05"))
+	return formatBufLine(level, msg, nil)
 }
 
 // formatSessionComment builds a Markdown comment summarising the full agent session.
@@ -466,7 +521,8 @@ func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue
 	// Workspace: use the same workspace as the issue so the reviewer can read the PR branch.
 	wsPath := ""
 	if o.workspace != nil {
-		ws, err := o.workspace.EnsureWorkspace(issue.Identifier)
+		ws, err := o.workspace.EnsureWorkspace(ctx, issue.Identifier,
+			workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier))
 		if err != nil {
 			workerLog.Warn("reviewer: workspace setup failed", "error", err)
 			return
@@ -527,10 +583,35 @@ func (o *Orchestrator) GetRunningIssue(identifier string) *domain.Issue {
 
 // Snapshot returns a consistent copy of the current orchestrator state.
 // Safe to call from any goroutine.
+//
+// issueProfiles are stored in o.issueProfiles (written by SetIssueProfile from
+// any goroutine) rather than in the event-loop State, so they are not
+// automatically included in lastSnap. We overlay them here so callers — in
+// particular fetchIssues in main.go — see the live assignments without waiting
+// for the next event-loop tick to rebuild the snapshot.
 func (o *Orchestrator) Snapshot() State {
 	o.snapMu.RLock()
-	defer o.snapMu.RUnlock()
-	return o.lastSnap
+	snap := o.lastSnap
+	o.snapMu.RUnlock()
+
+	o.issueProfilesMu.Lock()
+	if len(o.issueProfiles) > 0 {
+		merged := make(map[string]string, len(snap.IssueProfiles)+len(o.issueProfiles))
+		for k, v := range snap.IssueProfiles {
+			merged[k] = v
+		}
+		for k, v := range o.issueProfiles {
+			if v == "" {
+				delete(merged, k)
+			} else {
+				merged[k] = v
+			}
+		}
+		snap.IssueProfiles = merged
+	}
+	o.issueProfilesMu.Unlock()
+
+	return snap
 }
 
 const maxHistory = 200
@@ -540,6 +621,16 @@ const maxHistory = 200
 func (o *Orchestrator) SetHistoryFile(path string) {
 	o.historyMu.Lock()
 	o.historyFile = path
+	o.historyMu.Unlock()
+}
+
+// SetHistoryKey sets the project-scoping key used to tag and filter history entries.
+// Format: "<tracker-kind>:<project-slug>" (e.g. "github:org/repo").
+// Entries written with a different (non-empty) key are skipped on load.
+// Must be called before Run.
+func (o *Orchestrator) SetHistoryKey(key string) {
+	o.historyMu.Lock()
+	o.historyKey = key
 	o.historyMu.Unlock()
 }
 
@@ -563,25 +654,47 @@ func (o *Orchestrator) loadHistoryFromDisk() {
 		slog.Warn("orchestrator: failed to parse history file", "path", o.historyFile, "error", err)
 		return
 	}
+	// Filter to only this project's runs. Legacy entries (empty ProjectKey) are
+	// kept so that history written before scoping was added is not dropped.
+	if o.historyKey != "" {
+		filtered := runs[:0]
+		for _, r := range runs {
+			if r.ProjectKey == "" || r.ProjectKey == o.historyKey {
+				filtered = append(filtered, r)
+			}
+		}
+		runs = filtered
+	}
 	o.completedRuns = runs
 	slog.Info("orchestrator: loaded history", "path", o.historyFile, "entries", len(runs))
 }
 
 // addCompletedRun appends a finished run to the in-memory history ring buffer
 // and persists the ring buffer to disk when a history file is configured.
-// Safe to call from any goroutine.
+//
+// INVARIANT: must only be called from the single event-loop goroutine (onTick
+// and its callees). The event loop is the sole writer of completedRuns; the
+// historyMu lock exists only to synchronise concurrent readers such as the SSE
+// and REST handlers. historyMu is released before the disk write so those
+// readers are never blocked by I/O.
 func (o *Orchestrator) addCompletedRun(run CompletedRun) {
 	o.historyMu.Lock()
-	defer o.historyMu.Unlock()
 	o.completedRuns = append(o.completedRuns, run)
 	if len(o.completedRuns) > maxHistory {
 		o.completedRuns = o.completedRuns[len(o.completedRuns)-maxHistory:]
 	}
-	if o.historyFile != "" {
-		data, err := json.Marshal(o.completedRuns)
+	// Snapshot the slice and the path while holding the lock, then release
+	// before performing disk I/O so concurrent readers are not blocked.
+	path := o.historyFile
+	snapshot := make([]CompletedRun, len(o.completedRuns))
+	copy(snapshot, o.completedRuns)
+	o.historyMu.Unlock()
+
+	if path != "" {
+		data, err := json.Marshal(snapshot)
 		if err == nil {
-			if err := os.WriteFile(o.historyFile, data, 0644); err != nil {
-				slog.Warn("orchestrator: failed to write history file", "path", o.historyFile, "error", err)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				slog.Warn("orchestrator: failed to write history file", "path", path, "error", err)
 			}
 		}
 	}
@@ -590,9 +703,9 @@ func (o *Orchestrator) addCompletedRun(run CompletedRun) {
 // SetPausedFile sets the path for persisting PausedIdentifiers across restarts.
 // Must be called before Run.
 func (o *Orchestrator) SetPausedFile(path string) {
-	o.historyMu.Lock()
+	o.pausedMu.Lock()
 	o.pausedFile = path
-	o.historyMu.Unlock()
+	o.pausedMu.Unlock()
 }
 
 // loadPausedFromDisk reads the paused file and pre-populates state.PausedIdentifiers.
@@ -600,9 +713,9 @@ func (o *Orchestrator) SetPausedFile(path string) {
 // Supports both the new format (map[identifier]issueID) and the legacy format
 // ([]string of identifiers), storing an empty UUID for legacy entries.
 func (o *Orchestrator) loadPausedFromDisk(state State) State {
-	o.historyMu.RLock()
+	o.pausedMu.RLock()
 	path := o.pausedFile
-	o.historyMu.RUnlock()
+	o.pausedMu.RUnlock()
 	if path == "" {
 		return state
 	}
@@ -695,15 +808,15 @@ func (o *Orchestrator) cancelRunningWorker(identifier string, cleanupFn func()) 
 // savePausedToDisk writes PausedIdentifiers to disk in the new map format
 // {"identifier": "issueUUID"}. Must NOT be called with snapMu held.
 func (o *Orchestrator) savePausedToDisk(paused map[string]string) {
-	o.historyMu.RLock()
+	o.pausedMu.RLock()
 	path := o.pausedFile
-	o.historyMu.RUnlock()
+	o.pausedMu.RUnlock()
 	if path == "" {
 		return
 	}
 	data, err := json.Marshal(paused)
 	if err == nil {
-		if err := os.WriteFile(path, data, 0644); err != nil {
+		if err := os.WriteFile(path, data, 0o644); err != nil {
 			slog.Warn("orchestrator: failed to write paused file", "path", path, "error", err)
 		}
 	}
@@ -775,6 +888,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	now := time.Now()
+
+	// Snapshot runtime-mutable cfg fields into the event-loop State so that
+	// AvailableSlots and dispatch helpers read a stable, lock-free copy for
+	// the entire tick (no need to hold cfgMu inside the hot dispatch path).
+	o.cfgMu.RLock()
+	state.MaxConcurrentAgents = o.cfg.Agent.MaxConcurrentAgents
+	o.cfgMu.RUnlock()
 
 	// 1. Fire any retries whose DueAt has passed.
 	state = o.fireRetries(ctx, state, now)
@@ -942,7 +1062,16 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	}
 
 	// Resolve agent command: check for a per-issue profile override first.
+	o.cfgMu.RLock()
 	agentCommand := o.cfg.Agent.Command
+	defaultBackend := o.cfg.Agent.Backend
+	o.cfgMu.RUnlock()
+	runnerCommand := agentCommand
+	backend := agent.BackendFromCommand(agentCommand)
+	if defaultBackend != "" {
+		backend = defaultBackend
+		runnerCommand = agent.CommandWithBackendHint(agentCommand, defaultBackend)
+	}
 	o.issueProfilesMu.Lock()
 	profileName := o.issueProfiles[issue.Identifier]
 	o.issueProfilesMu.Unlock()
@@ -952,8 +1081,14 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		o.cfgMu.RUnlock()
 		if ok && profile.Command != "" {
 			agentCommand = profile.Command
+			runnerCommand = agentCommand
+			backend = agent.BackendFromCommand(agentCommand)
+			if profile.Backend != "" {
+				backend = profile.Backend
+				runnerCommand = agent.CommandWithBackendHint(agentCommand, profile.Backend)
+			}
 			slog.Info("orchestrator: using profile command",
-				"identifier", issue.Identifier, "profile", profileName, "command", agentCommand)
+				"identifier", issue.Identifier, "profile", profileName, "command", agentCommand, "backend", backend)
 		} else {
 			slog.Warn("orchestrator: profile not found or has no command, using default",
 				"identifier", issue.Identifier, "profile", profileName)
@@ -964,7 +1099,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		workerCancel()
 		slog.Info("orchestrator: [DRY-RUN] would dispatch agent",
 			"identifier", issue.Identifier, "issue_id", issue.ID,
-			"command", agentCommand, "worker_host", workerHost)
+			"command", agentCommand, "worker_host", workerHost, "backend", backend)
 		state.Claimed[issue.ID] = struct{}{} // claim so it doesn't re-dispatch this tick
 		return state
 	}
@@ -973,7 +1108,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	state.Running[issue.ID] = &RunEntry{
 		Issue:        issue,
 		WorkerHost:   workerHost,
-		Backend:      "claude",
+		Backend:      backend,
 		StartedAt:    time.Now(),
 		RetryAttempt: &attempt,
 		WorkerCancel: workerCancel,
@@ -983,7 +1118,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		o.OnDispatch(issue.ID)
 	}
 
-	go o.runWorker(workerCtx, issue, attempt, workerHost, agentCommand, profileName, skipPRCheck)
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck)
 	return state
 }
 
@@ -1013,10 +1148,12 @@ func (o *Orchestrator) transitionToWorking(ctx context.Context, issue domain.Iss
 // workerHost is the SSH host to run the agent on; empty string means run locally.
 // agentCommand is the resolved agent command to run (may differ from cfg.Agent.Command
 // when a per-issue profile override is active).
+// backend is the resolved runner backend for this worker after applying any
+// explicit backend overrides.
 // profileName is the active named profile for this issue (may be ""); used to
 // exclude the current agent from its own sub-agent context in teams mode.
 // skipPRCheck bypasses the open-PR guard (used when a forced re-analysis is requested).
-func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, profileName string, skipPRCheck bool) {
+func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("worker panic: %v", r)
@@ -1030,8 +1167,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}()
 	// --- Workspace ---
 	wsPath := ""
+	branchName := workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
 	if o.workspace != nil {
-		ws, err := o.workspace.EnsureWorkspace(issue.Identifier)
+		ws, err := o.workspace.EnsureWorkspace(ctx, issue.Identifier, branchName)
 		if err != nil {
 			slog.Warn("worker: workspace setup failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
@@ -1051,7 +1189,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				if o.logBuf != nil {
 					o.logBuf.Add(issue.Identifier, makeBufLine("ERROR", fmt.Sprintf("worker: after_create hook failed: %v", err)))
 				}
-				_ = o.workspace.RemoveWorkspace(issue.Identifier)
+				_ = o.workspace.RemoveWorkspace(issue.Identifier, "")
 				o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 				return
 			}
@@ -1103,6 +1241,18 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// Transition issue to working state (e.g. Todo → In Progress).
 	o.transitionToWorking(ctx, issue)
 
+	// Log the backend being used for this worker.
+	displayBackend := backend
+	if displayBackend == "" {
+		displayBackend = "claude"
+	}
+	slog.Info("worker: starting",
+		"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+		"attempt", attempt, "backend", displayBackend, "profile", profileName)
+	if o.logBuf != nil {
+		o.logBuf.Add(issue.Identifier, makeBufLine("INFO", fmt.Sprintf("worker: starting (backend=%s)", displayBackend)))
+	}
+
 	// --- Multi-turn loop ---
 	// before_run hook runs once per worker invocation (not per turn), so that
 	// hooks like "git reset --hard origin/main" set up a clean workspace for the
@@ -1127,7 +1277,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	//   2. (here):    git checkout <feature-branch>   ← agent continues from here
 	// On a fresh dispatch the branch typically doesn't exist yet — the checkout
 	// fails silently and the agent creates it during its first turn.
-	if wsPath != "" && issue.BranchName != nil && *issue.BranchName != "" {
+	// In worktree mode the branch is already checked out by EnsureWorkspace.
+	// CheckoutBranch is only needed in legacy directory mode.
+	o.cfgMu.RLock()
+	worktreeMode := o.cfg.Workspace.Worktree
+	o.cfgMu.RUnlock()
+	if wsPath != "" && !worktreeMode && issue.BranchName != nil && *issue.BranchName != "" {
 		if b := *issue.BranchName; !isDefaultBranch(b) {
 			if err := workspace.CheckoutBranch(ctx, wsPath, b); err != nil {
 				slog.Warn("worker: branch checkout failed, agent will start from current branch",
@@ -1142,6 +1297,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	var sessionID *string
 	var allTextBlocks []string // accumulate all Claude text blocks for the final tracker comment
+	var cumulativeInput, cumulativeOutput int // accumulate tokens across turns for dashboard display
 	for turn := 1; turn <= o.cfg.Agent.MaxTurns; turn++ {
 		// Enrich issue with comments before rendering the first-turn prompt.
 		if turn == 1 {
@@ -1166,7 +1322,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if o.logBuf != nil {
 				o.logBuf.Add(issue.Identifier, makeBufLine("ERROR", fmt.Sprintf("worker: prompt render failed: %v", err)))
 			}
-			o.runAfterHook(ctx, wsPath, issue.ID)
+			o.runAfterHook(ctx, wsPath, issue.ID, issue.Identifier)
 			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 			return
 		}
@@ -1188,10 +1344,10 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				renderedPrompt += "\n\n" + profile.Prompt
 			}
 		}
-		// In teams mode, also append sub-agent roster context so Claude knows which
-		// specialised agents it can spawn via the Task tool.
+		// In teams mode, also append sub-agent roster context so the active backend
+		// knows which specialised agents it can spawn via its delegation tool.
 		if agentMode == "teams" {
-			if subCtx := buildSubAgentContext(profilesSnap, profileName); subCtx != "" {
+			if subCtx := buildSubAgentContext(profilesSnap, profileName, backend); subCtx != "" {
 				renderedPrompt += "\n\n" + subCtx
 			}
 		}
@@ -1212,9 +1368,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				IssueID: issue.ID,
 				RunEntry: &RunEntry{
 					TurnCount:    turn,
-					TotalTokens:  partial.TotalTokens,
-					InputTokens:  partial.InputTokens,
-					OutputTokens: partial.OutputTokens,
+					TotalTokens:  cumulativeInput + cumulativeOutput + partial.TotalTokens,
+					InputTokens:  cumulativeInput + partial.InputTokens,
+					OutputTokens: cumulativeOutput + partial.OutputTokens,
 					SessionID:    partial.SessionID,
 					LastMessage:  partial.LastText,
 				},
@@ -1235,7 +1391,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		allTextBlocks = append(allTextBlocks, result.AllTextBlocks...)
 
 		// after_run hook (best-effort, logged and ignored)
-		o.runAfterHook(ctx, wsPath, issue.ID)
+		o.runAfterHook(ctx, wsPath, issue.ID, issue.Identifier)
 
 		// Track the current git branch after each turn so retried workers can
 		// resume from the same branch. Only fires when the agent has switched to
@@ -1304,6 +1460,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			o.logBuf.Add(issue.Identifier, formatBufLine("INFO", "worker: turn_summary", []any{"summary", summary}))
 		}
 
+		// Accumulate tokens from this turn before the end-of-turn update so the
+		// dashboard always shows the true running total, not just the per-turn count.
+		cumulativeInput += result.InputTokens
+		cumulativeOutput += result.OutputTokens
+
 		// Send non-blocking progress update so the dashboard shows live turn/token data.
 		select {
 		case o.events <- OrchestratorEvent{
@@ -1312,9 +1473,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			RunEntry: &RunEntry{
 				TurnCount:    turn,
 				LastMessage:  result.ResultText,
-				TotalTokens:  result.TotalTokens,
-				InputTokens:  result.InputTokens,
-				OutputTokens: result.OutputTokens,
+				TotalTokens:  cumulativeInput + cumulativeOutput,
+				InputTokens:  cumulativeInput,
+				OutputTokens: cumulativeOutput,
 				SessionID: func() string {
 					if sessionID != nil {
 						return *sessionID
@@ -1457,11 +1618,11 @@ func (o *Orchestrator) hookLogFn(identifier string) func(string) {
 	}
 }
 
-func (o *Orchestrator) runAfterHook(ctx context.Context, wsPath, issueID string) {
+func (o *Orchestrator) runAfterHook(ctx context.Context, wsPath, issueID, identifier string) {
 	if wsPath == "" {
 		return
 	}
-	if err := workspace.RunHook(ctx, o.cfg.Hooks.AfterRun, wsPath, o.cfg.Hooks.TimeoutMs); err != nil {
+	if err := workspace.RunHook(ctx, o.cfg.Hooks.AfterRun, wsPath, o.cfg.Hooks.TimeoutMs, o.hookLogFn(identifier)); err != nil {
 		slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issueID, "error", err)
 	}
 }
@@ -1488,9 +1649,14 @@ func (o *Orchestrator) sendExit(ctx context.Context, issue domain.Issue, attempt
 		sendCtx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 	}
+	// Nil-receive channel blocks forever — safe fallback when Run hasn't started.
+	var orchDone <-chan struct{}
+	if p := o.runCtx.Load(); p != nil {
+		orchDone = (*p).Done()
+	}
 	select {
 	case o.events <- ev:
-	case <-(*o.runCtx.Load()).Done():
+	case <-orchDone:
 		slog.Warn("worker: exit event dropped (orchestrator exited)",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
 	case <-sendCtx.Done():
@@ -1584,10 +1750,14 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 								"identifier", identifier, "state", targetState)
 						}
 						// Signal that the label update is complete (success or failure) so
-						// DiscardingIdentifiers can be cleared.
+						// DiscardingIdentifiers can be cleared. Use a blocking send with the
+						// existing context rather than fire-and-forget: dropping this event
+						// leaves the identifier permanently stuck in DiscardingIdentifiers.
 						select {
 						case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier}:
-						default:
+						case <-ctx.Done():
+							slog.Warn("orchestrator: discard complete event lost, identifier may be stuck",
+								"identifier", identifier)
 						}
 					}()
 				}
@@ -1689,6 +1859,27 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 			slog.Info("orchestrator: worker succeeded, claim released",
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "succeeded")
+			// Auto-clear workspace if configured — removes the cloned directory
+			// but leaves logs intact (they live under the logs dir, not here).
+			o.cfgMu.RLock()
+			autoClear := o.cfg.Workspace.AutoClearWorkspace
+			o.cfgMu.RUnlock()
+			if autoClear && o.workspace != nil {
+				// Run in a goroutine — os.RemoveAll can be slow on large workspaces
+				// and must not block the event loop (which would stall all workers).
+				wm := o.workspace
+				id := issue.Identifier
+				bn := workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
+				go func() {
+					if err := wm.RemoveWorkspace(id, bn); err != nil {
+						slog.Warn("orchestrator: auto-clear workspace failed",
+							"identifier", id, "error", err)
+					} else {
+						slog.Info("orchestrator: workspace auto-cleared",
+							"identifier", id)
+					}
+				}()
+			}
 
 		default: // TerminalFailed, TerminalTimedOut
 			// context.Canceled means the worker was stopped by the orchestrator
@@ -1719,11 +1910,15 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 // recordHistory appends a completed run to the history ring buffer.
 // liveEntry may be nil if the worker exited before the first update.
 func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, finishedAt time.Time, status string) {
+	o.historyMu.RLock()
+	key := o.historyKey
+	o.historyMu.RUnlock()
 	run := CompletedRun{
 		Identifier: issue.Identifier,
 		Title:      issue.Title,
 		FinishedAt: finishedAt,
 		Status:     status,
+		ProjectKey: key,
 	}
 	if liveEntry != nil {
 		run.StartedAt = liveEntry.StartedAt
@@ -1745,13 +1940,19 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 // appended to the rendered prompt when agent teams mode is active.
 // activeProfile is excluded from the list so the agent doesn't try to spawn itself.
 // Returns an empty string when there are no other profiles to list.
-func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile string) string {
+func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile string, backend string) string {
 	if len(profiles) == 0 {
 		return ""
 	}
+	toolName := "Task"
+	if backend == "codex" {
+		toolName = "spawn_agent"
+	}
 	var b strings.Builder
 	b.WriteString("## Available Sub-Agents\n\n")
-	b.WriteString("You can spawn the following specialised sub-agents using the Task tool:\n\n")
+	b.WriteString("You can spawn the following specialised sub-agents using the ")
+	b.WriteString(toolName)
+	b.WriteString(" tool:\n\n")
 	for name, p := range profiles {
 		if name == activeProfile {
 			continue
@@ -1762,7 +1963,9 @@ func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile
 			b.WriteString("- **" + name + "**\n")
 		}
 	}
-	b.WriteString("\nUse the Task tool with the sub-agent description when you need specialised help.")
+	b.WriteString("\nUse the ")
+	b.WriteString(toolName)
+	b.WriteString(" tool with the sub-agent description when you need specialised help.")
 	return b.String()
 }
 

@@ -48,7 +48,7 @@ export default function RateLimitBar() {
   const hasComplexity = (rateLimits.complexityLimit ?? 0) > 0;
   if (!hasRequests && !hasComplexity) return null;
 
-  const resetLabel = fmtReset(rateLimits.requestsReset);
+  const resetLabel = fmtReset(rateLimits.requestsReset ?? null);
 
   return (
     <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">

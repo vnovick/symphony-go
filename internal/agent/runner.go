@@ -2,7 +2,7 @@ package agent
 
 import "context"
 
-// Event type constants emitted by a claude stream-json session.
+// Event type constants emitted by a supported agent CLI stream.
 const (
 	EventSystem    = "system"
 	EventAssistant = "assistant"
@@ -11,10 +11,11 @@ const (
 
 // TurnResult holds the outcome of a single agent subprocess turn.
 type TurnResult struct {
-	SessionID     string
-	InputTokens   int
-	OutputTokens  int
-	TotalTokens   int
+	SessionID         string
+	InputTokens       int
+	CachedInputTokens int
+	OutputTokens      int
+	TotalTokens       int
 	LastText      string   // most recent assistant text block
 	AllTextBlocks []string // all assistant text blocks across the turn, for tracker comments
 	Failed        bool
@@ -31,7 +32,7 @@ type Logger interface {
 }
 
 // Runner is the interface for executing a single agent turn.
-// The real implementation spawns a claude subprocess; FakeRunner is used in tests.
+// Real implementations spawn an agent subprocess; FakeRunner is used in tests.
 // log should be pre-seeded with issue context (e.g. issue_identifier) so that
 // Claude's live output appears in the log stream with filterable attributes.
 // workerHost: if non-empty, the command is executed on that SSH host.
@@ -49,7 +50,13 @@ func ApplyEvent(r TurnResult, ev StreamEvent) TurnResult {
 			r.SessionID = ev.SessionID
 		}
 	case EventAssistant:
+		// InProgress events (item.started) carry no token counts or text; skip
+		// accumulation to avoid polluting AllTextBlocks if the parser ever adds text.
+		if ev.InProgress {
+			break
+		}
 		r.InputTokens += ev.Usage.InputTokens
+		r.CachedInputTokens += ev.Usage.CachedInputTokens
 		r.OutputTokens += ev.Usage.OutputTokens
 		r.TotalTokens = r.InputTokens + r.OutputTokens
 		if len(ev.TextBlocks) > 0 {
@@ -57,6 +64,10 @@ func ApplyEvent(r TurnResult, ev StreamEvent) TurnResult {
 			r.AllTextBlocks = append(r.AllTextBlocks, ev.TextBlocks...)
 		}
 	case EventResult:
+		r.InputTokens += ev.Usage.InputTokens
+		r.CachedInputTokens += ev.Usage.CachedInputTokens
+		r.OutputTokens += ev.Usage.OutputTokens
+		r.TotalTokens = r.InputTokens + r.OutputTokens
 		if ev.SessionID != "" {
 			r.SessionID = ev.SessionID
 		}

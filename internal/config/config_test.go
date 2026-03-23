@@ -13,7 +13,7 @@ import (
 func workflowWithContent(t *testing.T, content string) string {
 	t.Helper()
 	f := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(f, []byte(content), 0644))
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
 	return f
 }
 
@@ -130,4 +130,48 @@ func TestPromptTemplate(t *testing.T) {
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	assert.Equal(t, "Prompt.", cfg.PromptTemplate)
+}
+
+func TestAgentProfileBackendField(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    codex-fast:
+      command: codex --model o4-mini
+      backend: codex
+    inferred:
+      command: codex --model o3
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Agent.Profiles)
+	assert.Equal(t, "codex", cfg.Agent.Profiles["codex-fast"].Backend)
+	assert.Equal(t, "", cfg.Agent.Profiles["inferred"].Backend)
+}
+
+func TestAgentBackendField(t *testing.T) {
+	content := minimal(`agent:
+  command: run-codex-wrapper
+  backend: codex
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "run-codex-wrapper", cfg.Agent.Command)
+	assert.Equal(t, "codex", cfg.Agent.Backend)
+}
+
+func TestWorktreeDefaultsFalse(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.False(t, cfg.Workspace.Worktree)
+}
+
+func TestWorktreeParsedTrue(t *testing.T) {
+	content := minimal("workspace:\n  worktree: true\n")
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.True(t, cfg.Workspace.Worktree)
 }

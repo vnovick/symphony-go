@@ -16,7 +16,7 @@ import (
 func TestWatcherTriggersOnChange(t *testing.T) {
 	dir := t.TempDir()
 	wfPath := filepath.Join(dir, "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(wfPath, []byte("---\n---\nBody.\n"), 0644))
+	require.NoError(t, os.WriteFile(wfPath, []byte("---\n---\nBody.\n"), 0o644))
 
 	var called atomic.Int32
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -32,7 +32,7 @@ func TestWatcherTriggersOnChange(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Trigger a change
-	require.NoError(t, os.WriteFile(wfPath, []byte("---\n---\nUpdated.\n"), 0644))
+	require.NoError(t, os.WriteFile(wfPath, []byte("---\n---\nUpdated.\n"), 0o644))
 
 	assert.Eventually(t, func() bool {
 		return called.Load() > 0

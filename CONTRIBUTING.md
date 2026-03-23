@@ -8,7 +8,7 @@ Thank you for your interest in contributing. This document covers how to get the
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.25.8
 - `git`
 - [Lefthook](https://github.com/evilmartians/lefthook) (`brew install lefthook` or `go install github.com/evilmartians/lefthook@latest`)
 - [Claude Code CLI](https://claude.ai/code) (only needed for end-to-end manual testing)
@@ -67,6 +67,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to localhost:8090
 | `make test` | `go test -race ./... -count=1` |
 | `make coverage` | Run tests with coverage, output `coverage.html` |
 | `make benchmark` | `go test -bench=. -benchmem ./...` |
+| `make tui-golden` | Regenerate catwalk golden files after an intentional TUI render change |
 | `make fmt` | `gofmt -l -w .` |
 | `make vet` | `go vet ./...` |
 | `make lint-go` | `golangci-lint run ./...` |
@@ -99,6 +100,10 @@ symphony-go/
 ├── testdata/workflows/   # WORKFLOW.md fixtures used by config/workflow tests
 └── docs/                 # Design spec and implementation plan
 ```
+
+### Protocol specification
+
+The agent communication protocol is defined in the [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md). Refer to it when adding new agent backends or modifying the event stream format.
 
 ### Package dependency order
 
@@ -177,7 +182,55 @@ go test -race ./...
 go test -v ./internal/orchestrator/...
 ```
 
-### Frontend tests
+### TUI tests (`internal/statusui`)
+
+The status UI package uses two complementary testing strategies:
+
+#### Pure-function and model-state tests
+
+Unit tests in `model_test.go` (whitebox, same package) cover pure helper functions with no I/O — `wrapText`, `fmtDuration`, `fmtCount`, `truncate`, `extractPRLink`, `buildNavItems`, etc.
+
+Interactive model-state tests in `model_teatest_test.go` use [`charmbracelet/x/exp/teatest`](https://pkg.go.dev/github.com/charmbracelet/x/exp/teatest) to drive the full `Update→View` pipeline: inject `tea.Msg` objects, then assert on the returned model struct:
+
+```go
+tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 24))
+tm.Send(tickMsg(time.Now()))
+tm.Quit()
+final := tm.FinalModel(t, teatest.WithFinalTimeout(2*time.Second)).(Model)
+assert.Len(t, final.sessions, 1)
+```
+
+#### Golden-file tests (catwalk)
+
+Render-path tests in `model_catwalk_test.go` use [`knz/catwalk`](https://github.com/knz/catwalk) — a data-driven framework that records `View()` output into golden files under `internal/statusui/testdata/`. Each test file contains an input sequence (key events, resizes, custom messages) followed by the expected rendered output:
+
+```
+# Press 't' to activate the tool-call statistics view.
+run
+key t
+----
+-- view:
+╔═[ SYM//PHONY ]═══...
+║ AGENTS ▸ 0/5   ...
+...
+```
+
+**When to regenerate golden files:** if you change the TUI layout or any render function, the catwalk tests will fail on `git push` (they run in the `pre-push` hook). Regenerate them with:
+
+```bash
+go test ./internal/statusui/... -args -rewrite
+```
+
+Then review the diff in `testdata/catwalk_*` — the diff is the exact render change — and commit alongside your code change.
+
+**Custom updater commands** available in catwalk test files:
+
+| Command | Effect |
+|---|---|
+| `tick` | Fires a `tickMsg`, syncing the snap function into the model |
+| `picker-loaded` | Opens the project picker with two test projects (Alpha, Beta) |
+
+#### Frontend tests
 
 ```bash
 cd web

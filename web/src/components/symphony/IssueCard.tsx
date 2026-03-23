@@ -5,11 +5,21 @@ interface CardProps {
   issue: TrackerIssue;
   isDragging?: boolean;
   onSelect: (id: string) => void;
+  availableProfiles?: string[];
+  onProfileChange?: (identifier: string, profile: string) => void;
 }
 
-export default function IssueCard({ issue, isDragging, onSelect }: CardProps) {
+export default function IssueCard({
+  issue,
+  isDragging,
+  onSelect,
+  availableProfiles,
+  onProfileChange,
+}: CardProps) {
   const priorityDot = priorityDotClass(issue.priority);
   const orchDot = orchDotClass(issue.orchestratorState);
+  const showProfileSelector = availableProfiles && availableProfiles.length > 0 && onProfileChange;
+
   return (
     <div
       onClick={() => {
@@ -54,10 +64,33 @@ export default function IssueCard({ issue, isDragging, onSelect }: CardProps) {
       <p className="line-clamp-2 text-xs leading-relaxed text-gray-700 dark:text-gray-300">
         {issue.title}
       </p>
-      {issue.elapsedMs > 0 && (
+      {(issue.elapsedMs ?? 0) > 0 && (
         <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
-          ⏱ {fmtMs(issue.elapsedMs)}
+          ⏱ {fmtMs(issue.elapsedMs ?? 0)}
         </p>
+      )}
+      {showProfileSelector && (
+        <div
+          className="mt-2 border-t border-gray-100 pt-1.5 dark:border-gray-800"
+          onClick={(e) => {
+            e.stopPropagation();
+          }}
+        >
+          <select
+            value={issue.agentProfile ?? ''}
+            onChange={(e) => {
+              onProfileChange(issue.identifier, e.target.value);
+            }}
+            className="w-full rounded border border-gray-200 bg-transparent px-1.5 py-0.5 text-[10px] text-gray-500 focus:outline-none dark:border-gray-700 dark:bg-transparent dark:text-gray-400"
+          >
+            <option value="">◈ No agent</option>
+            {availableProfiles.map((p) => (
+              <option key={p} value={p}>
+                ◈ {p}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
     </div>
   );

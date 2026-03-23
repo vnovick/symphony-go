@@ -85,6 +85,45 @@ func TestNoDiskPersistenceWhenLogDirNotSet(t *testing.T) {
 	assert.Equal(t, []string{"in memory only"}, buf.Get("ENG-4"))
 }
 
+func TestClearDeletesMemoryAndDisk(t *testing.T) {
+	dir := t.TempDir()
+	buf := logbuffer.New()
+	buf.SetLogDir(dir)
+	buf.Add("ENG-5", "to be cleared")
+
+	// Verify disk file exists.
+	diskPath := filepath.Join(dir, "ENG-5.log")
+	_, err := os.Stat(diskPath)
+	require.NoError(t, err)
+
+	err = buf.Clear("ENG-5")
+	require.NoError(t, err)
+
+	// Memory gone.
+	assert.Nil(t, buf.Get("ENG-5"))
+
+	// Disk file gone.
+	_, err = os.Stat(diskPath)
+	assert.True(t, os.IsNotExist(err), "disk file should be deleted after Clear")
+}
+
+func TestClearNonExistentIsOK(t *testing.T) {
+	dir := t.TempDir()
+	buf := logbuffer.New()
+	buf.SetLogDir(dir)
+	// Clearing an identifier that was never added should not error.
+	err := buf.Clear("NEVER-ADDED")
+	require.NoError(t, err)
+}
+
+func TestClearWithoutLogDirOnlyClearsMemory(t *testing.T) {
+	buf := logbuffer.New() // no SetLogDir
+	buf.Add("ENG-6", "in memory only")
+	err := buf.Clear("ENG-6")
+	require.NoError(t, err)
+	assert.Nil(t, buf.Get("ENG-6"))
+}
+
 func BenchmarkLogBuffer_Add(b *testing.B) {
 	buf := logbuffer.New()
 	b.ReportAllocs()

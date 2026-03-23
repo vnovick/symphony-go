@@ -18,6 +18,7 @@ agent:
   turn_timeout_ms: 3600000
   read_timeout_ms: 120000
   stall_timeout_ms: 300000
+  # backend: codex                  # optional when command is a wrapper script
 
 workspace:
   root: ~/.symphony/workspaces/my-project

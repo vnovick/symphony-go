@@ -149,6 +149,19 @@ func (m *MemoryTracker) FetchIssueDetail(_ context.Context, issueID string) (*do
 	return nil, fmt.Errorf("issue %s not found", issueID)
 }
 
+// FetchIssueByIdentifier returns the issue matching the human-readable identifier.
+func (m *MemoryTracker) FetchIssueByIdentifier(_ context.Context, identifier string) (*domain.Issue, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, issue := range m.issues {
+		if issue.Identifier == identifier {
+			cp := issue
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("issue %s not found", identifier)
+}
+
 func (m *MemoryTracker) isActive(state string) bool {
 	lower := strings.ToLower(state)
 	for _, s := range m.activeStates {
