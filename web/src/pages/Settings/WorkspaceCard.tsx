@@ -19,11 +19,19 @@ export function WorkspaceCard({ autoClearWorkspace, onToggle }: WorkspaceCardPro
   };
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-      <div className="border-b border-gray-100 bg-gray-50 px-6 py-4 dark:border-gray-800 dark:bg-gray-900/40">
-        <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Workspace</h2>
+    <div
+      className="overflow-hidden rounded-[var(--radius-md)]"
+      style={{ border: '1px solid var(--line)', background: 'var(--bg-elevated)' }}
+    >
+      <div
+        className="border-b px-5 py-4"
+        style={{ borderColor: 'var(--line)', background: 'var(--panel-strong)' }}
+      >
+        <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+          Workspace
+        </h2>
       </div>
-      <div className="px-6 py-5">
+      <div className="px-5 py-5">
         <label className="flex cursor-pointer items-start gap-4">
           <div className="relative mt-0.5 flex-shrink-0">
             <input
@@ -37,9 +45,8 @@ export function WorkspaceCard({ autoClearWorkspace, onToggle }: WorkspaceCardPro
             />
             <div
               aria-hidden="true"
-              className={`h-5 w-9 rounded-full transition-colors ${
-                autoClearWorkspace ? 'bg-brand-500' : 'bg-gray-200 dark:bg-gray-700'
-              }`}
+              className="h-5 w-9 rounded-full transition-colors"
+              style={{ background: autoClearWorkspace ? 'var(--accent)' : 'var(--bg-soft)' }}
             />
             <div
               aria-hidden="true"
@@ -49,15 +56,15 @@ export function WorkspaceCard({ autoClearWorkspace, onToggle }: WorkspaceCardPro
             />
           </div>
           <div>
-            <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+            <span className="block text-sm font-medium" style={{ color: 'var(--text)' }}>
               Auto-clear workspace on success
             </span>
-            <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+            <span className="mt-0.5 block text-xs" style={{ color: 'var(--text-secondary)' }}>
               When a task completes successfully (reaches the completion state), automatically
               delete the cloned workspace directory. Logs are always kept for visibility.
             </span>
             {error && (
-              <span role="alert" className="mt-1 block text-xs text-red-500 dark:text-red-400">
+              <span role="alert" className="mt-1 block text-xs" style={{ color: 'var(--danger)' }}>
                 {error}
               </span>
             )}

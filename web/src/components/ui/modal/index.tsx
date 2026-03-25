@@ -51,19 +51,21 @@ export const Modal: React.FC<ModalProps> = ({
 
   const contentClasses = isFullscreen
     ? 'w-full h-full'
-    : 'relative w-full rounded-3xl bg-white  dark:bg-gray-900';
+    : 'relative w-full rounded-[var(--radius-lg)]';
 
   return (
     <div className="modal fixed inset-0 z-99999 flex items-center justify-center overflow-y-auto">
       {!isFullscreen && (
         <div
-          className="fixed inset-0 h-full w-full bg-gray-400/50 backdrop-blur-[32px]"
+          className="fixed inset-0 h-full w-full backdrop-blur-sm"
+          style={{ background: 'rgba(0,0,0,0.5)' }}
           onClick={onClose}
         ></div>
       )}
       <div
         ref={modalRef}
         className={`${contentClasses} ${className ?? ''}`}
+        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--line)', boxShadow: 'var(--shadow-lg)' }}
         onClick={(e) => {
           e.stopPropagation();
         }}
@@ -71,7 +73,8 @@ export const Modal: React.FC<ModalProps> = ({
         {showCloseButton && (
           <button
             onClick={onClose}
-            className="absolute top-3 right-3 z-999 flex h-9.5 w-9.5 items-center justify-center rounded-full bg-gray-100 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 sm:top-6 sm:right-6 sm:h-11 sm:w-11 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
+            className="absolute top-3 right-3 z-999 flex h-8 w-8 items-center justify-center rounded-full transition-colors sm:top-4 sm:right-4"
+            style={{ background: 'var(--bg-soft)', color: 'var(--muted)' }}
           >
             <svg
               width="24"

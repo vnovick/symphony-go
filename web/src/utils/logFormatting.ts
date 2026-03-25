@@ -19,14 +19,28 @@ export function toTermLine(entry: IssueLogEntry): TermLine {
         text: entry.message,
         textColor: '#e5e7eb',
       } as TermLine;
-    case 'action':
+    case 'action': {
+      let text = entry.message;
+      if (entry.detail) {
+        try {
+          const d = JSON.parse(entry.detail) as Record<string, unknown>;
+          const parts: string[] = [];
+          if (d.exit_code !== undefined && d.exit_code !== null) parts.push(`exit:${String(d.exit_code)}`);
+          if (d.output_size) parts.push(String(d.output_size));
+          if (d.status && d.status !== 'success') parts.push(String(d.status));
+          if (parts.length > 0) text = `${text}  ·  ${parts.join(' · ')}`;
+        } catch {
+          // ignore malformed detail JSON
+        }
+      }
       return {
         ...base,
         prefix: '$',
         prefixColor: '#facc15',
-        text: entry.tool ? `${entry.tool}  ${entry.message}` : entry.message,
+        text,
         textColor: '#d1d5db',
       } as TermLine;
+    }
     case 'subagent':
       return {
         ...base,
@@ -71,9 +85,9 @@ export function toTermLine(entry: IssueLogEntry): TermLine {
       return {
         ...base,
         prefix: '·',
-        prefixColor: '#374151',
+        prefixColor: '#71717a',
         text: entry.message,
-        textColor: '#6b7280',
+        textColor: '#a1a1aa',
       } as TermLine;
   }
 }

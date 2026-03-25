@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { LOG_STABLE_DELAY_MS } from '../../utils/timings';
 import { useSymphonyStore } from '../../store/symphonyStore';
-import Badge from '../ui/badge/Badge';
 import type { IssueLogEntry, RunningRow } from '../../types/symphony';
 import {
   useCancelIssue,
@@ -10,43 +10,58 @@ import {
   useSetIssueProfile,
   useIssues,
 } from '../../queries/issues';
-import { useIssueLogs } from '../../queries/logs';
 import { fmtMs, stateBadgeColor } from '../../utils/format';
-import { entryStyle } from '../../utils/logFormatting';
+import Badge from '../ui/badge/Badge';
+import { useIssueLogs } from '../../queries/logs';
+import { EMPTY_PROFILE_LABEL, EMPTY_PROFILES } from '../../utils/format';
+import { Terminal } from '../ui/Terminal/Terminal';
+import type { LogEntry, LogLevel } from '../ui/Terminal/Terminal';
 
-// Stable empty references — avoids creating new array/object instances on every render,
-// which would break the reference-equality guards in useStableRunning's render-phase setState.
+// Stable empty references — module-level to avoid reference equality churn
 const EMPTY_RUNNING: RunningRow[] = [];
 const EMPTY_PAUSED: string[] = [];
 const EMPTY_PAUSED_WITH_PR: Record<string, string> = {};
-const EMPTY_PROFILES: string[] = [];
+
+// Map issue log event types to Terminal log levels
+function toTermLevel(event: string, level?: string): LogLevel {
+  if (event === 'action') return 'action';
+  if (event === 'subagent') return 'subagent';
+  if (event === 'warn' || level === 'warn') return 'warn';
+  if (event === 'error' || level === 'error') return 'error';
+  return 'info';
+}
+
+function toTermEntries(logs: IssueLogEntry[]): LogEntry[] {
+  return logs.map((e, i) => ({
+    ts: i, // ordinal index as ts; time parsing is best-effort
+    level: toTermLevel(e.event, e.level),
+    message: e.message,
+  }));
+}
 
 function useStableRunning(running: RunningRow[]): RunningRow[] {
   const [stable, setStable] = useState<RunningRow[]>(running);
-  const [prevRunning, setPrevRunning] = useState(running);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Render-phase derived-state: sync stable whenever running changes while non-empty.
-  // This is React's getDerivedStateFromProps equivalent for hooks (see React docs on
-  // "Storing information from previous renders").
-  if (running !== prevRunning) {
-    setPrevRunning(running);
+  useEffect(() => {
     if (running.length > 0) {
       setStable(running);
-    }
-  }
-
-  useEffect(() => {
-    if (running.length === 0 && timerRef.current === null) {
-      // Delay clearing stable by 5 s to avoid layout flicker on transient empty states.
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    } else if (timerRef.current === null) {
       timerRef.current = setTimeout(() => {
         setStable([]);
         timerRef.current = null;
-      }, 5000);
-    } else if (running.length > 0 && timerRef.current !== null) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
+      }, LOG_STABLE_DELAY_MS);
     }
+    return () => {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
   }, [running]);
 
   return running.length > 0 ? running : stable;
@@ -74,54 +89,6 @@ function buildSections(entries: IssueLogEntry[]): LogSection[] {
   return sections;
 }
 
-function LogPanel({ entries }: { entries: IssueLogEntry[] }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const followRef = useRef(true);
-
-  const onScroll = () => {
-    if (!containerRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
-    followRef.current = scrollHeight - scrollTop - clientHeight < 40;
-  };
-
-  useEffect(() => {
-    if (followRef.current && containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
-  }, [entries]);
-
-  if (entries.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center text-xs text-gray-400">
-        No entries yet
-      </div>
-    );
-  }
-
-  return (
-    <div
-      ref={containerRef}
-      onScroll={onScroll}
-      className="h-full space-y-0.5 overflow-y-auto p-3 font-mono text-xs leading-relaxed"
-    >
-      {entries.map((entry, i) => {
-        const style = entryStyle(entry.event, entry.level);
-        return (
-          <div key={i} className="flex gap-2">
-            {entry.time && (
-              <span className="w-14 shrink-0 text-right text-gray-500">{entry.time}</span>
-            )}
-            <span className={`shrink-0 ${style.textClass}`}>{style.prefixChar}</span>
-            <span className={`flex-1 break-words whitespace-pre-wrap ${style.textClass}`}>
-              {entry.message}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function SessionAccordion({
   identifier,
   workerHost,
@@ -132,88 +99,109 @@ function SessionAccordion({
   sessionId: string | undefined;
 }) {
   const [selectedIdx, setSelectedIdx] = useState(0);
-  const [prevSectionCount, setPrevSectionCount] = useState(0);
+  const prevSectionCountRef = useRef(0);
   const { data: logs = [] } = useIssueLogs(identifier, true);
   const sections = buildSections(logs);
 
-  // Render-phase derived state: auto-advance to newest subagent when sections grow.
-  if (sections.length !== prevSectionCount) {
-    setPrevSectionCount(sections.length);
-    if (
-      sections.length > prevSectionCount &&
-      (selectedIdx === prevSectionCount - 1 || prevSectionCount === 0)
-    ) {
+  useEffect(() => {
+    const prev = prevSectionCountRef.current;
+    if (sections.length > prev && selectedIdx === prev - 1) {
       setSelectedIdx(sections.length - 1);
     }
-  }
+    prevSectionCountRef.current = sections.length;
+  }, [sections.length, selectedIdx]);
 
   const active = sections[selectedIdx] ?? sections[0];
+  const termEntries = toTermEntries(active.entries);
 
   return (
-    <div className="border-t border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/30">
-      <div className="flex items-center gap-6 border-b border-gray-200 px-4 py-2 font-mono text-xs text-gray-500 dark:border-gray-700">
+    <div
+      className="border-t"
+      style={{ borderColor: 'var(--line)', background: 'var(--bg)' }}
+    >
+      {/* Meta row */}
+      <div
+        className="flex items-center gap-6 border-b px-4 py-2 font-mono text-xs"
+        style={{ borderColor: 'var(--line)', color: 'var(--muted)' }}
+      >
         <span>
-          Worker: <span className="text-gray-700 dark:text-gray-300">{workerHost || 'local'}</span>
+          Worker:{' '}
+          <span style={{ color: 'var(--text-secondary)' }}>{workerHost ?? 'local'}</span>
         </span>
         {sessionId && (
           <span title={sessionId}>
             Session:{' '}
-            <span className="text-gray-700 dark:text-gray-300">{sessionId.slice(0, 8)}</span>
+            <span style={{ color: 'var(--text-secondary)' }}>{sessionId.slice(0, 8)}</span>
           </span>
         )}
       </div>
+
+      {/* Subagent tabs (left) + Terminal (right) */}
       <div className="flex" style={{ height: 240 }}>
-        <div className="flex w-48 flex-shrink-0 flex-col border-r border-gray-200 dark:border-gray-700">
-          <div className="border-b border-gray-200 px-3 py-2 dark:border-gray-700">
-            <span className="text-[10px] font-semibold tracking-wider text-gray-400 uppercase">
-              {sections.length > 1
-                ? `${String(sections.length - 1)} subagent${sections.length > 2 ? 's' : ''}`
-                : 'Logs'}
-            </span>
+        {/* Subagent sidebar */}
+        <div
+          className="flex w-44 flex-shrink-0 flex-col border-r"
+          style={{ borderColor: 'var(--line)' }}
+        >
+          <div
+            className="border-b px-3 py-2 text-[10px] font-semibold tracking-wider uppercase"
+            style={{ borderColor: 'var(--line)', color: 'var(--muted)' }}
+          >
+            {sections.length > 1
+              ? `${String(sections.length - 1)} subagent${sections.length > 2 ? 's' : ''}`
+              : 'Logs'}
           </div>
           <div className="flex-1 overflow-y-auto">
             {sections.map((sec, i) => (
               <button
-                key={i}
-                onClick={() => {
-                  setSelectedIdx(i);
+                key={sec.label}
+                onClick={() => { setSelectedIdx(i); }}
+                className={`terminal-tab flex w-full items-center gap-2 border-b px-3 py-2 text-left text-xs transition-colors`}
+                style={{
+                  borderColor: 'var(--line)',
+                  background: i === selectedIdx ? 'var(--accent-soft)' : 'transparent',
+                  color: i === selectedIdx ? 'var(--accent-strong)' : 'var(--text-secondary)',
                 }}
-                className={`flex w-full items-center gap-2 border-b border-gray-100 px-3 py-2 text-left text-xs transition-colors dark:border-gray-800 ${
-                  i === selectedIdx
-                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
-                    : 'text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/50'
-                }`}
               >
-                <span className={`text-xs ${sec.isSubagent ? 'text-purple-500' : 'text-gray-400'}`}>
+                <span style={{ color: sec.isSubagent ? 'var(--purple)' : 'var(--muted)' }}>
                   {sec.isSubagent ? '↗' : '◈'}
                 </span>
                 <span className="flex-1 truncate font-mono">{sec.label}</span>
-                <span className="text-gray-400">{sec.entries.length}</span>
+                <span style={{ color: 'var(--muted)' }}>{sec.entries.length}</span>
               </button>
             ))}
           </div>
         </div>
-        <div className="flex-1 overflow-hidden">
-          <LogPanel entries={active.entries} />
-        </div>
+
+        {/* Terminal */}
+        <Terminal
+          entries={termEntries}
+          follow
+          showTime={false}
+          className="flex-1 h-full"
+        />
       </div>
     </div>
   );
 }
 
+
 export default function RunningSessionsTable() {
   const snapshot = useSymphonyStore((s) => s.snapshot);
+  const setSelectedIdentifier = useSymphonyStore((s) => s.setSelectedIdentifier);
   const cancelIssueMutation = useCancelIssue();
   const terminateIssueMutation = useTerminateIssue();
   const resumeIssueMutation = useResumeIssue();
   const reanalyzeIssueMutation = useReanalyzeIssue();
   const setIssueProfileMutation = useSetIssueProfile();
   const { data: issues } = useIssues();
+
   const rawRunning = snapshot?.running ?? EMPTY_RUNNING;
   const running = useStableRunning(rawRunning);
   const paused = snapshot?.paused ?? EMPTY_PAUSED;
   const pausedWithPR = snapshot?.pausedWithPR ?? EMPTY_PAUSED_WITH_PR;
   const availableProfiles = snapshot?.availableProfiles ?? EMPTY_PROFILES;
+
   const profileMap = useMemo(
     () =>
       Object.fromEntries(
@@ -223,216 +211,293 @@ export default function RunningSessionsTable() {
       ),
     [issues],
   );
+
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedPausedId, setExpandedPausedId] = useState<string | null>(null);
 
   const sorted = [...running].sort(
     (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
   );
 
-  const toggle = (id: string) => {
+  const toggle = useCallback((id: string) => {
     setExpandedId((prev) => (prev === id ? null : id));
-  };
+  }, []);
+
+  const togglePaused = useCallback((id: string) => {
+    setExpandedPausedId((prev) => (prev === id ? null : id));
+  }, []);
 
   if (sorted.length === 0 && paused.length === 0) {
     return (
-      <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-400 dark:border-gray-700 dark:bg-gray-900">
+      <div
+        className="rounded-[var(--radius-md)] p-8 text-center text-sm"
+        style={{
+          border: '1px solid var(--line)',
+          background: 'var(--panel)',
+          color: 'var(--muted)',
+        }}
+      >
         No agents running
       </div>
     );
   }
 
   return (
-    <div className="space-y-3">
+    <div
+      className="overflow-hidden rounded-[var(--radius-md)]"
+      style={{ border: '1px solid var(--line)', background: 'var(--bg-elevated)' }}
+    >
+      {/* Header — visible whenever there are running or paused sessions */}
       {sorted.length > 0 && (
-        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-900">
-          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-              Running Sessions
-            </h3>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-              {sorted.length} active
+        <div
+          className="flex items-center justify-between px-4 py-[14px]"
+          style={{ borderBottom: paused.length > 0 ? '1px solid var(--line)' : undefined, borderColor: 'var(--line)' }}
+        >
+          <h3 className="text-[15px] font-semibold" style={{ color: 'var(--text)' }}>
+            Running Sessions
+          </h3>
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium"
+            style={{ background: 'var(--success-soft)', color: 'var(--success)' }}
+          >
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+            {sorted.length} active
+          </span>
+        </div>
+      )}
+
+      {/* Running session rows */}
+      {sorted.map((row) => (
+        <div
+          key={row.identifier}
+          className="border-t"
+          style={{ borderColor: 'var(--line)' }}
+        >
+          {/* Clickable row */}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => { toggle(row.identifier); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(row.identifier); }}
+            className="grid items-center px-4 py-[14px] cursor-pointer transition-colors hover:bg-[var(--bg-soft)] select-none"
+            style={{ gridTemplateColumns: '24px 100px 80px 56px 1fr 72px auto', gap: '14px' }}
+          >
+            {/* Chevron */}
+            <span
+              className="text-[10px] transition-transform duration-200"
+              style={{
+                color: 'var(--muted)',
+                transform: expandedId === row.identifier ? 'rotate(90deg)' : 'none',
+                display: 'inline-block',
+              }}
+            >
+              ▶
+            </span>
+
+            {/* Identifier — click opens detail slide */}
+            <span
+              role="button"
+              tabIndex={0}
+              className="font-mono text-sm font-semibold cursor-pointer hover:underline truncate"
+              style={{ color: 'var(--accent)' }}
+              onClick={(e) => { e.stopPropagation(); setSelectedIdentifier(row.identifier); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setSelectedIdentifier(row.identifier); } }}
+            >
+              {row.identifier}
+            </span>
+
+            {/* State badge */}
+            <Badge color={stateBadgeColor(row.state)} size="sm">
+              {row.state}
+            </Badge>
+
+            {/* Turn count */}
+            <span className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              {row.turnCount ?? '—'}
+            </span>
+
+            {/* Last event */}
+            <span
+              className="truncate text-xs font-mono"
+              style={{ color: 'var(--text-secondary)' }}
+              title={row.lastEvent ?? undefined}
+            >
+              {row.lastEvent ? row.lastEvent.slice(0, 100) : '—'}
+            </span>
+
+            {/* Elapsed */}
+            <span className="font-mono text-xs" style={{ color: 'var(--muted)' }}>
+              {fmtMs(row.elapsedMs)}
+            </span>
+
+            {/* Actions */}
+            <div className="flex gap-2 flex-shrink-0" onClick={(e) => { e.stopPropagation(); }}>
+              <button
+                onClick={() => { cancelIssueMutation.mutate(row.identifier); }}
+                className="inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
+                style={{ background: 'var(--warning-soft)', borderColor: 'var(--warning-soft)', color: 'var(--warning)' }}
+              >
+                ⏸ Pause
+              </button>
+              <button
+                onClick={() => { terminateIssueMutation.mutate(row.identifier); }}
+                className="inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
+                style={{ background: 'var(--danger-soft)', borderColor: 'var(--danger-soft)', color: 'var(--danger)' }}
+              >
+                ✕ Cancel
+              </button>
+            </div>
+          </div>
+
+          {/* Expandable log accordion */}
+          {expandedId === row.identifier && (
+            <SessionAccordion
+              identifier={row.identifier}
+              workerHost={row.workerHost}
+              sessionId={row.sessionId}
+            />
+          )}
+        </div>
+      ))}
+
+      {/* Paused section — inside the same panel */}
+      {paused.length > 0 && (
+        <div style={{ borderTop: sorted.length > 0 ? '1px solid var(--line)' : undefined, background: 'rgba(245,158,11,0.03)' }}>
+          <div className="px-4 py-3">
+            <span
+              className="text-xs font-semibold uppercase tracking-[0.05em]"
+              style={{ color: 'var(--warning)' }}
+            >
+              ⏸ Paused ({paused.length})
             </span>
           </div>
 
-          <div>
-            {sorted.map((row) => (
-              <div
-                key={row.identifier}
-                className="border-b border-gray-100 last:border-b-0 dark:border-gray-800"
-              >
+          <div className="pb-3 space-y-0">
+            {paused.map((identifier) => {
+              const prURL = pausedWithPR[identifier];
+              const issueTitle = issues?.find((i) => i.identifier === identifier)?.title;
+              const isExpanded = expandedPausedId === identifier;
+              return (
                 <div
-                  onClick={() => {
-                    toggle(row.identifier);
-                  }}
-                  className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/30"
+                  key={identifier}
+                  className="border-b last:border-b-0"
+                  style={{ borderColor: 'var(--line)' }}
                 >
-                  <button className="text-xs text-gray-400 transition-transform duration-150">
+                  {/* Paused row — click to expand accordion */}
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => { togglePaused(identifier); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') togglePaused(identifier); }}
+                    className="grid items-center px-4 py-[14px] cursor-pointer transition-colors hover:bg-[var(--bg-soft)]"
+                    style={{ gridTemplateColumns: '24px 100px 1fr auto', gap: '14px' }}
+                  >
+                    {/* Chevron */}
                     <span
-                      className={`inline-block transition-transform ${expandedId === row.identifier ? 'rotate-90' : ''}`}
+                      className="text-[10px] transition-transform duration-200"
+                      style={{
+                        color: 'var(--muted)',
+                        transform: isExpanded ? 'rotate(90deg)' : 'none',
+                        display: 'inline-block',
+                      }}
                     >
                       ▶
                     </span>
-                  </button>
 
-                  <span className="min-w-[100px] font-mono text-sm font-medium text-gray-900 dark:text-white">
-                    {row.identifier}
-                  </span>
-
-                  <Badge color={stateBadgeColor(row.state)} size="sm">
-                    {row.state}
-                  </Badge>
-
-                  {row.backend && (
+                    {/* Identifier — click opens detail slide */}
                     <span
-                      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${
-                        row.backend === 'claude'
-                          ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400'
-                          : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
-                      }`}
+                      role="button"
+                      tabIndex={0}
+                      className="font-mono text-sm font-semibold cursor-pointer hover:underline"
+                      style={{ color: 'var(--warning)' }}
+                      onClick={(e) => { e.stopPropagation(); setSelectedIdentifier(identifier); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setSelectedIdentifier(identifier); } }}
                     >
-                      {row.backend}
+                      {identifier}
                     </span>
-                  )}
 
-                  {profileMap[row.identifier] && (
-                    <span className="inline-flex items-center rounded-md bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
-                      {profileMap[row.identifier]}
-                    </span>
-                  )}
+                    {/* Title + PR + profile */}
+                    <div className="min-w-0 flex items-center gap-3" onClick={(e) => { e.stopPropagation(); }}>
+                      {issueTitle && (
+                        <span className="truncate text-[13px]" style={{ color: 'var(--text-secondary)' }}>
+                          {issueTitle}
+                        </span>
+                      )}
+                      {prURL && (
+                        <a
+                          href={prURL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium flex-shrink-0"
+                          style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                          onClick={(e) => { e.stopPropagation(); }}
+                        >
+                          Open PR
+                        </a>
+                      )}
+                      {availableProfiles.length > 0 && (
+                        <select
+                          value={profileMap[identifier] ?? ''}
+                          onChange={(e) => { setIssueProfileMutation.mutate({ identifier, profile: e.target.value }); }}
+                          onClick={(e) => { e.stopPropagation(); }}
+                          className="rounded-[var(--radius-sm)] border px-2 py-1 text-xs focus:outline-none flex-shrink-0"
+                          style={{ borderColor: 'var(--line)', background: 'var(--panel-strong)', color: 'var(--text)', cursor: 'pointer' }}
+                        >
+                          <option value="">{EMPTY_PROFILE_LABEL}</option>
+                          {availableProfiles.map((p) => (
+                            <option key={p} value={p}>{p}</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
 
-                  <span className="w-12 text-center text-sm text-gray-500 dark:text-gray-400">
-                    t{row.turnCount}
-                  </span>
-
-                  <span
-                    className="min-w-0 flex-1 truncate text-sm text-gray-500 dark:text-gray-400"
-                    title={row.lastEvent}
-                  >
-                    {row.lastEvent ? row.lastEvent.slice(0, 60) : '—'}
-                  </span>
-
-                  <span className="w-16 font-mono text-xs text-gray-500 dark:text-gray-400">
-                    {fmtMs(row.elapsedMs)}
-                  </span>
-
-                  <div
-                    className="flex gap-2"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                    }}
-                  >
-                    <button
-                      onClick={() => {
-                        cancelIssueMutation.mutate(row.identifier);
-                      }}
-                      className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-400 dark:hover:bg-amber-900/30"
-                    >
-                      ⏸ Pause
-                    </button>
-                    <button
-                      onClick={() => {
-                        terminateIssueMutation.mutate(row.identifier);
-                      }}
-                      className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30"
-                    >
-                      ✕ Cancel
-                    </button>
+                    {/* Actions */}
+                    <div className="flex flex-shrink-0 gap-2" onClick={(e) => { e.stopPropagation(); }}>
+                      {prURL && (
+                        <button
+                          onClick={() => { reanalyzeIssueMutation.mutate(identifier); }}
+                          className="btn-action-reanalyze inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
+                          style={{ background: 'var(--accent-soft)', borderColor: 'var(--accent-soft)', color: 'var(--accent)' }}
+                        >
+                          Re-analyze
+                        </button>
+                      )}
+                      <button
+                        onClick={() => { resumeIssueMutation.mutate(identifier); }}
+                        className="btn-action-resume inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
+                        style={{ background: 'var(--success-soft)', borderColor: 'var(--success-soft)', color: 'var(--success)' }}
+                      >
+                        ▶ Resume
+                      </button>
+                      <button
+                        onClick={() => { terminateIssueMutation.mutate(identifier); }}
+                        className="btn-action-cancel inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
+                        style={{ background: 'var(--danger-soft)', borderColor: 'var(--danger-soft)', color: 'var(--danger)' }}
+                      >
+                        ✕ Discard
+                      </button>
+                    </div>
                   </div>
-                </div>
 
-                {expandedId === row.identifier && (
-                  <SessionAccordion
-                    identifier={row.identifier}
-                    workerHost={row.workerHost}
-                    sessionId={row.sessionId}
-                  />
-                )}
-              </div>
-            ))}
+                  {/* Expandable accordion — reuses SessionAccordion */}
+                  {isExpanded && (
+                    <SessionAccordion
+                      identifier={identifier}
+                      workerHost={undefined}
+                      sessionId={undefined}
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
 
-      {paused.length > 0 && (
-        <div className="overflow-hidden rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-900/10">
-          <div className="flex items-center gap-2 border-b border-amber-200 px-4 py-2 dark:border-amber-800">
-            <span className="text-xs font-semibold tracking-wider text-amber-700 uppercase dark:text-amber-400">
-              ⏸ Paused ({paused.length})
-            </span>
-          </div>
-          {paused.map((identifier) => {
-            const prURL = pausedWithPR[identifier];
-            return (
-              <div
-                key={identifier}
-                className="flex items-center justify-between border-t border-amber-200 px-4 py-3 first:border-t-0 dark:border-amber-800"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-medium text-amber-800 dark:text-amber-300">
-                    {identifier}
-                  </span>
-                  {prURL && (
-                    <a
-                      href={prURL}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center rounded-md bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700 hover:bg-purple-200 dark:bg-purple-900/30 dark:text-purple-300"
-                    >
-                      Open PR
-                    </a>
-                  )}
-                  {availableProfiles.length > 0 && (
-                    <select
-                      value={profileMap[identifier] ?? ''}
-                      onChange={(e) => {
-                        setIssueProfileMutation.mutate({ identifier, profile: e.target.value });
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                      className="rounded border border-amber-200 bg-white px-2 py-0.5 text-xs text-amber-800 focus:outline-none dark:border-amber-700 dark:bg-transparent dark:text-amber-300"
-                    >
-                      <option value="">No agent</option>
-                      {availableProfiles.map((p) => (
-                        <option key={p} value={p}>
-                          {p}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-                <div className="flex gap-2">
-                  {prURL && (
-                    <button
-                      onClick={() => {
-                        reanalyzeIssueMutation.mutate(identifier);
-                      }}
-                      className="rounded-md border border-purple-200 bg-white px-2 py-1 text-xs font-medium text-purple-700 transition-colors hover:bg-purple-50 dark:border-purple-700 dark:bg-transparent dark:text-purple-400"
-                    >
-                      🔄 Re-analyze
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      resumeIssueMutation.mutate(identifier);
-                    }}
-                    className="rounded-md border border-green-200 bg-white px-2 py-1 text-xs font-medium text-green-700 transition-colors hover:bg-green-50 dark:border-green-700 dark:text-green-400"
-                  >
-                    ▶ Resume
-                  </button>
-                  <button
-                    onClick={() => {
-                      terminateIssueMutation.mutate(identifier);
-                    }}
-                    className="rounded-md border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-800 dark:text-red-400"
-                  >
-                    ✕ Discard
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+      {/* Empty state */}
+      {sorted.length === 0 && paused.length === 0 && (
+        <div className="px-4 py-8 text-center text-sm" style={{ color: 'var(--muted)' }}>
+          No agents running
         </div>
       )}
     </div>

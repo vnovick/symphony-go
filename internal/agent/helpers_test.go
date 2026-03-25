@@ -4,10 +4,18 @@ package agent
 // These functions contain non-trivial logic that deserves direct coverage.
 
 import (
+	"archive/tar"
+	"bufio"
+	"bytes"
 	"encoding/json"
+	"io"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/vnovick/symphony-go/internal/domain"
 )
 
 // --- shellQuote ---
@@ -119,4 +127,80 @@ func TestBuildCodexShellCmdEmptySessionID(t *testing.T) {
 	id := ""
 	cmd := buildCodexShellCmd("codex", &id, "prompt text", "")
 	assert.NotContains(t, cmd, "resume")
+}
+
+// --- sshFetchClaude session stamping via tar ---
+//
+// sshFetchClaude streams a tar archive over SSH and derives session IDs from tar
+// header filenames — the same source as the local readJSONLFile path. These tests
+// verify the two primitives the tar loop relies on: streamLineToEntry propagating
+// the session ID it receives, and the filename→sessionID extraction formula.
+
+func TestStreamLineToEntryStampsSessionID(t *testing.T) {
+	// A minimal Claude Code assistant event with one text block.
+	line := []byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"session_id":"abc123"}`)
+	entry, ok := streamLineToEntry(line, "abc123")
+	assert.True(t, ok)
+	assert.Equal(t, "abc123", entry.SessionID)
+}
+
+func TestStreamLineToEntryEmptySessionID(t *testing.T) {
+	// When no session ID is provided, SessionID is "".
+	line := []byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"session_id":""}`)
+	entry, ok := streamLineToEntry(line, "")
+	assert.True(t, ok)
+	assert.Equal(t, "", entry.SessionID)
+}
+
+func TestSSHSessionIDFromTarHeader(t *testing.T) {
+	// The tar header name → session ID formula must match the local readJSONLFile formula.
+	cases := []struct{ name, want string }{
+		{"abc123.jsonl", "abc123"},
+		{"./abc123.jsonl", "abc123"},   // tar may include "./" prefix
+		{"subdir/abc123.jsonl", "abc123"}, // tar -C strips dir but test robustness
+	}
+	for _, c := range cases {
+		got := strings.TrimSuffix(filepath.Base(c.name), ".jsonl")
+		assert.Equal(t, c.want, got, "header name: %s", c.name)
+	}
+}
+
+func TestSSHFetchClaudeViaInMemoryTar(t *testing.T) {
+	// Build an in-memory tar archive with two session files and verify that
+	// streamLineToEntriesWith correctly stamps each entry with its file's session ID.
+	// This exercises the exact loop body used by sshFetchClaude.
+	file1Line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"thinking"}]},"session_id":"sess-001"}`
+	file2Line := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]},"session_id":"sess-002"}`
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, f := range []struct{ name, body string }{
+		{"sess-001.jsonl", file1Line + "\n"},
+		{"sess-002.jsonl", file2Line + "\n"},
+	} {
+		_ = tw.WriteHeader(&tar.Header{Name: f.name, Size: int64(len(f.body)), Mode: 0o644})
+		_, _ = tw.Write([]byte(f.body))
+	}
+	_ = tw.Close()
+
+	// Replay the sshFetchClaude tar-reading loop.
+	var entries []domain.IssueLogEntry
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		assert.NoError(t, err)
+		sessionID := strings.TrimSuffix(filepath.Base(hdr.Name), ".jsonl")
+		scanner := bufio.NewScanner(tr)
+		scanner.Buffer(make([]byte, 1<<20), 1<<20)
+		for scanner.Scan() {
+			entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), ParseLine, sessionID)...)
+		}
+	}
+
+	assert.Len(t, entries, 2)
+	assert.Equal(t, "sess-001", entries[0].SessionID)
+	assert.Equal(t, "sess-002", entries[1].SessionID)
 }

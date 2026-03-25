@@ -76,10 +76,13 @@ func (c *ClaudeRunner) RunTurn(
 	log Logger,
 	onProgress func(TurnResult),
 	sessionID *string,
-	prompt, workspacePath, command, workerHost string,
+	prompt, workspacePath, command, workerHost, logDir string,
 	readTimeoutMs, turnTimeoutMs int,
 ) (TurnResult, error) {
-	turnCtx, cancel := context.WithTimeout(ctx, time.Duration(turnTimeoutMs)*time.Millisecond)
+	turnCtx, cancel := ctx, context.CancelFunc(func() {})
+	if turnTimeoutMs > 0 {
+		turnCtx, cancel = context.WithTimeout(ctx, time.Duration(turnTimeoutMs)*time.Millisecond)
+	}
 	defer cancel()
 
 	var cmd *exec.Cmd
@@ -88,6 +91,9 @@ func (c *ClaudeRunner) RunTurn(
 		// The workspace path is expected to exist on the remote host (e.g. NFS share).
 		// Use -t to allocate a PTY so remote processes receive SIGHUP when SSH exits.
 		shellCmd := buildShellCmd(command, sessionID, prompt)
+		if logDir != "" {
+			shellCmd = "export CLAUDE_CODE_LOG_DIR=" + shellQuote(logDir) + "; mkdir -p " + shellQuote(logDir) + "; " + shellCmd
+		}
 		if workspacePath != "" {
 			shellCmd = "cd " + shellQuote(workspacePath) + " && " + shellCmd
 		}
@@ -107,6 +113,12 @@ func (c *ClaudeRunner) RunTurn(
 	}
 	if workspacePath != "" && workerHost == "" {
 		cmd.Dir = workspacePath
+	}
+	if logDir != "" && workerHost == "" {
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			slog.Warn("agent: failed to create log dir", "dir", logDir, "error", err)
+		}
+		cmd.Env = append(os.Environ(), "CLAUDE_CODE_LOG_DIR="+logDir)
 	}
 
 	stdout, err := cmd.StdoutPipe()

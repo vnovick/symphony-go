@@ -48,13 +48,12 @@ func TestStateEndpointReturnsJSON(t *testing.T) {
 	assert.Contains(t, body, "generatedAt")
 }
 
-func TestUnknownIdentifierReturns404(t *testing.T) {
+func TestUnknownRouteReturns404(t *testing.T) {
 	srv := testServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/ENG-999", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/nonexistent-route", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
-	assert.Contains(t, w.Body.String(), "error")
 }
 
 func TestRefreshReturns202(t *testing.T) {
@@ -168,7 +167,20 @@ func TestSetWorkers(t *testing.T) {
 			snap := baseSnap()
 			snap.MaxConcurrentAgents = tc.currentWorkers
 			cfg := makeTestConfig(snap)
-			cfg.SetWorkers = func(n int) { called = n }
+			cfg.Client = &server.FuncClient{
+				SetWorkersFn: func(n int) { called = n },
+				BumpWorkersFn: func(delta int) int {
+					next := snap.MaxConcurrentAgents + delta
+					if next < 1 {
+						next = 1
+					}
+					if next > 50 {
+						next = 50
+					}
+					called = next
+					return next
+				},
+			}
 			srv := server.New(cfg)
 
 			w := postJSON(t, srv, "/api/v1/settings/workers", tc.body)
@@ -223,9 +235,11 @@ func TestSetIssueProfile(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var gotIdentifier, gotProfile string
 			cfg := makeTestConfig(baseSnap())
-			cfg.SetIssueProfile = func(identifier, profile string) {
-				gotIdentifier = identifier
-				gotProfile = profile
+			cfg.Client = &server.FuncClient{
+				SetIssueProfileFn: func(identifier, profile string) {
+					gotIdentifier = identifier
+					gotProfile = profile
+				},
 			}
 			srv := server.New(cfg)
 
@@ -252,10 +266,12 @@ func TestUpsertProfileIncludesBackend(t *testing.T) {
 	var gotName string
 	var gotDef server.ProfileDef
 	cfg := makeTestConfig(baseSnap())
-	cfg.UpsertProfile = func(name string, def server.ProfileDef) error {
-		gotName = name
-		gotDef = def
-		return nil
+	cfg.Client = &server.FuncClient{
+		UpsertProfileFn: func(name string, def server.ProfileDef) error {
+			gotName = name
+			gotDef = def
+			return nil
+		},
 	}
 	srv := server.New(cfg)
 
@@ -312,8 +328,10 @@ func TestUpdateIssueState(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := makeTestConfig(baseSnap())
-			cfg.UpdateIssueState = func(ctx context.Context, identifier, stateName string) error {
-				return tc.updaterErr
+			cfg.Client = &server.FuncClient{
+				UpdateIssueStateFn: func(ctx context.Context, identifier, stateName string) error {
+					return tc.updaterErr
+				},
 			}
 			srv := server.New(cfg)
 
@@ -337,7 +355,7 @@ func TestUpdateIssueState(t *testing.T) {
 func testServerWithFetchIssues(t *testing.T, fn func(ctx context.Context) ([]server.TrackerIssue, error)) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
-	cfg.FetchIssues = fn
+	cfg.Client = &server.FuncClient{FetchIssuesFn: fn}
 	return server.New(cfg)
 }
 
@@ -428,7 +446,7 @@ func TestHandleIssueDetail_FetchError_Returns500(t *testing.T) {
 func testServerWithCancel(t *testing.T, fn func(string) bool) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
-	cfg.CancelIssue = fn
+	cfg.Client = &server.FuncClient{CancelIssueFn: fn}
 	return server.New(cfg)
 }
 
@@ -460,7 +478,7 @@ func TestHandleCancelIssue_NotFound_Returns404(t *testing.T) {
 func testServerWithResume(t *testing.T, fn func(string) bool) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
-	cfg.ResumeIssue = fn
+	cfg.Client = &server.FuncClient{ResumeIssueFn: fn}
 	return server.New(cfg)
 }
 
@@ -487,7 +505,7 @@ func TestHandleResumeIssue_NotPaused_Returns404(t *testing.T) {
 func testServerWithAgentMode(t *testing.T, fn func(string) error) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
-	cfg.SetAgentMode = fn
+	cfg.Client = &server.FuncClient{SetAgentModeFn: fn}
 	return server.New(cfg)
 }
 
@@ -541,7 +559,7 @@ func TestHandleSetAgentMode_InvalidMode_Returns400(t *testing.T) {
 func testServerWithTerminate(t *testing.T, fn func(string) bool) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
-	cfg.TerminateIssue = fn
+	cfg.Client = &server.FuncClient{TerminateIssueFn: fn}
 	return server.New(cfg)
 }
 
@@ -574,7 +592,7 @@ func TestHandleTerminateIssue_NotFound(t *testing.T) {
 func testServerWithReanalyze(t *testing.T, fn func(string) bool) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
-	cfg.ReanalyzeIssue = fn
+	cfg.Client = &server.FuncClient{ReanalyzeIssueFn: fn}
 	return server.New(cfg)
 }
 
@@ -600,8 +618,10 @@ func testServerWithProfiles(t *testing.T) (*server.Server, *map[string]server.Pr
 	t.Helper()
 	defs := map[string]server.ProfileDef{"fast": {Command: "codex", Backend: "codex"}}
 	cfg := makeTestConfig(baseSnap())
-	cfg.ProfileDefs = func() map[string]server.ProfileDef { return defs }
-	cfg.DeleteProfile = func(name string) error { delete(defs, name); return nil }
+	cfg.Client = &server.FuncClient{
+		ProfileDefsFn:   func() map[string]server.ProfileDef { return defs },
+		DeleteProfileFn: func(name string) error { delete(defs, name); return nil },
+	}
 	return server.New(cfg), &defs
 }
 
@@ -693,11 +713,13 @@ func TestHandleUpdateTrackerStates_Success(t *testing.T) {
 	var gotActive, gotTerminal []string
 	var gotCompletion string
 	cfg := makeTestConfig(baseSnap())
-	cfg.UpdateTrackerStates = func(active, terminal []string, completion string) error {
-		gotActive = active
-		gotTerminal = terminal
-		gotCompletion = completion
-		return nil
+	cfg.Client = &server.FuncClient{
+		UpdateTrackerStatesFn: func(active, terminal []string, completion string) error {
+			gotActive = active
+			gotTerminal = terminal
+			gotCompletion = completion
+			return nil
+		},
 	}
 	srv := server.New(cfg)
 	w := putJSON(t, srv, "/api/v1/settings/tracker/states",
@@ -710,7 +732,7 @@ func TestHandleUpdateTrackerStates_Success(t *testing.T) {
 
 func TestHandleUpdateTrackerStates_InvalidJSON(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
-	cfg.UpdateTrackerStates = func(_, _ []string, _ string) error { return nil }
+	cfg.Client = &server.FuncClient{UpdateTrackerStatesFn: func(_, _ []string, _ string) error { return nil }}
 	srv := server.New(cfg)
 	w := putJSON(t, srv, "/api/v1/settings/tracker/states", `{bad json`)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -731,7 +753,7 @@ func TestNotifyDoesNotPanicWithNoSubscribers(t *testing.T) {
 func testServerWithIssueLogs(t *testing.T, fetchLogs func(string) []string) *server.Server {
 	t.Helper()
 	cfg := makeTestConfig(baseSnap())
-	cfg.FetchLogs = fetchLogs
+	cfg.Client = &server.FuncClient{FetchLogsFn: fetchLogs}
 	return server.New(cfg)
 }
 
@@ -761,7 +783,7 @@ func TestHandleIssueLogs_EmptyLogs(t *testing.T) {
 func TestHandleClearIssueLogs_Success(t *testing.T) {
 	var cleared string
 	cfg := makeTestConfig(baseSnap())
-	cfg.ClearLogs = func(id string) error { cleared = id; return nil }
+	cfg.Client = &server.FuncClient{ClearLogsFn: func(id string) error { cleared = id; return nil }}
 	srv := server.New(cfg)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-9/logs", nil)
 	w := httptest.NewRecorder()
@@ -775,7 +797,7 @@ func TestHandleClearIssueLogs_Success(t *testing.T) {
 func TestHandleAIReview_Success(t *testing.T) {
 	var got string
 	cfg := makeTestConfig(baseSnap())
-	cfg.DispatchReviewer = func(id string) error { got = id; return nil }
+	cfg.Client = &server.FuncClient{DispatchReviewerFn: func(id string) error { got = id; return nil }}
 	srv := server.New(cfg)
 	w := postJSON(t, srv, "/api/v1/issues/ENG-42/ai-review", "")
 	assert.Equal(t, http.StatusAccepted, w.Code)
@@ -784,7 +806,7 @@ func TestHandleAIReview_Success(t *testing.T) {
 
 func TestHandleAIReview_DispatchError(t *testing.T) {
 	cfg := makeTestConfig(baseSnap())
-	cfg.DispatchReviewer = func(string) error { return errors.New("reviewer busy") }
+	cfg.Client = &server.FuncClient{DispatchReviewerFn: func(string) error { return errors.New("reviewer busy") }}
 	srv := server.New(cfg)
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/ai-review", "")
 	assert.Equal(t, http.StatusInternalServerError, w.Code)

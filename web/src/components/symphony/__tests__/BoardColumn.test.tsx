@@ -82,14 +82,45 @@ describe('BoardColumn', () => {
     const { container } = render(
       <BoardColumn state="In Progress" issues={[]} isOver={true} onSelect={vi.fn()} />,
     );
-    expect(container.firstChild).toHaveClass('border-brand-300');
+    const el = container.firstChild as HTMLElement;
+    expect(el.style.border).toContain('var(--accent)');
   });
 
   it('applies default styles when isOver is false', () => {
     const { container } = render(
       <BoardColumn state="In Progress" issues={[]} isOver={false} onSelect={vi.fn()} />,
     );
-    expect(container.firstChild).toHaveClass('border-gray-200');
+    const el = container.firstChild as HTMLElement;
+    expect(el.style.border).toContain('var(--line)');
+  });
+
+  // All columns use bg-soft per the prototype lane spec — no per-state tinting
+  it('applies bg-soft background for done states', () => {
+    const { container } = render(
+      <BoardColumn state="Done" issues={[]} isOver={false} onSelect={vi.fn()} />,
+    );
+    expect(container.firstChild).toHaveStyle({ background: 'var(--bg-soft)' });
+  });
+
+  it('applies bg-soft background for in-progress states', () => {
+    const { container } = render(
+      <BoardColumn state="In Progress" issues={[]} isOver={false} onSelect={vi.fn()} />,
+    );
+    expect(container.firstChild).toHaveStyle({ background: 'var(--bg-soft)' });
+  });
+
+  it('applies bg-soft background for blocked states', () => {
+    const { container } = render(
+      <BoardColumn state="Blocked" issues={[]} isOver={false} onSelect={vi.fn()} />,
+    );
+    expect(container.firstChild).toHaveStyle({ background: 'var(--bg-soft)' });
+  });
+
+  it('applies bg-soft background for unknown states', () => {
+    const { container } = render(
+      <BoardColumn state="Backlog" issues={[]} isOver={false} onSelect={vi.fn()} />,
+    );
+    expect(container.firstChild).toHaveStyle({ background: 'var(--bg-soft)' });
   });
 
   it('calls onSelect with the issue identifier when a card is clicked', async () => {

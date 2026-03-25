@@ -36,10 +36,12 @@ type Logger interface {
 // log should be pre-seeded with issue context (e.g. issue_identifier) so that
 // Claude's live output appears in the log stream with filterable attributes.
 // workerHost: if non-empty, the command is executed on that SSH host.
+// logDir: if non-empty, the CLAUDE_CODE_LOG_DIR env var is set to this path so
+// the agent writes full session logs (including sub-agents) to disk.
 // onProgress, if non-nil, is called after each assistant event with the partial
 // TurnResult so callers can stream live token/message updates to the dashboard.
 type Runner interface {
-	RunTurn(ctx context.Context, log Logger, onProgress func(TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, readTimeoutMs, turnTimeoutMs int) (TurnResult, error)
+	RunTurn(ctx context.Context, log Logger, onProgress func(TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (TurnResult, error)
 }
 
 // ApplyEvent merges a StreamEvent into the accumulated TurnResult.

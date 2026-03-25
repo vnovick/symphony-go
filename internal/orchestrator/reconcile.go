@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/vnovick/symphony-go/internal/config"
@@ -15,6 +14,13 @@ import (
 // ReconcileStalls checks all running sessions for stall timeout violations.
 // If stall_timeout_ms <= 0, stall detection is disabled and this is a no-op.
 // The optional logBuf receives a stall-warning entry before the worker is killed.
+//
+// cfg.Agent.StallTimeoutMs is read without cfgMu because it is set only once at
+// startup — there is no HTTP setter for this field, so there is no concurrent
+// writer and no data race. See CLAUDE.md "cfgMu scope" for the full list of
+// fields that require locking.
+// cfg.Agent.MaxRetryBackoffMs is also read without cfgMu for the same reason:
+// no HTTP setter exists for this field.
 func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan OrchestratorEvent, logBuf ...*logbuffer.Buffer) State {
 	if cfg.Agent.StallTimeoutMs <= 0 {
 		return state
@@ -49,12 +55,28 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 			}
 			delete(state.Running, id)
 			delete(state.Claimed, id)
-			state = ScheduleRetry(state, id, 1, entry.Issue.Identifier, "stall_timeout", now, 1000)
-			// Non-blocking send: state is already updated inline; the event loop
-			// will persist the snapshot after onTick returns regardless of whether
-			// this notification is received.
+			prevAttempt := 0
+			if re, ok := state.RetryAttempts[id]; ok {
+				prevAttempt = re.Attempt
+			}
+			state = ScheduleRetry(state, id, prevAttempt+1, entry.Issue.Identifier, "stall_timeout", now, BackoffMs(prevAttempt+1, cfg.Agent.MaxRetryBackoffMs))
+			// Include the RunEntry so handleEvent can record stall history.
+			// Claim and retry management have already been performed inline above;
+			// the event loop will see TerminalStalled and only call recordHistory.
+			stalledEntry := RunEntry{
+				Issue:          entry.Issue,
+				StartedAt:      entry.StartedAt,
+				TurnCount:      entry.TurnCount,
+				TotalTokens:    entry.TotalTokens,
+				InputTokens:    entry.InputTokens,
+				OutputTokens:   entry.OutputTokens,
+				SessionID:      entry.SessionID,
+				WorkerHost:     entry.WorkerHost,
+				Backend:        entry.Backend,
+				TerminalReason: TerminalStalled,
+			}
 			select {
-			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id}:
+			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id, RunEntry: &stalledEntry}:
 			default:
 			}
 		}
@@ -66,7 +88,9 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 // reconciles: terminal→cleanup, active→update snapshot, neither→stop no cleanup.
 // If the fetch fails, workers are kept and the error is logged.
 // The optional logBuf receives per-issue explanatory messages when workers are stopped.
-func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config, tr tracker.Tracker, events chan OrchestratorEvent, logBuf ...*logbuffer.Buffer) State {
+// State.ActiveStates and State.TerminalStates are used for comparison; these are
+// snapshotted from cfg under cfgMu at the start of each tick, so no lock is needed here.
+func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker, events chan OrchestratorEvent, logBuf ...*logbuffer.Buffer) State {
 	var buf *logbuffer.Buffer
 	if len(logBuf) > 0 {
 		buf = logBuf[0]
@@ -112,7 +136,7 @@ func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config
 			continue
 		}
 
-		if isTermState(refreshedState, cfg) {
+		if isTerminalState(refreshedState, state) {
 			slog.Info("reconciliation: terminal state, stopping worker",
 				"issue_id", id, "issue_identifier", entry.Issue.Identifier, "state", refreshedState)
 			if buf != nil {
@@ -134,7 +158,7 @@ func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config
 			}:
 			default:
 			}
-		} else if isActState(refreshedState, cfg) {
+		} else if isActiveState(refreshedState, state) {
 			entry.Issue.State = refreshedState
 			entry.LastEventAt = &now
 		} else {
@@ -157,20 +181,3 @@ func ReconcileTrackerStates(ctx context.Context, state State, cfg *config.Config
 	return state
 }
 
-func isTermState(s string, cfg *config.Config) bool {
-	for _, t := range cfg.Tracker.TerminalStates {
-		if strings.EqualFold(s, t) {
-			return true
-		}
-	}
-	return false
-}
-
-func isActState(s string, cfg *config.Config) bool {
-	for _, a := range cfg.Tracker.ActiveStates {
-		if strings.EqualFold(s, a) {
-			return true
-		}
-	}
-	return false
-}

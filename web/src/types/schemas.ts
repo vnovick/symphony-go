@@ -46,6 +46,7 @@ export const HistoryRowSchema = z.object({
   workerHost: z.string().optional(),
   backend: z.string().optional(),
   sessionId: z.string().optional(),
+  appSessionId: z.string().optional(),
 });
 
 export const RetryRowSchema = z.object({
@@ -69,6 +70,11 @@ export const RateLimitInfoSchema = z.object({
   complexityRemaining: z.number().optional(),
 });
 
+export const SSHHostInfoSchema = z.object({
+  host: z.string(),
+  description: z.string().optional(),
+});
+
 export const ProfileDefSchema = z.object({
   command: z.string(),
   prompt: z.string().optional(),
@@ -77,6 +83,7 @@ export const ProfileDefSchema = z.object({
 
 export const StateSnapshotSchema = z.object({
   generatedAt: z.string(),
+  pollIntervalMs: z.number().optional(), // omitempty — matches Go StateSnapshot.PollIntervalMs
   counts: CountsSchema,
   running: z.array(RunningRowSchema),
   history: z.array(HistoryRowSchema).optional(),
@@ -95,6 +102,9 @@ export const StateSnapshotSchema = z.object({
   completionState: z.string().optional(),
   backlogStates: z.array(z.string()).optional(),
   autoClearWorkspace: z.boolean().optional(),
+  currentAppSessionId: z.string().optional(),
+  sshHosts: z.array(SSHHostInfoSchema).optional(),
+  dispatchStrategy: z.string().optional(),
 });
 
 export const LogEventTypeSchema = z.enum([
@@ -110,11 +120,12 @@ export const LogEventTypeSchema = z.enum([
 
 export const IssueLogEntrySchema = z.object({
   level: z.string(),
-  event: LogEventTypeSchema,
+  event: LogEventTypeSchema.catch('info'),
   message: z.string(),
   tool: z.string().optional(),
   time: z.string().optional(),
   detail: z.string().optional(),
+  sessionId: z.string().optional(),
 });
 
 export const TrackerIssueSchema = z.object({
@@ -123,7 +134,7 @@ export const TrackerIssueSchema = z.object({
   state: z.string(),
   description: z.string().optional(), // omitempty — absent when ""
   url: z.string().optional(), // omitempty — absent when ""
-  orchestratorState: z.enum(['running', 'retrying', 'paused', 'idle']),
+  orchestratorState: z.enum(['idle', 'running', 'retrying', 'paused']),
   turnCount: z.number().optional(), // omitempty — absent when 0
   tokens: z.number().optional(), // omitempty — absent when 0
   elapsedMs: z.number().optional(), // omitempty — absent when 0
@@ -139,6 +150,7 @@ export const TrackerIssueSchema = z.object({
 });
 
 // Inferred TypeScript types — re-exported from symphony.ts for backward compatibility.
+export type SSHHostInfo = z.infer<typeof SSHHostInfoSchema>;
 export type CommentRow = z.infer<typeof CommentRowSchema>;
 export type RunningRow = z.infer<typeof RunningRowSchema>;
 export type HistoryRow = z.infer<typeof HistoryRowSchema>;

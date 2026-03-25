@@ -7,29 +7,19 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/vnovick/symphony-go/internal/domain"
 )
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	snap := s.snapshot()
 	writeJSON(w, http.StatusOK, snap)
-}
-
-func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
-	identifier := chi.URLParam(r, "identifier")
-	snap := s.snapshot()
-	for _, row := range snap.Running {
-		if row.Identifier == identifier {
-			writeJSON(w, http.StatusOK, row)
-			return
-		}
-	}
-	writeError(w, http.StatusNotFound, "not_found", "issue "+identifier+" not found")
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +98,7 @@ func (s *Server) writeSSEEvent(w http.ResponseWriter, flusher http.Flusher) erro
 // POST /api/v1/issues/{identifier}/reanalyze
 func (s *Server) handleReanalyzeIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if !s.reanalyzeIssue(identifier) {
+	if !s.client.ReanalyzeIssue(identifier) {
 		writeError(w, http.StatusNotFound, "not_paused", "issue "+identifier+" is not paused")
 		return
 	}
@@ -118,7 +108,7 @@ func (s *Server) handleReanalyzeIssue(w http.ResponseWriter, r *http.Request) {
 // handleResumeIssue removes a paused issue from the pause set so it can be dispatched again.
 func (s *Server) handleResumeIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if s.resumeIssue(identifier) {
+	if s.client.ResumeIssue(identifier) {
 		writeJSON(w, http.StatusOK, map[string]any{"resumed": true, "identifier": identifier})
 	} else {
 		writeError(w, http.StatusNotFound, "not_paused", "issue "+identifier+" is not paused")
@@ -128,7 +118,7 @@ func (s *Server) handleResumeIssue(w http.ResponseWriter, r *http.Request) {
 // handleCancelIssue cancels the running worker for the given issue identifier.
 func (s *Server) handleCancelIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if s.cancelIssue(identifier) {
+	if s.client.CancelIssue(identifier) {
 		writeJSON(w, http.StatusOK, map[string]any{"cancelled": true, "identifier": identifier})
 	} else {
 		writeError(w, http.StatusNotFound, "not_running", "issue "+identifier+" is not running")
@@ -138,7 +128,7 @@ func (s *Server) handleCancelIssue(w http.ResponseWriter, r *http.Request) {
 // handleTerminateIssue hard-stops a running or paused issue without adding it to PausedIdentifiers.
 func (s *Server) handleTerminateIssue(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if s.terminateIssue(identifier) {
+	if s.client.TerminateIssue(identifier) {
 		writeJSON(w, http.StatusOK, map[string]any{"terminated": true, "identifier": identifier})
 	} else {
 		writeError(w, http.StatusNotFound, "not_found", "issue "+identifier+" is not running or paused")
@@ -165,7 +155,7 @@ func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Slow path: scan all issues.
-	issues, err := s.fetchIssues(r.Context())
+	issues, err := s.client.FetchIssues(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
 		return
@@ -181,7 +171,7 @@ func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 
 // handleIssues returns all project issues enriched with orchestrator state.
 func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
-	issues, err := s.fetchIssues(r.Context())
+	issues, err := s.client.FetchIssues(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
 		return
@@ -239,34 +229,60 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	readBuf := make([]byte, 32*1024)
 	var pending bytes.Buffer
 
-	// Optional identifier filter: only emit lines containing this string.
+	// Optional identifier filter: only emit lines belonging to this issue.
+	// We parse each line as JSON and match on the issue_identifier field for
+	// exactness — a substring match on raw bytes can produce false positives
+	// (e.g. "PROJ-1" matches "PROJ-10"). Fall back to substring for non-JSON
+	// lines so that legacy plain-text entries are still included (GO-R10-6).
 	filterID := r.URL.Query().Get("identifier")
+
+	lineMatchesFilter := func(line string) bool {
+		if filterID == "" {
+			return true
+		}
+		var entry struct {
+			IssueIdentifier string `json:"issue_identifier"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err == nil {
+			return entry.IssueIdentifier == filterID
+		}
+		// Non-JSON fallback: substring match.
+		return strings.Contains(line, filterID)
+	}
+
+	flushPending := func() {
+		for {
+			idx := bytes.IndexByte(pending.Bytes(), '\n')
+			if idx < 0 {
+				break
+			}
+			line := string(pending.Next(idx + 1))
+			line = strings.TrimRight(line, "\n")
+			if line == "" {
+				continue
+			}
+			if !lineMatchesFilter(line) {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "event: log\ndata: %s\n\n", line)
+		}
+	}
 
 	flush := func() {
 		for {
 			n, err := f.Read(readBuf)
 			if n > 0 {
-				if pending.Len()+n <= maxPending {
-					pending.Write(readBuf[:n])
+				if pending.Len()+n > maxPending {
+					// Flush what we have before accepting more so data is not dropped.
+					flushPending()
 				}
+				pending.Write(readBuf[:n])
 			}
 			// Send complete lines.
-			for {
-				idx := bytes.IndexByte(pending.Bytes(), '\n')
-				if idx < 0 {
-					break
-				}
-				line := string(pending.Next(idx + 1))
-				line = strings.TrimRight(line, "\n")
-				if line == "" {
-					continue
-				}
-				if filterID != "" && !strings.Contains(line, filterID) {
-					continue
-				}
-				_, _ = fmt.Fprintf(w, "event: log\ndata: %s\n\n", line)
-			}
-			if err != nil {
+			flushPending()
+			if err != nil || n == 0 {
+				// n == 0 with err == nil means no new data (EOF on regular file);
+				// break to avoid a busy-spin until the next ticker tick (GO-R10-5).
 				break
 			}
 		}
@@ -288,7 +304,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 // from the in-memory log buffer (only available for currently-running sessions).
 func (s *Server) handleIssueLogs(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	lines := s.fetchLogs(identifier)
+	lines := s.client.FetchLogs(identifier)
 	entries := make([]IssueLogEntry, 0, len(lines))
 	for _, line := range lines {
 		entry, skip := parseLogLine(line)
@@ -300,11 +316,121 @@ func (s *Server) handleIssueLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, entries)
 }
 
+// handleIssueLogStream streams parsed log entries for one issue as SSE.
+// It tracks a cursor into the in-memory buffer and emits only new entries on
+// each tick, so clients receive push notifications instead of polling.
+// If the buffer is reset (cleared/issue removed) the cursor resets and all
+// current entries are re-sent.
+// GET /api/v1/issues/{identifier}/log-stream
+func (s *Server) handleIssueLogStream(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	// cursor tracks how many lines from the buffer have already been sent.
+	sent := 0
+
+	sendNew := func() bool {
+		lines := s.client.FetchLogs(identifier)
+		// Guard against buffer reset (cleared while streaming).
+		if sent > len(lines) {
+			sent = 0
+		}
+		for _, line := range lines[sent:] {
+			sent++
+			entry, skip := parseLogLine(line)
+			if skip {
+				continue
+			}
+			b, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "event: log\ndata: %s\n\n", b); err != nil {
+				return false
+			}
+		}
+		flusher.Flush()
+		return true
+	}
+
+	if !sendNew() {
+		return
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			if !sendNew() {
+				return
+			}
+		}
+	}
+}
+
 // handleClearIssueLogs deletes the in-memory and on-disk log buffer for an issue.
 // DELETE /api/v1/issues/{identifier}/logs
 func (s *Server) handleClearIssueLogs(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if err := s.clearLogs(identifier); err != nil {
+	if err := s.client.ClearLogs(identifier); err != nil {
+		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleClearIssueSubLogs deletes all JSONL session files for one issue.
+// DELETE /api/v1/issues/{identifier}/sublogs
+func (s *Server) handleClearIssueSubLogs(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	if err := s.client.ClearIssueSubLogs(identifier); err != nil {
+		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleLogIdentifiers returns a list of issue identifiers that have log data
+// (either in-memory or on-disk). Used by the Logs page sidebar to show only
+// issues with actual log files, not all tracker issues.
+// GET /api/v1/logs/identifiers
+func (s *Server) handleLogIdentifiers(w http.ResponseWriter, r *http.Request) {
+	ids := s.client.FetchLogIdentifiers()
+	if ids == nil {
+		ids = []string{}
+	}
+	writeJSON(w, http.StatusOK, ids)
+}
+
+// handleClearAllLogs deletes in-memory and on-disk log buffers for all issues.
+// DELETE /api/v1/logs
+func (s *Server) handleClearAllLogs(w http.ResponseWriter, r *http.Request) {
+	if err := s.client.ClearAllLogs(); err != nil {
+		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleClearSessionSublog deletes the JSONL file for a specific agent session run.
+// DELETE /api/v1/issues/{identifier}/sublogs/{sessionId}
+func (s *Server) handleClearSessionSublog(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	sessionID := chi.URLParam(r, "sessionId")
+	if err := s.client.ClearSessionSublog(identifier, sessionID); err != nil {
 		writeError(w, http.StatusInternalServerError, "clear_failed", err.Error())
 		return
 	}
@@ -350,22 +476,9 @@ func buildDetailJSON(status, exitCode, outputSize string) string {
 	return string(b)
 }
 
-// bufLogEntry mirrors orchestrator.bufLogEntry. Both sides must stay in sync.
-// Using a local type avoids an import cycle between server and orchestrator.
-type bufLogEntry struct {
-	Level       string `json:"level"`
-	Msg         string `json:"msg"`
-	Time        string `json:"time"`
-	Text        string `json:"text,omitempty"`
-	Tool        string `json:"tool,omitempty"`
-	Description string `json:"description,omitempty"`
-	Status      string `json:"status,omitempty"`
-	ExitCode    string `json:"exit_code,omitempty"`
-	OutputSize  string `json:"output_size,omitempty"`
-	Task        string `json:"task,omitempty"`
-	URL         string `json:"url,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-}
+// bufLogEntry is a package-local alias for domain.BufLogEntry.
+// The canonical definition lives in internal/domain, shared with the orchestrator.
+type bufLogEntry = domain.BufLogEntry
 
 // parseLogLine converts a JSON log buffer line into a structured IssueLogEntry.
 // Returns (entry, false) for valid entries, (zero, true) to signal skip.
@@ -380,7 +493,7 @@ func parseLogLine(line string) (IssueLogEntry, bool) {
 		return IssueLogEntry{}, true
 	}
 
-	entry := IssueLogEntry{Level: e.Level, Time: e.Time}
+	entry := IssueLogEntry{Level: e.Level, Time: e.Time, SessionID: e.SessionID}
 
 	switch e.Msg {
 	case "claude: text", "codex: text":
@@ -446,11 +559,29 @@ func parseLogLine(line string) (IssueLogEntry, bool) {
 	return entry, false
 }
 
+// handleSubLogs returns parsed session log entries from CLAUDE_CODE_LOG_DIR files.
+// This endpoint reads .jsonl stream-json files written by Claude Code when
+// CLAUDE_CODE_LOG_DIR is set, covering all subagents spawned during the session.
+// Returns an empty array when no logs exist (not an error).
+// GET /api/v1/issues/{identifier}/sublogs
+func (s *Server) handleSubLogs(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	entries, err := s.client.FetchSubLogs(identifier)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+		return
+	}
+	if entries == nil {
+		entries = []domain.IssueLogEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
 // handleAIReview dispatches a reviewer worker for the given issue identifier.
 // POST /api/v1/issues/{identifier}/ai-review
 func (s *Server) handleAIReview(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
-	if err := s.dispatchReviewer(identifier); err != nil {
+	if err := s.client.DispatchReviewer(identifier); err != nil {
 		writeError(w, http.StatusInternalServerError, "dispatch_failed", err.Error())
 		return
 	}
@@ -518,7 +649,7 @@ func (s *Server) handleUpdateIssueState(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "bad_request", "state field required")
 		return
 	}
-	if err := s.updateIssueState(r.Context(), identifier, body.State); err != nil {
+	if err := s.client.UpdateIssueState(r.Context(), identifier, body.State); err != nil {
 		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
 		return
 	}
@@ -543,7 +674,7 @@ func (s *Server) handleSetIssueProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
-	s.setIssueProfile(identifier, body.Profile) // empty string = reset to default
+	s.client.SetIssueProfile(identifier, body.Profile) // empty string = reset to default
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "identifier": identifier, "profile": body.Profile})
 }
 
@@ -559,27 +690,22 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
-	snap := s.snapshot()
-	target := snap.MaxConcurrentAgents
+	var target int
 	if body.Workers > 0 {
-		target = body.Workers
+		// Absolute set: clamp and apply directly.
+		target = max(1, min(body.Workers, 50))
+		s.client.SetWorkers(target)
 	} else {
-		target += body.Delta
+		// Relative delta: use BumpMaxWorkers for an atomic read-modify-write.
+		target = s.client.BumpWorkers(body.Delta)
 	}
-	if target < 1 {
-		target = 1
-	}
-	if target > 50 {
-		target = 50
-	}
-	s.setWorkers(target)
 	writeJSON(w, http.StatusOK, map[string]any{"workers": target})
 }
 
 // handleListProfiles returns the current profile definitions.
 // GET /api/v1/settings/profiles
 func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
-	defs := s.profileDefs()
+	defs := s.client.ProfileDefs()
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": defs})
 }
 
@@ -602,7 +728,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 		Prompt:  body.Prompt,
 		Backend: body.Backend,
 	}
-	if err := s.upsertProfile(name, def); err != nil {
+	if err := s.client.UpsertProfile(name, def); err != nil {
 		writeError(w, http.StatusInternalServerError, "upsert_failed", err.Error())
 		return
 	}
@@ -613,7 +739,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 // DELETE /api/v1/settings/profiles/{name}
 func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	if err := s.deleteProfile(name); err != nil {
+	if err := s.client.DeleteProfile(name); err != nil {
 		writeError(w, http.StatusInternalServerError, "delete_failed", err.Error())
 		return
 	}
@@ -635,11 +761,24 @@ func (s *Server) handleSetAgentMode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_mode", `mode must be "", "subagents", or "teams"`)
 		return
 	}
-	if err := s.setAgentMode(body.Mode); err != nil {
+	if err := s.client.SetAgentMode(body.Mode); err != nil {
 		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "agentMode": body.Mode})
+}
+
+// handleClearAllWorkspaces removes all workspace directories under workspace.root.
+// Responds 202 immediately and performs deletion in a background goroutine so
+// the UI does not hang on large workspace trees.
+// DELETE /api/v1/workspaces
+func (s *Server) handleClearAllWorkspaces(w http.ResponseWriter, r *http.Request) {
+	go func() {
+		if err := s.client.ClearAllWorkspaces(); err != nil {
+			slog.Error("clear all workspaces failed", "error", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
 }
 
 // handleSetAutoClearWorkspace toggles automatic workspace cleanup after task success.
@@ -647,17 +786,21 @@ func (s *Server) handleSetAgentMode(w http.ResponseWriter, r *http.Request) {
 // Body: {"enabled": true|false}
 func (s *Server) handleSetAutoClearWorkspace(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Enabled bool `json:"enabled"`
+		Enabled *bool `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "enabled field required")
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
-	if err := s.setAutoClearWorkspace(body.Enabled); err != nil {
+	if body.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "enabled field is required")
+		return
+	}
+	if err := s.client.SetAutoClearWorkspace(*body.Enabled); err != nil {
 		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoClearWorkspace": body.Enabled})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "autoClearWorkspace": *body.Enabled})
 }
 
 // handleUpdateTrackerStates updates active/terminal/completion states in-memory and in WORKFLOW.md.
@@ -673,8 +816,69 @@ func (s *Server) handleUpdateTrackerStates(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
-	if err := s.updateTrackerStates(body.ActiveStates, body.TerminalStates, body.CompletionState); err != nil {
+	if len(body.ActiveStates) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "activeStates must not be empty")
+		return
+	}
+	if err := s.client.UpdateTrackerStates(body.ActiveStates, body.TerminalStates, body.CompletionState); err != nil {
 		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleAddSSHHost(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Host        string `json:"host"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	if strings.TrimSpace(body.Host) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "host is required")
+		return
+	}
+	if err := s.client.AddSSHHost(strings.TrimSpace(body.Host), body.Description); err != nil {
+		writeError(w, http.StatusInternalServerError, "add_ssh_host_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRemoveSSHHost(w http.ResponseWriter, r *http.Request) {
+	// chi v5 extracts params from RawPath when set, so the value may still be
+	// percent-encoded (e.g. "user%40host" instead of "user@host"). Decode before
+	// comparing against the stored host string.
+	host, err := url.PathUnescape(chi.URLParam(r, "host"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_host", "malformed host encoding in URL")
+		return
+	}
+	if err := s.client.RemoveSSHHost(host); err != nil {
+		writeError(w, http.StatusInternalServerError, "remove_ssh_host_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSetDispatchStrategy(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Strategy string `json:"strategy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	switch body.Strategy {
+	case "round-robin", "least-loaded":
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request", "strategy must be round-robin or least-loaded")
+		return
+	}
+	if err := s.client.SetDispatchStrategy(body.Strategy); err != nil {
+		writeError(w, http.StatusInternalServerError, "set_strategy_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

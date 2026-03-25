@@ -64,6 +64,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 | `web/src/components/symphony/RunningSessionsTable.tsx` | Backend column |
 | `web/src/queries/issues.ts` | Backend field forwarded |
 
+#### Per-run log isolation (`AppSessionID` + `session_id` stamping)
+
+Each daemon invocation now receives a unique `AppSessionID` (a `crypto/rand`-derived hex string generated
+at startup). Every completed run is tagged with the ID of the daemon that produced it, and every log entry
+is tagged with the Claude Code session ID that produced it. This allows the Timeline page to show only the
+subagents that belong to a specific run when you expand it — previously, expanding run #2 of an issue
+would show subagents from all prior runs mixed together.
+
+| File | Change |
+|------|--------|
+| `cmd/symphony/main.go` | `newAppSessionID()` *(new)* — generates a 16-byte `crypto/rand` hex token at startup; stored as `appSessionID` and threaded through `buildSnapFunc` |
+| `cmd/symphony/main.go` | `buildSnapFunc`: `HistoryRow.AppSessionID` set from `run.AppSessionID`; `StateSnapshot.CurrentAppSessionID` set from the live token |
+| `internal/orchestrator/state.go` | `CompletedRun.AppSessionID string` *(new)* — daemon-invocation grouping key; empty for legacy entries |
+| `internal/orchestrator/orchestrator.go` | `Orchestrator.appSessionID string` field and `SetAppSessionID(id string)` method *(new)* — allows `main.go` to inject the token after construction; stamped onto `CompletedRun` at worker exit |
+| `internal/orchestrator/logging.go` | `formatBufLine` `switch key`: new `case "session_id"` maps slog key-value to `BufLogEntry.SessionID` — previously the session ID was silently dropped |
+| `internal/domain/types.go` | `BufLogEntry.SessionID string` `json:"session_id,omitempty"` *(new)*; `IssueLogEntry.SessionID string` `json:"sessionId,omitempty"` *(new)* |
+| `internal/server/handlers.go` | `parseLogLine`: copies `e.SessionID` → `entry.SessionID` |
+| `internal/server/server.go` | `HistoryRow.AppSessionID string` `json:"appSessionId,omitempty"` *(new)*; `StateSnapshot.CurrentAppSessionID string` `json:"currentAppSessionId,omitempty"` *(new)* |
+| `web/src/types/schemas.ts` | `IssueLogEntrySchema.sessionId z.string().optional()`; `StateSnapshotSchema.currentAppSessionId z.string().optional()` |
+| `web/src/pages/Timeline/index.tsx` | `NormalisedSession.sessionId?: string` threaded through `fromRunning`/`fromHistory`; `extractSubagents` accepts `filterSessionId?: string` — filters log entries to the run's session before parsing, so each expanded run shows only its own subagents; daemon session badge in header |
+
 #### `symphony init --runner` flag
 
 | File | Change |
@@ -76,7 +97,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 | File | Change |
 |------|--------|
-| `cmd/symphony/main.go` | `--logs-dir` default changed from `./log` to `~/.simphony/logs/<tracker-kind>/<project-slug>`; new `defaultLogsDir(workflowPath string)` helper performs a lightweight early config read to derive the path; failures fall back to `~/.simphony/logs` |
+| `cmd/symphony/main.go` | `--logs-dir` default changed from `./log` to `~/.symphony/logs/<tracker-kind>/<project-slug>`; new `defaultLogsDir(workflowPath string)` helper performs a lightweight early config read to derive the path; failures fall back to `~/.symphony/logs` |
 
 #### Auto-clear workspace
 

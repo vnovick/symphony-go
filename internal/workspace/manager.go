@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"log/slog"
 	"os"
 
 	"github.com/vnovick/symphony-go/internal/config"
@@ -68,10 +69,28 @@ func (m *Manager) ensureDirectory(identifier string) (Workspace, error) {
 // When cfg.Workspace.Worktree is true, the git worktree is removed (branchName
 // is required). Otherwise the legacy directory is removed and branchName is
 // ignored. Safe to call when the workspace does not exist.
-func (m *Manager) RemoveWorkspace(identifier, branchName string) error {
+// If cfg.Hooks.BeforeRemove is set, the hook is run inside the workspace
+// directory before deletion; a hook failure is logged but removal proceeds.
+func (m *Manager) RemoveWorkspace(ctx context.Context, identifier, branchName string) error {
+	root := m.cfg.Workspace.Root
+	var hookPath string
 	if m.cfg.Workspace.Worktree {
-		return m.removeWorktree(identifier, branchName)
+		hookPath = worktreePath(root, identifier)
+	} else {
+		hookPath = WorkspacePath(root, identifier)
 	}
-	path := WorkspacePath(m.cfg.Workspace.Root, identifier)
-	return os.RemoveAll(path)
+
+	if m.cfg.Hooks.BeforeRemove != "" {
+		if err := RunHook(ctx, m.cfg.Hooks.BeforeRemove, hookPath, m.cfg.Hooks.TimeoutMs); err != nil {
+			// Hook failure is non-fatal: log and proceed with removal so a broken
+			// hook cannot permanently prevent workspace cleanup.
+			slog.Warn("workspace: before_remove hook failed, proceeding with removal",
+				"identifier", identifier, "error", err)
+		}
+	}
+
+	if m.cfg.Workspace.Worktree {
+		return m.removeWorktree(ctx, identifier, branchName)
+	}
+	return os.RemoveAll(hookPath)
 }

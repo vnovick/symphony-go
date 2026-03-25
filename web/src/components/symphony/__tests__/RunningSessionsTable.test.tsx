@@ -17,6 +17,7 @@ vi.mock('../../../queries/issues', () => ({
   useResumeIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useReanalyzeIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useSetIssueProfile: () => ({ mutate: vi.fn(), isPending: false }),
+  useTriggerAIReview: () => ({ mutate: vi.fn(), isPending: false }),
   useIssues: () => ({ data: [] }),
 }));
 
@@ -54,10 +55,12 @@ const baseRow: RunningRow = {
 };
 
 describe('RunningSessionsTable', () => {
+  const mockSetSelectedIdentifier = vi.fn();
+
   beforeEach(() => {
     // Default: empty snapshot
     mockUseSymphonyStore.mockImplementation((selector: (s: any) => any) =>
-      selector({ snapshot: null }),
+      selector({ snapshot: null, setSelectedIdentifier: mockSetSelectedIdentifier }),
     );
   });
 
@@ -73,6 +76,7 @@ describe('RunningSessionsTable', () => {
           paused: snapshot.paused ?? [],
           pausedWithPR: snapshot.pausedWithPR ?? {},
         },
+        setSelectedIdentifier: mockSetSelectedIdentifier,
       }),
     );
   }
@@ -123,7 +127,7 @@ describe('RunningSessionsTable', () => {
     withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('claude')).toBeInTheDocument();
-    expect(screen.getByText('t5')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
     expect(screen.getByText('1m 00s')).toBeInTheDocument();
   });
 

@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { SAVE_OK_BANNER_MS } from '../../utils/timings';
+import { TagInput } from '../../components/symphony/TagInput';
 
 interface TrackerStatesCardProps {
   initialActiveStates: string[];
@@ -20,11 +22,16 @@ export function TrackerStatesCard({
   const [activeStates, setActiveStates] = useState<string[]>(initialActiveStates);
   const [terminalStates, setTerminalStates] = useState<string[]>(initialTerminalStates);
   const [completionState, setCompletionState] = useState<string>(initialCompletionState);
-  const [statesAddActive, setStatesAddActive] = useState('');
-  const [statesAddTerminal, setStatesAddTerminal] = useState('');
   const [statesSaving, setStatesSaving] = useState(false);
   const [statesSaveError, setStatesSaveError] = useState('');
   const [statesSaveOk, setStatesSaveOk] = useState(false);
+  const saveOkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (saveOkTimerRef.current !== null) clearTimeout(saveOkTimerRef.current);
+    };
+  }, []);
 
   const handleSaveStates = async () => {
     setStatesSaving(true);
@@ -34,150 +41,85 @@ export function TrackerStatesCard({
     setStatesSaving(false);
     if (ok) {
       setStatesSaveOk(true);
-      setTimeout(() => {
+      saveOkTimerRef.current = setTimeout(() => {
         setStatesSaveOk(false);
-      }, 3000);
+        saveOkTimerRef.current = null;
+      }, SAVE_OK_BANNER_MS);
     } else {
       setStatesSaveError('Failed to save. Check the server logs.');
     }
   };
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-      <div className="border-b border-gray-100 bg-gray-50 px-6 py-4 dark:border-gray-800 dark:bg-gray-900/40">
-        <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Tracker States</h2>
-        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+    <div
+      className="overflow-hidden rounded-[var(--radius-md)]"
+      style={{ border: '1px solid var(--line)', background: 'var(--bg-elevated)' }}
+    >
+      {/* Card header */}
+      <div
+        className="border-b px-5 py-4"
+        style={{ borderColor: 'var(--line)', background: 'var(--panel-strong)' }}
+      >
+        <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+          Tracker States
+        </h2>
+        <p className="mt-0.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
           Configure which states the orchestrator picks up (Active), marks as done (Terminal), and
           transitions to on completion. Changes are written back to WORKFLOW.md.
         </p>
       </div>
-      <div className="space-y-5 px-6 py-5">
+
+      <div className="space-y-5 px-5 py-5">
         <div>
-          <label className="mb-2 block text-xs font-medium tracking-wider text-gray-600 uppercase dark:text-gray-400">
+          <label
+            className="mb-2 block text-xs font-medium tracking-wider uppercase"
+            style={{ color: 'var(--muted)' }}
+          >
             Active States
           </label>
-          <div className="mb-2 flex flex-wrap gap-2">
-            {activeStates.map((s) => (
-              <span
-                key={s}
-                className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/30 dark:text-blue-300"
-              >
-                {s}
-                <button
-                  onClick={() => {
-                    setActiveStates(activeStates.filter((x) => x !== s));
-                  }}
-                  className="ml-0.5 transition-colors hover:text-red-500 dark:hover:text-red-400"
-                  title={`Remove ${s}`}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-            <span className="inline-flex items-center gap-1">
-              <input
-                type="text"
-                value={statesAddActive}
-                onChange={(e) => {
-                  setStatesAddActive(e.target.value);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && statesAddActive.trim()) {
-                    const value = statesAddActive.trim();
-                    if (!activeStates.includes(value)) setActiveStates([...activeStates, value]);
-                    setStatesAddActive('');
-                  }
-                }}
-                placeholder="+ Add state"
-                className="focus:ring-brand-500 w-28 rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-800 focus:ring-1 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
-              />
-              {statesAddActive.trim() && (
-                <button
-                  onClick={() => {
-                    const value = statesAddActive.trim();
-                    if (!activeStates.includes(value)) setActiveStates([...activeStates, value]);
-                    setStatesAddActive('');
-                  }}
-                  className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 transition-colors hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-300 dark:hover:bg-blue-900/50"
-                >
-                  Add
-                </button>
-              )}
-            </span>
-          </div>
+          <TagInput
+            chips={activeStates}
+            onChange={setActiveStates}
+            chipClassName="bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+            addButtonClassName="bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:opacity-80"
+          />
         </div>
 
         <div>
-          <label className="mb-2 block text-xs font-medium tracking-wider text-gray-600 uppercase dark:text-gray-400">
+          <label
+            className="mb-2 block text-xs font-medium tracking-wider uppercase"
+            style={{ color: 'var(--muted)' }}
+          >
             Terminal States
           </label>
-          <div className="mb-2 flex flex-wrap gap-2">
-            {terminalStates.map((s) => (
-              <span
-                key={s}
-                className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-              >
-                {s}
-                <button
-                  onClick={() => {
-                    setTerminalStates(terminalStates.filter((x) => x !== s));
-                  }}
-                  className="ml-0.5 transition-colors hover:text-red-500 dark:hover:text-red-400"
-                  title={`Remove ${s}`}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-            <span className="inline-flex items-center gap-1">
-              <input
-                type="text"
-                value={statesAddTerminal}
-                onChange={(e) => {
-                  setStatesAddTerminal(e.target.value);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && statesAddTerminal.trim()) {
-                    const value = statesAddTerminal.trim();
-                    if (!terminalStates.includes(value))
-                      setTerminalStates([...terminalStates, value]);
-                    setStatesAddTerminal('');
-                  }
-                }}
-                placeholder="+ Add state"
-                className="focus:ring-brand-500 w-28 rounded border border-gray-300 bg-white px-2 py-0.5 text-xs text-gray-800 focus:ring-1 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
-              />
-              {statesAddTerminal.trim() && (
-                <button
-                  onClick={() => {
-                    const value = statesAddTerminal.trim();
-                    if (!terminalStates.includes(value))
-                      setTerminalStates([...terminalStates, value]);
-                    setStatesAddTerminal('');
-                  }}
-                  className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
-                >
-                  Add
-                </button>
-              )}
-            </span>
-          </div>
+          <TagInput
+            chips={terminalStates}
+            onChange={setTerminalStates}
+            chipClassName="bg-[var(--bg-soft)] text-[var(--text-secondary)]"
+            addButtonClassName="bg-[var(--bg-soft)] text-[var(--text-secondary)] hover:opacity-80"
+          />
         </div>
 
         <div>
-          <label className="mb-2 block text-xs font-medium tracking-wider text-gray-600 uppercase dark:text-gray-400">
+          <label
+            className="mb-2 block text-xs font-medium tracking-wider uppercase"
+            style={{ color: 'var(--muted)' }}
+          >
             Completion State
           </label>
           <input
             type="text"
             value={completionState}
-            onChange={(e) => {
-              setCompletionState(e.target.value);
-            }}
+            onChange={(e) => { setCompletionState(e.target.value); }}
             placeholder="e.g. In Review (leave empty to skip)"
-            className="focus:ring-brand-500 w-64 rounded border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-800 focus:ring-2 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            className="w-64 rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
+            style={{
+              borderColor: 'var(--line)',
+              background: 'var(--panel-strong)',
+              color: 'var(--text)',
+            }}
           />
-          <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+          <p className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>
             The state the agent moves an issue to when it finishes successfully. Has to be 1:1 with
             a tracker state.
           </p>
@@ -187,15 +129,20 @@ export function TrackerStatesCard({
           <button
             onClick={handleSaveStates}
             disabled={statesSaving}
-            className="bg-brand-500 hover:bg-brand-600 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
+            className="rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
+            style={{ background: 'var(--accent)' }}
           >
             {statesSaving ? 'Saving…' : 'Save Changes'}
           </button>
           {statesSaveOk && (
-            <span className="text-sm text-green-600 dark:text-green-400">Saved successfully.</span>
+            <span className="text-sm" style={{ color: 'var(--success)' }}>
+              Saved successfully.
+            </span>
           )}
           {statesSaveError && (
-            <span className="text-sm text-red-600 dark:text-red-400">{statesSaveError}</span>
+            <span className="text-sm" style={{ color: 'var(--danger)' }}>
+              {statesSaveError}
+            </span>
           )}
         </div>
       </div>

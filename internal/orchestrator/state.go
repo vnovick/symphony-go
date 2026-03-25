@@ -24,16 +24,31 @@ const (
 	// dispatch — preventing the TUI's background TriggerPoll from re-picking the
 	// issue before the "In Progress" label has been removed.
 	EventDiscardComplete EventType = "DiscardComplete"
+	// EventTerminateRunning is sent by TerminateIssue when the target issue has
+	// a live worker. Processing it inside the event loop linearises the terminate
+	// with EventWorkerExited, closing the TOCTOU window where a natural worker
+	// exit races with a user-initiated cancel (GO-R5-3).
+	EventTerminateRunning EventType = "TerminateRunning"
+	// EventReviewerCompleted is sent by runReviewerWorker when it finishes
+	// (success or failure) so the event loop can append a CompletedRun record
+	// to the history ring buffer without requiring the reviewer goroutine to
+	// call addCompletedRun directly (which would violate the single-writer invariant).
+	EventReviewerCompleted EventType = "ReviewerCompleted"
+	// EventCancelRetry is sent by CancelIssue when the target issue is in the
+	// retry queue (no live worker). The event loop removes the retry entry,
+	// releases the claim, and moves the issue to PausedIdentifiers.
+	EventCancelRetry EventType = "CancelRetry"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
 type OrchestratorEvent struct { //nolint:revive
-	Type       EventType
-	IssueID    string // tracker UUID (e.g. "abc123"); used by WorkerExited/Update events
-	Identifier string // human identifier (e.g. "ENG-1"); used by ForceReanalyze events
-	RunEntry   *RunEntry
-	RetryEntry *RetryEntry
-	Error      error
+	Type         EventType
+	IssueID      string // tracker UUID (e.g. "abc123"); used by WorkerExited/Update events
+	Identifier   string // human identifier (e.g. "ENG-1"); used by ForceReanalyze events
+	RunEntry     *RunEntry
+	RetryEntry   *RetryEntry
+	Error        error
+	CompletedRun *CompletedRun // used by EventReviewerCompleted
 }
 
 // TerminalReason classifies why a worker stopped.
@@ -45,10 +60,10 @@ const (
 	TerminalFailed                   TerminalReason = "failed"
 	TerminalCanceledByReconciliation TerminalReason = "canceled_by_reconciliation"
 	TerminalCanceledByUser           TerminalReason = "canceled_by_user"
-	// TerminalSkippedOpenPR is set when a worker detects an existing open PR and
-	// skips the agent run. The issue is auto-paused so it isn't re-dispatched
-	// every poll cycle until the PR is merged or the user resumes it.
-	TerminalSkippedOpenPR TerminalReason = "skipped_open_pr"
+	// TerminalStalled is used when a worker is killed by stall detection.
+	// Claim and retry management are handled inline by ReconcileStalls; the
+	// event loop only records history when it sees this reason.
+	TerminalStalled TerminalReason = "stalled"
 )
 
 // RunEntry tracks a live agent worker goroutine.
@@ -58,6 +73,7 @@ type RunEntry struct {
 	WorkerHost     string // SSH host used for this worker, empty = local
 	Backend        string // e.g. "claude", "codex", or "" when unknown
 	Kind           string // "worker" (default) | "reviewer"
+	BranchName     string // actual resolved branch used for the worktree (may differ from issue.BranchName when a PR branch was used)
 	TerminalReason TerminalReason
 	LastEventAt    *time.Time // when last EventWorkerUpdate was received
 	LastMessage    string
@@ -89,7 +105,8 @@ type CompletedRun struct {
 	// history file does not leak runs across projects. Format: "<kind>:<slug>".
 	// Empty string means "unscoped" (legacy entries written before this field
 	// was added); these are retained so existing history is not silently dropped.
-	ProjectKey string
+	ProjectKey   string
+	AppSessionID string // daemon-invocation grouping key; empty for legacy entries
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -105,6 +122,11 @@ type RetryEntry struct {
 type State struct {
 	PollIntervalMs      int
 	MaxConcurrentAgents int
+	// ActiveStates and TerminalStates are snapshotted from cfg at the start of
+	// each tick under cfgMu so the event loop can compare issue states lock-free
+	// throughout a tick. These are the cfg fields governed by cfgMu.
+	ActiveStates   []string
+	TerminalStates []string
 	Running             map[string]*RunEntry
 	Claimed             map[string]struct{}
 	RetryAttempts       map[string]*RetryEntry
@@ -142,6 +164,8 @@ func NewState(cfg *config.Config) State {
 	return State{
 		PollIntervalMs:        cfg.Polling.IntervalMs,
 		MaxConcurrentAgents:   cfg.Agent.MaxConcurrentAgents,
+		ActiveStates:          append([]string{}, cfg.Tracker.ActiveStates...),
+		TerminalStates:        append([]string{}, cfg.Tracker.TerminalStates...),
 		Running:               make(map[string]*RunEntry),
 		Claimed:               make(map[string]struct{}),
 		RetryAttempts:         make(map[string]*RetryEntry),

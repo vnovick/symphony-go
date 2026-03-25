@@ -1,0 +1,37 @@
+{
+  "enabledPlugins": {
+    "vercel@claude-plugins-official": false
+  },
+  "permissions": {
+    "allow": [
+      "Bash(go build ./...)",
+      "Bash(go test ./...)",
+      "Bash(go test -race ./...)",
+      "Bash(go test -race -count=1 ./...)",
+      "Bash(go test -v ./...)",
+      "Bash(go test ./internal/*)",
+      "Bash(go vet ./...)",
+      "Bash(go fmt ./...)",
+      "Bash(gofmt -l -w .)",
+      "Bash(make *)",
+      "Bash(golangci-lint run*)",
+      "Bash(cd web && pnpm *)",
+      "Bash(pnpm *)",
+      "Bash(git status)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git stash*)",
+      "Bash(ls *)",
+      "Bash(find . -name *.go*)",
+      "Bash(grep *)"
+    ],
+    "deny": [
+      "Bash(git push*)",
+      "Bash(git commit*)",
+      "Bash(rm -rf*)",
+      "Bash(lefthook uninstall*)"
+    ]
+  }
+}

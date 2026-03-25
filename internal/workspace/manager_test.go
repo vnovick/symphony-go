@@ -59,13 +59,13 @@ func TestRemoveWorkspaceDeletesDirectory(t *testing.T) {
 	require.NoError(t, err)
 	require.DirExists(t, ws.Path)
 
-	err = mgr.RemoveWorkspace("ENG-2", "")
+	err = mgr.RemoveWorkspace(context.Background(), "ENG-2", "")
 	require.NoError(t, err)
 	assert.NoDirExists(t, ws.Path)
 }
 
 func TestRemoveWorkspaceNonExistentIsNoOp(t *testing.T) {
 	mgr, _ := testManager(t)
-	err := mgr.RemoveWorkspace("nonexistent-issue", "")
+	err := mgr.RemoveWorkspace(context.Background(), "nonexistent-issue", "")
 	assert.NoError(t, err)
 }

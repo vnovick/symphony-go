@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -38,17 +41,27 @@ func (c *CodexRunner) RunTurn(
 	log Logger,
 	onProgress func(TurnResult),
 	sessionID *string,
-	prompt, workspacePath, command, workerHost string,
+	prompt, workspacePath, command, workerHost, logDir string,
 	readTimeoutMs, turnTimeoutMs int,
 ) (TurnResult, error) {
-	turnCtx, cancel := context.WithTimeout(ctx, time.Duration(turnTimeoutMs)*time.Millisecond)
+	turnCtx, cancel := ctx, context.CancelFunc(func() {})
+	if turnTimeoutMs > 0 {
+		turnCtx, cancel = context.WithTimeout(ctx, time.Duration(turnTimeoutMs)*time.Millisecond)
+	}
 	defer cancel()
 
 	var cmd *exec.Cmd
 	if workerHost != "" {
 		shellCmd := buildCodexShellCmd(command, sessionID, prompt, workspacePath)
+		if logDir != "" {
+			// Tee codex stdout to a file on the remote host so SSHFetchLogs can read it later.
+			shellCmd = shellCmd + " | tee " + shellQuote(filepath.Join(logDir, "codex-session.jsonl"))
+		}
 		if workspacePath != "" {
 			shellCmd = "cd " + shellQuote(workspacePath) + " && " + shellCmd
+		}
+		if logDir != "" {
+			shellCmd = "mkdir -p " + shellQuote(logDir) + "; " + shellCmd
 		}
 		cmd = exec.CommandContext(turnCtx, "ssh",
 			"-t",
@@ -70,14 +83,39 @@ func (c *CodexRunner) RunTurn(
 	if err != nil {
 		return TurnResult{Failed: true}, fmt.Errorf("codex: stdout pipe: %w", err)
 	}
+
+	// For local workers, tee stdout to codex-session.jsonl so SSHFetchLogs / ParseSessionLogsMulti
+	// can read the session transcript after the run.
+	var logFile *os.File
+	if logDir != "" && workerHost == "" {
+		if mkErr := os.MkdirAll(logDir, 0o755); mkErr != nil {
+			slog.Warn("codex: failed to create log dir", "dir", logDir, "error", mkErr)
+		} else if f, createErr := os.Create(filepath.Join(logDir, "codex-session.jsonl")); createErr != nil {
+			slog.Warn("codex: failed to create session log", "error", createErr)
+		} else {
+			logFile = f
+		}
+	}
+
+	var reader io.Reader = stdout
+	if logFile != nil {
+		reader = io.TeeReader(stdout, logFile)
+	}
+
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return TurnResult{Failed: true}, fmt.Errorf("codex: start: %w", err)
 	}
 
-	result, readErr := readLines(turnCtx, log, onProgress, stdout, readTimeoutMs, "codex", ParseCodexLine)
+	result, readErr := readLines(turnCtx, log, onProgress, reader, readTimeoutMs, "codex", ParseCodexLine)
+	if logFile != nil {
+		_ = logFile.Close()
+	}
 
 	if waitErr := cmd.Wait(); waitErr != nil && readErr == nil {
 		result.Failed = true

@@ -119,7 +119,7 @@ func TestWorkspaceRootDefault(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
-	// Primary default: ~/.simphony/workspaces
+	// Primary default: ~/.symphony/workspaces
 	// Fallback (no home dir): <os.TempDir()>/symphony_workspaces
 	// Both paths end in "workspaces".
 	assert.Contains(t, cfg.Workspace.Root, "workspaces")

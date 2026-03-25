@@ -135,7 +135,7 @@ func TestRemoveWorktree_RemovesWorktreeAndBranch(t *testing.T) {
 	require.NoError(t, err)
 	require.DirExists(t, ws.Path)
 
-	err = mgr.RemoveWorkspace("ENG-1", "symphony/eng-1")
+	err = mgr.RemoveWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
 	require.NoError(t, err)
 	assert.NoDirExists(t, ws.Path)
 
@@ -153,7 +153,7 @@ func TestRemoveWorktree_KeepsBranchWhenNameEmpty(t *testing.T) {
 	require.NoError(t, err)
 
 	// Empty branchName = remove worktree but skip branch deletion
-	err = mgr.RemoveWorkspace("ENG-1", "")
+	err = mgr.RemoveWorkspace(context.Background(), "ENG-1", "")
 	require.NoError(t, err)
 
 	cmd := exec.Command("git", "branch", "--list", "symphony/eng-1")
@@ -164,6 +164,6 @@ func TestRemoveWorktree_KeepsBranchWhenNameEmpty(t *testing.T) {
 
 func TestRemoveWorktree_MissingWorktreeIsNoOp(t *testing.T) {
 	mgr, _ := worktreeManager(t)
-	err := mgr.RemoveWorkspace("nonexistent", "symphony/nonexistent")
+	err := mgr.RemoveWorkspace(context.Background(), "nonexistent", "symphony/nonexistent")
 	assert.NoError(t, err, "removing a non-existent worktree must not error")
 }

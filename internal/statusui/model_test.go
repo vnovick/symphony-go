@@ -1,84 +1,121 @@
 package statusui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/vnovick/symphony-go/internal/domain"
 	"github.com/vnovick/symphony-go/internal/server"
 )
+
+// logLine builds a JSON log buffer line matching the format written by formatBufLine.
+func logLine(level, msg string, fields map[string]string) string {
+	e := domain.BufLogEntry{
+		Level: level,
+		Msg:   msg,
+		Time:  "00:00:00",
+	}
+	for k, v := range fields {
+		switch k {
+		case "session_id":
+			e.SessionID = v
+		case "text":
+			e.Text = v
+		case "tool":
+			e.Tool = v
+		case "description":
+			e.Description = v
+		case "task":
+			e.Task = v
+		case "status":
+			e.Status = v
+		case "exit_code":
+			e.ExitCode = v
+		case "output_size":
+			e.OutputSize = v
+		case "url":
+			e.URL = v
+		case "summary":
+			e.Summary = v
+		}
+	}
+	b, _ := json.Marshal(e)
+	return string(b)
+}
 
 // ---------------------------------------------------------------------------
 // colorLine — both claude and codex prefixes must produce styled output
 // ---------------------------------------------------------------------------
 
 func TestColorLine_ClaudeText(t *testing.T) {
-	line := `INFO claude: text session_id=s1 text="hello world"`
+	line := logLine("INFO", "claude: text", map[string]string{"session_id": "s1", "text": "hello world"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "claude text should produce styled output")
 	assert.Contains(t, out, "hello world")
 }
 
 func TestColorLine_CodexText(t *testing.T) {
-	line := `INFO codex: text session_id=s1 text="codex says hello"`
+	line := logLine("INFO", "codex: text", map[string]string{"session_id": "s1", "text": "codex says hello"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "codex text should produce styled output")
 	assert.Contains(t, out, "codex says hello")
 }
 
 func TestColorLine_ClaudeAction(t *testing.T) {
-	line := `INFO claude: action session_id=s1 tool=Bash description="ls -la"`
+	line := logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "ls -la"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "claude action should produce styled output")
 	assert.Contains(t, out, "Bash")
 }
 
 func TestColorLine_CodexAction(t *testing.T) {
-	line := `INFO codex: action session_id=s1 tool=shell description="echo hi"`
+	line := logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "echo hi"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "codex action should produce styled output")
 	assert.Contains(t, out, "shell")
 }
 
 func TestColorLine_ClaudeSubagent(t *testing.T) {
-	line := `INFO claude: subagent session_id=s1 tool=Task description="Investigate bug"`
+	line := logLine("INFO", "claude: subagent", map[string]string{"session_id": "s1", "tool": "Task", "description": "Investigate bug"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "claude subagent should produce styled output")
 	assert.Contains(t, out, "Investigate bug")
 }
 
 func TestColorLine_CodexSubagent(t *testing.T) {
-	line := `INFO codex: subagent session_id=s1 tool=spawn_agent description="Fix the failing test"`
+	line := logLine("INFO", "codex: subagent", map[string]string{"session_id": "s1", "tool": "spawn_agent", "description": "Fix the failing test"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "codex subagent should produce styled output")
 	assert.Contains(t, out, "Fix the failing test")
 }
 
 func TestColorLine_ClaudeTodo(t *testing.T) {
-	line := `INFO claude: todo session_id=s1 task="Write tests"`
+	line := logLine("INFO", "claude: todo", map[string]string{"session_id": "s1", "task": "Write tests"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "claude todo should produce styled output")
 	assert.Contains(t, out, "Write tests")
 }
 
 func TestColorLine_CodexTodo(t *testing.T) {
-	line := `INFO codex: todo session_id=s1 task="Add documentation"`
+	line := logLine("INFO", "codex: todo", map[string]string{"session_id": "s1", "task": "Add documentation"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "codex todo should produce styled output")
 	assert.Contains(t, out, "Add documentation")
 }
 
 func TestColorLine_CodexActionStarted(t *testing.T) {
-	line := `INFO codex: action_started session_id=s1 tool=shell description="long running build"`
+	line := logLine("INFO", "codex: action_started", map[string]string{"session_id": "s1", "tool": "shell", "description": "long running build"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "codex action_started should produce styled output")
 	assert.Contains(t, out, "shell")
 }
 
 func TestColorLine_ClaudeActionStarted(t *testing.T) {
-	line := `INFO claude: action_started session_id=s1 tool=Bash description="npm install"`
+	line := logLine("INFO", "claude: action_started", map[string]string{"session_id": "s1", "tool": "Bash", "description": "npm install"})
 	out := colorLine(line)
 	assert.NotEmpty(t, out, "claude action_started should produce styled output")
 	assert.Contains(t, out, "Bash")
@@ -86,16 +123,14 @@ func TestColorLine_ClaudeActionStarted(t *testing.T) {
 
 func TestColorLine_LifecycleEventsAreSkipped(t *testing.T) {
 	// These lines appear in the buffer but should render as empty (suppressed from display).
-	// Note: DEBUG lines never reach the buffer (bufLogger only writes INFO/WARN), so they
-	// are not listed here — they'd pass through the default case if they did appear.
 	skipped := []string{
-		`INFO claude: session started session_id=s1`,
-		`INFO claude: turn done session_id=s1 input_tokens=10 output_tokens=5`,
-		`WARN claude: result error session_id=s1 text="error"`,
-		`INFO codex: session started session_id=s1`,
-		`INFO codex: turn done session_id=s1 input_tokens=10 output_tokens=5`,
-		`WARN codex: result error session_id=s1 text="error"`,
-		`INFO codex: action_detail session_id=s1 status=completed exit_code=0 output_size=42`,
+		logLine("INFO", "claude: session started", map[string]string{"session_id": "s1"}),
+		logLine("INFO", "claude: turn done", map[string]string{"session_id": "s1"}),
+		logLine("WARN", "claude: result error", map[string]string{"session_id": "s1"}),
+		logLine("INFO", "codex: session started", map[string]string{"session_id": "s1"}),
+		logLine("INFO", "codex: turn done", map[string]string{"session_id": "s1"}),
+		logLine("WARN", "codex: result error", map[string]string{"session_id": "s1"}),
+		logLine("INFO", "codex: action_detail", map[string]string{"session_id": "s1", "status": "completed", "exit_code": "0", "output_size": "42"}),
 	}
 	for _, line := range skipped {
 		out := colorLine(line)
@@ -109,9 +144,9 @@ func TestColorLine_LifecycleEventsAreSkipped(t *testing.T) {
 
 func TestBuildToolStats_ClaudeActions(t *testing.T) {
 	lines := []string{
-		`INFO claude: action session_id=s1 tool=Bash description="ls"`,
-		`INFO claude: action session_id=s1 tool=Bash description="pwd"`,
-		`INFO claude: action session_id=s1 tool=Read description="README.md"`,
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "ls"}),
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "pwd"}),
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Read", "description": "README.md"}),
 	}
 	stats := buildToolStats(lines)
 	assert.Len(t, stats, 2)
@@ -122,9 +157,9 @@ func TestBuildToolStats_ClaudeActions(t *testing.T) {
 
 func TestBuildToolStats_CodexActions(t *testing.T) {
 	lines := []string{
-		`INFO codex: action session_id=s1 tool=shell description="echo hi"`,
-		`INFO codex: action session_id=s1 tool=shell description="make build"`,
-		`INFO codex: action session_id=s1 tool=spawn_agent description="sub task"`,
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "echo hi"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "make build"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "spawn_agent", "description": "sub task"}),
 	}
 	stats := buildToolStats(lines)
 	assert.Len(t, stats, 2)
@@ -135,9 +170,9 @@ func TestBuildToolStats_CodexActions(t *testing.T) {
 
 func TestBuildToolStats_MixedBackends(t *testing.T) {
 	lines := []string{
-		`INFO claude: action session_id=s1 tool=Bash description="ls"`,
-		`INFO codex: action session_id=s1 tool=shell description="echo hi"`,
-		`INFO claude: action session_id=s1 tool=Bash description="cat file"`,
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "ls"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "echo hi"}),
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "cat file"}),
 	}
 	stats := buildToolStats(lines)
 	names := toolNames(stats)
@@ -149,10 +184,9 @@ func TestBuildToolStats_MixedBackends(t *testing.T) {
 }
 
 func TestBuildToolStats_CodexResultError(t *testing.T) {
-	// result error lines are emitted at WARN level by the agent runner.
 	lines := []string{
-		`INFO codex: action session_id=s1 tool=shell description="bad cmd"`,
-		`WARN codex: result error session_id=s1 text="exit 1"`,
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "bad cmd"}),
+		logLine("WARN", "codex: result error", map[string]string{"session_id": "s1"}),
 	}
 	stats := buildToolStats(lines)
 	shellIdx := indexByName(stats, "shell")
@@ -163,8 +197,8 @@ func TestBuildToolStats_CodexResultError(t *testing.T) {
 
 func TestBuildToolStats_ClaudeResultError(t *testing.T) {
 	lines := []string{
-		`INFO claude: action session_id=s1 tool=Bash description="bad cmd"`,
-		`WARN claude: result error session_id=s1 text="permission denied"`,
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "bad cmd"}),
+		logLine("WARN", "claude: result error", map[string]string{"session_id": "s1"}),
 	}
 	stats := buildToolStats(lines)
 	bashIdx := indexByName(stats, "Bash")
@@ -178,8 +212,8 @@ func TestBuildToolStats_ClaudeResultError(t *testing.T) {
 
 func TestBuildToolCalls_ClaudeActions(t *testing.T) {
 	lines := []string{
-		`INFO claude: action session_id=s1 tool=Bash description="ls"`,
-		`INFO claude: action session_id=s1 tool=Bash description="pwd"`,
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "ls"}),
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "pwd"}),
 	}
 	calls := buildToolCalls(lines, "Bash")
 	assert.Len(t, calls, 2)
@@ -190,8 +224,8 @@ func TestBuildToolCalls_ClaudeActions(t *testing.T) {
 
 func TestBuildToolCalls_CodexActions(t *testing.T) {
 	lines := []string{
-		`INFO codex: action session_id=s1 tool=shell description="make test"`,
-		`INFO codex: action session_id=s1 tool=shell description="make build"`,
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "make test"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "make build"}),
 	}
 	calls := buildToolCalls(lines, "shell")
 	assert.Len(t, calls, 2)
@@ -201,9 +235,9 @@ func TestBuildToolCalls_CodexActions(t *testing.T) {
 
 func TestBuildToolCalls_MixedBackendsFiltersByName(t *testing.T) {
 	lines := []string{
-		`INFO claude: action session_id=s1 tool=Bash description="ls"`,
-		`INFO codex: action session_id=s1 tool=shell description="echo hi"`,
-		`INFO claude: action session_id=s1 tool=Bash description="pwd"`,
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "ls"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "echo hi"}),
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "pwd"}),
 	}
 	bashCalls := buildToolCalls(lines, "Bash")
 	assert.Len(t, bashCalls, 2)
@@ -214,8 +248,8 @@ func TestBuildToolCalls_MixedBackendsFiltersByName(t *testing.T) {
 
 func TestBuildToolCalls_CodexFailedCall(t *testing.T) {
 	lines := []string{
-		`INFO codex: action session_id=s1 tool=shell description="bad cmd"`,
-		`WARN codex: result error session_id=s1 text="non-zero exit"`,
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "bad cmd"}),
+		logLine("WARN", "codex: result error", map[string]string{"session_id": "s1"}),
 	}
 	calls := buildToolCalls(lines, "shell")
 	assert.Len(t, calls, 1)
@@ -225,9 +259,9 @@ func TestBuildToolCalls_CodexFailedCall(t *testing.T) {
 
 func TestBuildToolCalls_SequenceNumbers(t *testing.T) {
 	lines := []string{
-		`INFO codex: action session_id=s1 tool=shell description="first"`,
-		`INFO codex: action session_id=s1 tool=shell description="second"`,
-		`INFO codex: action session_id=s1 tool=shell description="third"`,
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "first"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "second"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "third"}),
 	}
 	calls := buildToolCalls(lines, "shell")
 	assert.Len(t, calls, 3)
@@ -242,11 +276,11 @@ func TestBuildToolCalls_SequenceNumbers(t *testing.T) {
 
 func TestExtractSubagents_CodexSubagentBoundaries(t *testing.T) {
 	lines := []string{
-		`INFO codex: text session_id=s1 text="starting"`,
-		`INFO codex: subagent session_id=s1 tool=spawn_agent description="Phase 1"`,
-		`INFO codex: action session_id=s1 tool=shell description="cmd1"`,
-		`INFO codex: subagent session_id=s1 tool=spawn_agent description="Phase 2"`,
-		`INFO codex: action session_id=s1 tool=shell description="cmd2"`,
+		logLine("INFO", "codex: text", map[string]string{"session_id": "s1", "text": "starting"}),
+		logLine("INFO", "codex: subagent", map[string]string{"session_id": "s1", "tool": "spawn_agent", "description": "Phase 1"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "cmd1"}),
+		logLine("INFO", "codex: subagent", map[string]string{"session_id": "s1", "tool": "spawn_agent", "description": "Phase 2"}),
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "cmd2"}),
 	}
 	subs := extractSubagents(lines)
 	assert.Len(t, subs, 2)
@@ -256,8 +290,8 @@ func TestExtractSubagents_CodexSubagentBoundaries(t *testing.T) {
 
 func TestExtractSubagents_MixedBackends(t *testing.T) {
 	lines := []string{
-		`INFO claude: subagent session_id=s1 tool=Task description="Claude sub"`,
-		`INFO codex: subagent session_id=s1 tool=spawn_agent description="Codex sub"`,
+		logLine("INFO", "claude: subagent", map[string]string{"session_id": "s1", "tool": "Task", "description": "Claude sub"}),
+		logLine("INFO", "codex: subagent", map[string]string{"session_id": "s1", "tool": "spawn_agent", "description": "Codex sub"}),
 	}
 	subs := extractSubagents(lines)
 	assert.Len(t, subs, 2)
@@ -294,10 +328,10 @@ func toolNames(stats []toolStat) []string {
 // Verify that colorLine produces different styled output for each event type
 // so we can assert visual differentiation between them.
 func TestColorLine_EventsAreVisuallyDifferent(t *testing.T) {
-	textOut := colorLine(`INFO codex: text session_id=s1 text="hello"`)
-	actionOut := colorLine(`INFO codex: action session_id=s1 tool=shell description="ls"`)
-	subagentOut := colorLine(`INFO codex: subagent session_id=s1 tool=spawn_agent description="sub"`)
-	startedOut := colorLine(`INFO codex: action_started session_id=s1 tool=shell description="building"`)
+	textOut := colorLine(logLine("INFO", "codex: text", map[string]string{"session_id": "s1", "text": "hello"}))
+	actionOut := colorLine(logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "ls"}))
+	subagentOut := colorLine(logLine("INFO", "codex: subagent", map[string]string{"session_id": "s1", "tool": "spawn_agent", "description": "sub"}))
+	startedOut := colorLine(logLine("INFO", "codex: action_started", map[string]string{"session_id": "s1", "tool": "shell", "description": "building"}))
 
 	// They should all be non-empty and each one distinct from the others.
 	for _, out := range []string{textOut, actionOut, subagentOut, startedOut} {
@@ -441,15 +475,15 @@ func TestTruncate_EmptyString(t *testing.T) {
 
 func TestExtractPRLink_Found(t *testing.T) {
 	lines := []string{
-		`INFO claude: text session_id=s1 text="working"`,
-		`INFO pr_opened url=https://github.com/org/repo/pull/42 identifier=PROJ-1`,
+		logLine("INFO", "claude: text", map[string]string{"session_id": "s1", "text": "working"}),
+		logLine("INFO", "worker: pr_opened", map[string]string{"url": "https://github.com/org/repo/pull/42"}),
 	}
 	assert.Equal(t, "https://github.com/org/repo/pull/42", extractPRLink(lines))
 }
 
 func TestExtractPRLink_NotFound(t *testing.T) {
 	lines := []string{
-		`INFO claude: text session_id=s1 text="no PR here"`,
+		logLine("INFO", "claude: text", map[string]string{"session_id": "s1", "text": "no PR here"}),
 	}
 	assert.Equal(t, "", extractPRLink(lines))
 }
@@ -462,8 +496,8 @@ func TestExtractPRLink_Empty(t *testing.T) {
 func TestExtractPRLink_ReturnsLastMatch(t *testing.T) {
 	// extractPRLink scans from the end, so the last occurrence wins.
 	lines := []string{
-		`INFO pr_opened url=https://github.com/org/repo/pull/1 identifier=PROJ-1`,
-		`INFO pr_opened url=https://github.com/org/repo/pull/2 identifier=PROJ-1`,
+		logLine("INFO", "worker: pr_opened", map[string]string{"url": "https://github.com/org/repo/pull/1"}),
+		logLine("INFO", "worker: pr_opened", map[string]string{"url": "https://github.com/org/repo/pull/2"}),
 	}
 	assert.Equal(t, "https://github.com/org/repo/pull/2", extractPRLink(lines))
 }
@@ -620,8 +654,8 @@ func TestIsBacklogState_EmptyConfig(t *testing.T) {
 
 func TestBuildToolStats_ActionDetailNotCounted(t *testing.T) {
 	lines := []string{
-		`INFO claude: action session_id=s1 tool=Bash description="ls"`,
-		`INFO claude: action_detail session_id=s1 tool=shell status=completed exit_code=0 output_size=42`,
+		logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "ls"}),
+		logLine("INFO", "claude: action_detail", map[string]string{"session_id": "s1", "tool": "shell", "status": "completed", "exit_code": "0", "output_size": "42"}),
 	}
 	stats := buildToolStats(lines)
 	// Only the action line counts; action_detail must be skipped.
@@ -632,8 +666,8 @@ func TestBuildToolStats_ActionDetailNotCounted(t *testing.T) {
 
 func TestBuildToolStats_CodexActionDetailNotCounted(t *testing.T) {
 	lines := []string{
-		`INFO codex: action session_id=s1 tool=shell description="make"`,
-		`INFO codex: action_detail session_id=s1 tool=shell status=completed exit_code=0 output_size=100`,
+		logLine("INFO", "codex: action", map[string]string{"session_id": "s1", "tool": "shell", "description": "make"}),
+		logLine("INFO", "codex: action_detail", map[string]string{"session_id": "s1", "tool": "shell", "status": "completed", "exit_code": "0", "output_size": "100"}),
 	}
 	stats := buildToolStats(lines)
 	assert.Len(t, stats, 1)

@@ -17,8 +17,9 @@ import "time"
 //	attempt 5 → 160 s
 //	attempt 6 → 300 s  (capped by the default max_retry_backoff_ms = 300 000)
 //
-// The shift is capped at 30 to prevent integer overflow on int32 platforms when
-// attempt is very large (e.g. after a very long outage).
+// The shift is capped at 30 so that 10_000 × 2^30 (~10 billion ms) still fits
+// comfortably in a 64-bit int. Go guarantees 64-bit int on all current
+// production targets, so no overflow can occur within this bound.
 // maxMs is the ceiling; set via agent.max_retry_backoff_ms (default 300 000 ms).
 func BackoffMs(attempt, maxMs int) int {
 	if attempt <= 0 {
@@ -29,9 +30,6 @@ func BackoffMs(attempt, maxMs int) int {
 		shift = 30
 	}
 	delay := 10000 * (1 << uint(shift))
-	if delay < 0 {
-		return maxMs // overflow guard
-	}
 	return min(delay, maxMs)
 }
 

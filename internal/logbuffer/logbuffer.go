@@ -3,6 +3,7 @@
 package logbuffer
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -69,6 +70,42 @@ func (b *Buffer) Get(identifier string) []string {
 	return b.readFromDisk(identifier)
 }
 
+// Identifiers returns all identifiers that have log data — either in-memory or
+// on disk. The returned slice is unsorted and may contain duplicates if both
+// sources are present; callers should deduplicate when order matters.
+func (b *Buffer) Identifiers() []string {
+	b.mu.RLock()
+	dir := b.logDir
+	ids := make([]string, 0, len(b.lines))
+	seen := make(map[string]struct{}, len(b.lines))
+	for id := range b.lines {
+		ids = append(ids, id)
+		seen[id] = struct{}{}
+	}
+	b.mu.RUnlock()
+
+	if dir == "" {
+		return ids
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ids
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".log")
+		// reverse the filename sanitisation applied in issuePath
+		id = strings.NewReplacer("_", ":").Replace(id)
+		if _, exists := seen[id]; !exists {
+			ids = append(ids, id)
+			seen[id] = struct{}{}
+		}
+	}
+	return ids
+}
+
 // Remove deletes the in-memory buffer for the given identifier.
 // The on-disk log file is intentionally preserved so logs remain viewable after
 // an issue completes.
@@ -76,6 +113,35 @@ func (b *Buffer) Remove(identifier string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.lines, identifier)
+}
+
+// ClearAll deletes all in-memory buffers and all on-disk log files in logDir.
+func (b *Buffer) ClearAll() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lines = make(map[string][]string)
+	if b.logDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(b.logDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("logbuffer: read dir %s: %w", b.logDir, err)
+	}
+	var first error
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(b.logDir, e.Name())); err != nil && !os.IsNotExist(err) {
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	return first
 }
 
 // Clear deletes both the in-memory buffer and the on-disk log file for identifier.

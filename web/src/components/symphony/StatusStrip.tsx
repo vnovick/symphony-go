@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useSymphonyStore } from '../../store/symphonyStore';
 
 export default function StatusStrip() {
@@ -11,6 +11,16 @@ export default function StatusStrip() {
   const retrying = snapshot?.retrying.length ?? 0;
   const maxAgents = snapshot?.maxConcurrentAgents ?? 0;
   const agentMode = snapshot?.agentMode ?? '';
+
+  // Derive runner mode from active sessions' backend field
+  const runnerMode = useMemo(() => {
+    const sessions = snapshot?.running ?? [];
+    if (sessions.length === 0) return null;
+    const hasCodex = sessions.some((r) => r.backend && /codex/i.test(r.backend));
+    const hasClaude = sessions.some((r) => !r.backend || !/codex/i.test(r.backend));
+    if (hasCodex && hasClaude) return 'mixed';
+    return hasCodex ? 'codex' : 'claude';
+  }, [snapshot?.running]);
 
   const adjustWorkers = async (delta: number) => {
     if (adjusting) return;
@@ -71,6 +81,21 @@ export default function StatusStrip() {
           <span className="font-medium text-indigo-700 dark:text-indigo-300">agent teams</span>
         </span>
       )}
+      {runnerMode === 'claude' && (
+        <span className="flex items-center gap-1.5 rounded-full bg-[var(--accent-soft)] px-2 py-0.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--accent-strong)]">Claude</span>
+        </span>
+      )}
+      {runnerMode === 'codex' && (
+        <span className="flex items-center gap-1.5 rounded-full bg-[rgba(16,185,129,0.12)] px-2 py-0.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-[#34d399]">Codex</span>
+        </span>
+      )}
+      {runnerMode === 'mixed' && (
+        <span className="flex items-center gap-1.5 rounded-full bg-[rgba(99,102,241,0.12)] px-2 py-0.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-[#818cf8]">Mixed</span>
+        </span>
+      )}
 
       {/* Capacity bar */}
       {maxAgents > 0 && (
@@ -95,6 +120,7 @@ export default function StatusStrip() {
           }}
           disabled={adjusting || maxAgents <= 1}
           title="Decrease max workers"
+          aria-label="Decrease max workers"
           className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 text-base font-medium text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800"
         >
           −
@@ -105,6 +131,7 @@ export default function StatusStrip() {
           }}
           disabled={adjusting}
           title="Increase max workers"
+          aria-label="Increase max workers"
           className="flex h-7 w-7 items-center justify-center rounded-lg border border-gray-200 text-base font-medium text-gray-500 transition-colors hover:border-gray-300 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800"
         >
           +

@@ -29,7 +29,7 @@ createRoot(document.getElementById('root')!).render(
             <App />
           </AppWrapper>
         </ThemeProvider>
-        <ReactQueryDevtools initialIsOpen={false} />
+        {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}
       </QueryClientProvider>
     </ErrorBoundary>
   </StrictMode>,

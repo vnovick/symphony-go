@@ -1,72 +1,111 @@
+import { useState } from 'react';
 import { useSymphonyStore } from '../../store/symphonyStore';
+import { useCancelIssue } from '../../queries/issues';
+import type { RetryRow } from '../../types/schemas';
 
-function fmtDueAt(dueAtStr: string): string {
-  const diff = Math.round((new Date(dueAtStr).getTime() - Date.now()) / 1000);
-  if (diff <= 0) return 'now';
-  if (diff < 60) return `in ${String(diff)}s`;
-  return `in ${String(Math.ceil(diff / 60))}m`;
+const EMPTY_RETRYING: RetryRow[] = [];
+
+function fmtDueAt(dueAt: string): string {
+  const diff = new Date(dueAt).getTime() - Date.now();
+  const abs = Math.abs(diff);
+  const secs = Math.round(abs / 1000);
+  const mins = Math.round(abs / 60_000);
+  const label = abs < 60_000 ? `${String(secs)}s` : `${String(mins)}m`;
+  return diff > 0 ? `in ${label}` : `${label} ago`;
 }
 
 export default function RetryQueueTable() {
-  const snapshot = useSymphonyStore((s) => s.snapshot);
+  const retrying = useSymphonyStore((s) => s.snapshot?.retrying ?? EMPTY_RETRYING);
   const setSelectedIdentifier = useSymphonyStore((s) => s.setSelectedIdentifier);
-  const retrying = snapshot?.retrying ?? [];
+  const cancelMutation = useCancelIssue();
+  const [cancelling, setCancelling] = useState<string | null>(null);
+
+  const handleCancel = (e: React.MouseEvent, identifier: string) => {
+    e.stopPropagation(); // don't open the detail modal
+    if (cancelling) return;
+    setCancelling(identifier);
+    cancelMutation.mutate(identifier, {
+      onSettled: () => { setCancelling(null); },
+    });
+  };
+
   if (retrying.length === 0) return null;
 
   return (
-    <div className="rounded-2xl border border-amber-200 bg-amber-50 dark:border-amber-800/50 dark:bg-amber-900/10">
-      <div className="border-b border-amber-200 px-6 py-4 dark:border-amber-800/50">
-        <h3 className="text-base font-semibold text-amber-900 dark:text-amber-300">
-          Retry Queue
-          <span className="ml-2 inline-flex items-center rounded-full bg-amber-200 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-800/50 dark:text-amber-300">
-            {retrying.length}
-          </span>
-          <span className="ml-2 text-sm font-normal text-amber-700 dark:text-amber-400">
-            — click a row to view logs
-          </span>
-        </h3>
+    <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--bg-elevated)]">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-[var(--line)] px-[18px] py-[14px]">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-[var(--text)]">
+            Retry Queue
+            <span className="rounded-full bg-[var(--warning-soft)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--warning)]">
+              {retrying.length}
+            </span>
+          </h2>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">
+            Issues waiting to be re-dispatched after a failure
+          </p>
+        </div>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr>
-              {['Identifier', 'Attempt', 'Due', 'Last Error'].map((h) => (
-                <th
-                  key={h}
-                  className="px-4 py-3 text-left text-xs font-medium tracking-wider text-amber-700 uppercase dark:text-amber-400"
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-amber-100 dark:divide-amber-800/30">
-            {retrying.map((row) => (
-              <tr
-                key={row.identifier}
-                className="cursor-pointer hover:bg-amber-100/60 dark:hover:bg-amber-800/20"
-                onClick={() => {
-                  setSelectedIdentifier(row.identifier);
-                }}
-              >
-                <td className="px-4 py-3 font-mono text-sm font-medium text-gray-900 dark:text-white">
+
+      {/* Table */}
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-[var(--line)]">
+            <th className="px-[18px] py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Issue</th>
+            <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Attempt</th>
+            <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Retries in</th>
+            <th className="px-[18px] py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Last error</th>
+            <th className="px-[18px] py-2" />
+          </tr>
+        </thead>
+        <tbody>
+          {retrying.map((row) => (
+            <tr
+              key={row.identifier}
+              className="cursor-pointer border-b border-[var(--line)] last:border-b-0 hover:bg-[var(--bg-soft)] transition-colors"
+              onClick={() => { setSelectedIdentifier(row.identifier); }}
+            >
+              <td className="px-[18px] py-3">
+                <span className="font-mono text-xs font-semibold text-[var(--accent)]">
                   {row.identifier}
-                </td>
-                <td className="px-4 py-3 text-amber-800 dark:text-amber-300">#{row.attempt}</td>
-                <td className="px-4 py-3 font-mono text-xs text-amber-700 dark:text-amber-400">
-                  {fmtDueAt(row.dueAt)}
-                </td>
-                <td
-                  className="max-w-sm truncate px-4 py-3 text-xs text-gray-500 dark:text-gray-400"
-                  title={row.error}
+                </span>
+              </td>
+              <td className="px-3 py-3">
+                <span className="rounded bg-[var(--warning-soft)] px-1.5 py-0.5 font-mono text-[11px] font-medium text-[var(--warning)]">
+                  #{row.attempt}
+                </span>
+              </td>
+              <td className="px-3 py-3 font-mono text-xs text-[var(--text-secondary)]">
+                {fmtDueAt(row.dueAt)}
+              </td>
+              <td className="max-w-xs px-[18px] py-3 text-xs text-[var(--muted)]">
+                {row.error ? (
+                  <span className="line-clamp-1" title={row.error}>{row.error}</span>
+                ) : (
+                  <span className="italic">—</span>
+                )}
+              </td>
+              <td className="px-[18px] py-3 text-right">
+                <button
+                  onClick={(e) => { handleCancel(e, row.identifier); }}
+                  disabled={cancelling === row.identifier}
+                  className="text-[11px] font-medium transition-opacity"
+                  style={{
+                    color: 'var(--danger)',
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: cancelling === row.identifier ? 'wait' : 'pointer',
+                    opacity: cancelling === row.identifier ? 0.5 : 1,
+                  }}
                 >
-                  {row.error || '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                  {cancelling === row.identifier ? 'Cancelling…' : 'Cancel'}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

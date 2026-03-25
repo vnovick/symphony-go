@@ -153,6 +153,28 @@ func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) (
 	return all, nil
 }
 
+// maxConcurrentFetches caps concurrent goroutines in boundedDo.
+const maxConcurrentFetches = 8
+
+// boundedDo runs fn for each item in items with at most maxConcurrentFetches
+// goroutines in flight simultaneously. fn receives the item index and value.
+// The caller is responsible for goroutine-safe result collection (e.g. a
+// pre-allocated slice or a buffered channel closed after boundedDo returns).
+func boundedDo[T any](ctx context.Context, items []T, fn func(ctx context.Context, idx int, item T)) {
+	sem := make(chan struct{}, maxConcurrentFetches)
+	var wg sync.WaitGroup
+	for i, item := range items {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, it T) {
+			defer func() { <-sem }()
+			defer wg.Done()
+			fn(ctx, i, it)
+		}(i, item)
+	}
+	wg.Wait()
+}
+
 // FetchIssueStatesByIDs fetches each issue individually (GitHub has no batch endpoint).
 // If any single request fails, the entire operation returns an error.
 func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
@@ -167,18 +189,10 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 	}
 
 	ch := make(chan fetchResult, len(issueIDs))
-	var wg sync.WaitGroup
-
-	for i, id := range issueIDs {
-		wg.Add(1)
-		go func(idx int, issueID string) {
-			defer wg.Done()
-			issue, err := c.fetchSingleIssue(ctx, issueID)
-			ch <- fetchResult{issue: issue, err: err, idx: idx}
-		}(i, id)
-	}
-
-	wg.Wait()
+	boundedDo(ctx, issueIDs, func(ctx context.Context, idx int, issueID string) {
+		issue, err := c.fetchSingleIssue(ctx, issueID)
+		ch <- fetchResult{issue: issue, err: err, idx: idx}
+	})
 	close(ch)
 
 	issues := make([]domain.Issue, len(issueIDs))
@@ -387,6 +401,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 			slog.Warn("github_update_state: unexpected status removing label (ignored)",
 				"label", label, "issue_id", issueID, "status", resp.StatusCode)
 		}
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}
 
@@ -529,6 +544,20 @@ func (c *Client) RateLimits() (limit, remaining int, reset *time.Time) {
 	return c.lastRateLimit.limit, c.lastRateLimit.remaining, c.lastRateLimit.reset
 }
 
+// RateLimitSnapshot implements tracker.RateLimiter so callers can type-assert
+// Tracker to tracker.RateLimiter without importing this concrete package.
+func (c *Client) RateLimitSnapshot() *tracker.RateLimitSnapshot {
+	limit, remaining, reset := c.RateLimits()
+	if limit == 0 && remaining == 0 {
+		return nil
+	}
+	return &tracker.RateLimitSnapshot{
+		RequestsLimit:     limit,
+		RequestsRemaining: remaining,
+		Reset:             reset,
+	}
+}
+
 // populateBlockerStates fetches the current state for each blocker referenced in issues
 // and backfills BlockerRef.State. On fetch error (including 404), the blocker is treated
 // as "closed" so it never silently blocks dispatch.
@@ -554,20 +583,14 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 		state string
 	}
 	ch := make(chan result, len(ids))
-	var wg sync.WaitGroup
-	for _, id := range ids {
-		wg.Add(1)
-		go func(id string) {
-			defer wg.Done()
-			issue, err := c.fetchSingleIssue(ctx, id)
-			if err != nil || issue == nil {
-				ch <- result{id: id, state: "closed"}
-				return
-			}
-			ch <- result{id: id, state: issue.State}
-		}(id)
-	}
-	wg.Wait()
+	boundedDo(ctx, ids, func(ctx context.Context, _ int, id string) {
+		issue, err := c.fetchSingleIssue(ctx, id)
+		if err != nil || issue == nil {
+			ch <- result{id: id, state: "closed"}
+			return
+		}
+		ch <- result{id: id, state: issue.State}
+	})
 	close(ch)
 
 	stateMap := make(map[string]string, len(ids))

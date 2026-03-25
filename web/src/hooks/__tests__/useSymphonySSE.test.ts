@@ -41,6 +41,10 @@ beforeEach(() => {
       }) => unknown,
     ) => sel({ setSnapshot: mockSetSnapshot, setSseConnected: mockSetSseConnected }),
   );
+  // useSymphonySSE calls useSymphonyStore.getState() directly to read actions
+  Object.assign(useSymphonyStore, {
+    getState: () => ({ setSnapshot: mockSetSnapshot, setSseConnected: mockSetSseConnected }),
+  });
   global.EventSource = MockEventSource as unknown as typeof EventSource;
   global.fetch = vi.fn().mockResolvedValue({
     ok: true,

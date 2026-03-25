@@ -12,6 +12,17 @@ import (
 // DefaultPrompt is used when the workflow prompt body is empty.
 const DefaultPrompt = "You are working on an issue."
 
+// liquidEngine is a package-level singleton to avoid constructing a new engine
+// on every Render call. The osteele/liquid Engine is goroutine-safe: its
+// internal state (registered tags, filters) is set up at construction time and
+// never mutated afterwards. ParseTemplate and Execute are safe to call from
+// multiple goroutines concurrently.
+var liquidEngine = func() *liquid.Engine {
+	e := liquid.NewEngine()
+	e.StrictVariables()
+	return e
+}()
+
 // Render renders a Liquid template with issue and attempt variables.
 // Returns template_parse_error on bad syntax, template_render_error on unknown vars/filters.
 func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
@@ -19,10 +30,7 @@ func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
 		return DefaultPrompt, nil
 	}
 
-	engine := liquid.NewEngine()
-	engine.StrictVariables()
-
-	tpl, err := engine.ParseTemplate([]byte(tmpl))
+	tpl, err := liquidEngine.ParseTemplate([]byte(tmpl))
 	if err != nil {
 		return "", fmt.Errorf("template_parse_error: %w", err)
 	}
@@ -60,6 +68,7 @@ func issueToMap(issue domain.Issue) map[string]any {
 		"url":         derefString(issue.URL),
 		"labels":      labelsValue(issue.Labels),
 		"blocked_by":  blockersValue(issue.BlockedBy),
+		"comments":    commentsValue(issue.Comments),
 		"created_at":  timeValue(issue.CreatedAt),
 		"updated_at":  timeValue(issue.UpdatedAt),
 	}
@@ -87,9 +96,6 @@ func timeValue(t *time.Time) any {
 }
 
 func labelsValue(labels []string) []any {
-	if labels == nil {
-		return []any{}
-	}
 	out := make([]any, len(labels))
 	for i, l := range labels {
 		out[i] = l
@@ -104,6 +110,18 @@ func blockersValue(blockers []domain.BlockerRef) []any {
 			"id":         derefString(b.ID),
 			"identifier": derefString(b.Identifier),
 			"state":      derefString(b.State),
+		}
+	}
+	return out
+}
+
+func commentsValue(comments []domain.Comment) []any {
+	out := make([]any, len(comments))
+	for i, c := range comments {
+		out[i] = map[string]any{
+			"body":        c.Body,
+			"author_name": c.AuthorName,
+			"created_at":  timeValue(c.CreatedAt),
 		}
 	}
 	return out

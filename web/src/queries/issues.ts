@@ -1,10 +1,36 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { QueryClient } from '@tanstack/react-query';
 import { useSymphonyStore } from '../store/symphonyStore';
+import { useToastStore } from '../store/toastStore';
 import type { StateSnapshot, TrackerIssue } from '../types/symphony';
 import { TrackerIssueSchema } from '../types/schemas';
 import { z } from 'zod';
 
 export const ISSUES_KEY = ['issues'] as const;
+export const ISSUE_KEY = (identifier: string) => ['issue', identifier] as const;
+
+type RollbackContext =
+  | { prevIssues?: TrackerIssue[]; prevSnapshot?: StateSnapshot }
+  | undefined;
+
+/** Extracts a user-facing message from an unknown error and shows it as a toast. */
+function toastApiError(err: unknown, fallback = 'Action failed — please try again.'): void {
+  const message = err instanceof Error ? err.message : fallback;
+  useToastStore.getState().addToast(message);
+}
+
+/**
+ * Returns an `onError` handler that rolls back optimistic query/snapshot updates
+ * and surfaces the error to the user via a toast notification.
+ * Used by all issue mutations that apply optimistic updates.
+ */
+function makeRollbackHandler(queryClient: QueryClient) {
+  return (_error: unknown, _vars: unknown, context: RollbackContext) => {
+    if (context?.prevIssues) queryClient.setQueryData(ISSUES_KEY, context.prevIssues);
+    if (context?.prevSnapshot) useSymphonyStore.getState().setSnapshot(context.prevSnapshot);
+    toastApiError(_error);
+  };
+}
 
 async function fetchIssues(): Promise<TrackerIssue[]> {
   const res = await fetch('/api/v1/issues');
@@ -16,8 +42,8 @@ export function useIssues() {
   return useQuery({
     queryKey: ISSUES_KEY,
     queryFn: fetchIssues,
-    staleTime: 10_000,
-    refetchInterval: 30_000,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
   });
 }
 
@@ -26,20 +52,38 @@ export function useInvalidateIssues() {
   return () => queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
 }
 
+export function useIssue(identifier: string) {
+  return useQuery({
+    queryKey: ISSUE_KEY(identifier),
+    queryFn: async () => {
+      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}`);
+      if (!res.ok) throw new Error(`fetch issue failed: ${String(res.status)}`);
+      return TrackerIssueSchema.parse(await res.json());
+    },
+    enabled: identifier !== '',
+    staleTime: 0,
+  });
+}
+
 function optimisticPauseSnapshot(snapshot: StateSnapshot, identifier: string): StateSnapshot {
   const wasRunning = snapshot.running.some((row) => row.identifier === identifier);
+  const wasRetrying = snapshot.retrying.some((row) => row.identifier === identifier);
   const alreadyPaused = snapshot.paused.includes(identifier);
-  if (!wasRunning && alreadyPaused) {
+  if (!wasRunning && !wasRetrying && alreadyPaused) {
     return snapshot;
   }
+  // Note: `pausedWithPR` is intentionally not updated here. The PR URL is not
+  // known client-side at optimistic-update time; it will appear once the next
+  // real snapshot arrives from the server.
   return {
     ...snapshot,
     running: snapshot.running.filter((row) => row.identifier !== identifier),
+    retrying: snapshot.retrying.filter((row) => row.identifier !== identifier),
     paused: alreadyPaused ? snapshot.paused : [...snapshot.paused, identifier],
     counts: {
       ...snapshot.counts,
       running: wasRunning ? Math.max(0, snapshot.counts.running - 1) : snapshot.counts.running,
-      paused: !alreadyPaused && wasRunning ? snapshot.counts.paused + 1 : snapshot.counts.paused,
+      paused: !alreadyPaused && (wasRunning || wasRetrying) ? snapshot.counts.paused + 1 : snapshot.counts.paused,
     },
   };
 }
@@ -71,12 +115,7 @@ export function useUpdateIssueState() {
       });
       if (!res.ok) throw new Error(`updateIssueState failed: ${String(res.status)}`);
     },
-    onError: (_error, _vars, context) => {
-      // Snap the card back to its original column if the API call fails.
-      if (context?.prevIssues) {
-        queryClient.setQueryData(ISSUES_KEY, context.prevIssues);
-      }
-    },
+    onError: makeRollbackHandler(queryClient),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
     },
@@ -107,11 +146,7 @@ export function useSetIssueProfile() {
       });
       if (!res.ok) throw new Error(`setIssueProfile failed: ${String(res.status)}`);
     },
-    onError: (_error, _vars, context) => {
-      if (context?.prevIssues) {
-        queryClient.setQueryData(ISSUES_KEY, context.prevIssues);
-      }
-    },
+    onError: makeRollbackHandler(queryClient),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
     },
@@ -135,10 +170,15 @@ export function useCancelIssue() {
         );
       }
       if (prevSnapshot) {
-        useSymphonyStore.getState().setSnapshot(optimisticPauseSnapshot(prevSnapshot, identifier));
+        const updated = optimisticPauseSnapshot(prevSnapshot, identifier);
+        useSymphonyStore.getState().patchSnapshot({
+          running: updated.running,
+          counts: updated.counts,
+          paused: updated.paused,
+        });
       }
 
-      return { prevIssues, prevSnapshot };
+      return { prevIssues, prevSnapshot: prevSnapshot ?? undefined };
     },
     mutationFn: async (identifier: string) => {
       const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/cancel`, {
@@ -146,19 +186,10 @@ export function useCancelIssue() {
       });
       if (!res.ok) throw new Error(`cancelIssue failed: ${String(res.status)}`);
     },
-    onError: (_error, _identifier, context) => {
-      if (context?.prevIssues) {
-        queryClient.setQueryData(ISSUES_KEY, context.prevIssues);
-      }
-      if (context?.prevSnapshot) {
-        useSymphonyStore.getState().setSnapshot(context.prevSnapshot);
-      }
-    },
+    onError: makeRollbackHandler(queryClient),
     onSuccess: () => {
-      setTimeout(() => {
-        void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
-        void useSymphonyStore.getState().refreshSnapshot();
-      }, 1000);
+      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+      void useSymphonyStore.getState().refreshSnapshot();
     },
   });
 }
@@ -166,12 +197,65 @@ export function useCancelIssue() {
 export function useResumeIssue() {
   const queryClient = useQueryClient();
   return useMutation({
+    onMutate: async (identifier: string) => {
+      await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
+      const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
+      const prevSnapshot = useSymphonyStore.getState().snapshot;
+
+      if (prevIssues) {
+        queryClient.setQueryData<TrackerIssue[]>(
+          ISSUES_KEY,
+          prevIssues.map((issue) =>
+            issue.identifier === identifier
+              ? { ...issue, orchestratorState: 'running' }
+              : issue,
+          ),
+        );
+      }
+      if (prevSnapshot) {
+        const wasInPaused = prevSnapshot.paused.includes(identifier);
+        const updatedPaused = prevSnapshot.paused.filter((id) => id !== identifier);
+        // Use the issue's real tracker state for the badge — 'running' is an
+        // orchestrator state, not a tracker state, so the badge would render
+        // incorrectly until the next SSE update (FE-R10-2).
+        const issueTrackerState = prevIssues?.find((i) => i.identifier === identifier)?.state ?? '';
+        const optimisticRow = {
+          identifier,
+          state: issueTrackerState,
+          turnCount: 0,
+          tokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          elapsedMs: 0,
+          startedAt: new Date().toISOString(),
+          sessionId: '',
+        };
+        useSymphonyStore.getState().patchSnapshot({
+          paused: updatedPaused,
+          running: wasInPaused
+            ? [...prevSnapshot.running, optimisticRow]
+            : prevSnapshot.running,
+          counts: {
+            ...prevSnapshot.counts,
+            paused: wasInPaused
+              ? Math.max(0, prevSnapshot.counts.paused - 1)
+              : prevSnapshot.counts.paused,
+            running: wasInPaused
+              ? prevSnapshot.counts.running + 1
+              : prevSnapshot.counts.running,
+          },
+        });
+      }
+
+      return { prevIssues, prevSnapshot: prevSnapshot ?? undefined };
+    },
     mutationFn: async (identifier: string) => {
       const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/resume`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`resumeIssue failed: ${String(res.status)}`);
     },
+    onError: makeRollbackHandler(queryClient),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
       void useSymphonyStore.getState().refreshSnapshot();
@@ -192,6 +276,9 @@ export function useTerminateIssue() {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
       void useSymphonyStore.getState().refreshSnapshot();
     },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Terminate failed — please try again.');
+    },
   });
 }
 
@@ -202,6 +289,9 @@ export function useTriggerAIReview() {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`triggerAIReview failed: ${String(res.status)}`);
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'AI review trigger failed — please try again.');
     },
   });
 }
@@ -217,6 +307,65 @@ export function useClearIssueLogs() {
   });
 }
 
+export function useClearAllLogs() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/v1/logs', { method: 'DELETE' });
+      if (!res.ok) throw new Error(`clearAllLogs failed: ${String(res.status)}`);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['logs'] });
+      void queryClient.invalidateQueries({ queryKey: ['sublogs'] });
+      void queryClient.invalidateQueries({ queryKey: ['log-identifiers'] });
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Clear all logs failed — please try again.');
+    },
+  });
+}
+
+export function useClearAllWorkspaces() {
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/v1/workspaces', { method: 'DELETE' });
+      if (!res.ok) throw new Error(`clearAllWorkspaces failed: ${String(res.status)}`);
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Reset workspaces failed — please try again.');
+    },
+  });
+}
+
+export function useClearIssueSubLogs() {
+  return useMutation({
+    mutationFn: async (identifier: string) => {
+      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error(`clearIssueSubLogs failed: ${String(res.status)}`);
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Clear session logs failed — please try again.');
+    },
+  });
+}
+
+export function useClearSessionSublog() {
+  return useMutation({
+    mutationFn: async ({ identifier, sessionId }: { identifier: string; sessionId: string }) => {
+      const res = await fetch(
+        `/api/v1/issues/${encodeURIComponent(identifier)}/sublogs/${encodeURIComponent(sessionId)}`,
+        { method: 'DELETE' },
+      );
+      if (!res.ok) throw new Error(`clearSessionSublog failed: ${String(res.status)}`);
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Clear session logs failed — please try again.');
+    },
+  });
+}
+
 export function useReanalyzeIssue() {
   return useMutation({
     mutationFn: async (identifier: string) => {
@@ -224,6 +373,9 @@ export function useReanalyzeIssue() {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`reanalyzeIssue failed: ${String(res.status)}`);
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Re-analysis failed — please try again.');
     },
   });
 }

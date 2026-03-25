@@ -35,7 +35,7 @@ agent:
   stall_timeout_ms: 300000
 
 workspace:
-  root: ~/.simphony/workspaces/symphony-go
+  root: ~/.symphony/workspaces/symphony-go
 
 hooks:
   after_create: |

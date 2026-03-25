@@ -27,7 +27,7 @@ func (m *MultiRunner) RunTurn(
 	log Logger,
 	onProgress func(TurnResult),
 	sessionID *string,
-	prompt, workspacePath, command, workerHost string,
+	prompt, workspacePath, command, workerHost, logDir string,
 	readTimeoutMs, turnTimeoutMs int,
 ) (TurnResult, error) {
 	backend, cleanedCommand := backendFromCommand(command)
@@ -39,9 +39,9 @@ func (m *MultiRunner) RunTurn(
 	}
 
 	if r, ok := m.runners[backend]; ok {
-		return r.RunTurn(ctx, log, onProgress, sessionID, cleanedPrompt, workspacePath, cleanedCommand, workerHost, readTimeoutMs, turnTimeoutMs)
+		return r.RunTurn(ctx, log, onProgress, sessionID, cleanedPrompt, workspacePath, cleanedCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
 	}
-	return m.defaultRunner.RunTurn(ctx, log, onProgress, sessionID, cleanedPrompt, workspacePath, cleanedCommand, workerHost, readTimeoutMs, turnTimeoutMs)
+	return m.defaultRunner.RunTurn(ctx, log, onProgress, sessionID, cleanedPrompt, workspacePath, cleanedCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
 }
 
 func stripBackendHintFromPrompt(prompt string) string {

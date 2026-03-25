@@ -8,6 +8,12 @@ function fmtReset(resetStr: string | null): string | null {
   return `resets in ${String(Math.ceil(diff / 60))}m`;
 }
 
+function barColor(pct: number): string {
+  if (pct > 0.5) return 'var(--success)';
+  if (pct > 0.2) return 'var(--warning)';
+  return 'var(--danger)';
+}
+
 function LimitRow({
   label,
   remaining,
@@ -20,28 +26,30 @@ function LimitRow({
   resetLabel?: string | null;
 }) {
   const pct = limit > 0 ? remaining / limit : 1;
-  const barColor = pct > 0.5 ? 'bg-green-500' : pct > 0.2 ? 'bg-amber-500' : 'bg-red-500';
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs text-gray-600 dark:text-gray-400">{label}</span>
-        <span className="text-xs text-gray-500 dark:text-gray-500">
+        <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+          {label}
+        </span>
+        <span className="text-xs" style={{ color: 'var(--muted)' }}>
           {remaining.toLocaleString()}/{limit.toLocaleString()}
           {resetLabel && <span className="ml-1">· {resetLabel}</span>}
         </span>
       </div>
-      <div className="h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-700">
+      <div className="h-1.5 w-full rounded-full" style={{ background: 'var(--bg-elevated)' }}>
         <div
-          className={`${barColor} h-1.5 rounded-full transition-all duration-500`}
-          style={{ width: `${String(Math.max(2, pct * 100))}%` }}
+          className="h-1.5 rounded-full transition-all duration-500"
+          style={{ width: `${String(Math.max(2, pct * 100))}%`, background: barColor(pct) }}
         />
       </div>
     </div>
   );
 }
 
-export default function RateLimitBar() {
+export default function RateLimitBar({ compact = false }: { compact?: boolean }) {
   const rateLimits = useSymphonyStore((s) => s.snapshot?.rateLimits);
+  const trackerKind = useSymphonyStore((s) => s.snapshot?.trackerKind);
   if (!rateLimits) return null;
 
   const hasRequests = rateLimits.requestsLimit > 0;
@@ -49,11 +57,16 @@ export default function RateLimitBar() {
   if (!hasRequests && !hasComplexity) return null;
 
   const resetLabel = fmtReset(rateLimits.requestsReset ?? null);
+  const trackerLabel =
+    trackerKind === 'github' ? 'GitHub' : trackerKind === 'linear' ? 'Linear' : 'API';
 
-  return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-white/[0.03]">
-      <p className="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">
-        Linear API Rate Limits
+  const content = (
+    <>
+      <p
+        className="mb-2.5 text-[10px] font-semibold uppercase tracking-widest"
+        style={{ color: 'var(--muted)' }}
+      >
+        {trackerLabel} API Headroom
       </p>
       <div className="space-y-3">
         {hasRequests && (
@@ -72,6 +85,17 @@ export default function RateLimitBar() {
           />
         )}
       </div>
+    </>
+  );
+
+  if (compact) return content;
+
+  return (
+    <div
+      className="rounded-[var(--radius-md)] p-4"
+      style={{ border: '1px solid var(--line)', background: 'var(--panel)' }}
+    >
+      {content}
     </div>
   );
 }

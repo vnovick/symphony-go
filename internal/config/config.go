@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -88,12 +89,12 @@ type AgentConfig struct {
 	// The progression is 10 s × 2^(attempt-1): 10 s, 20 s, 40 s, 80 s, 160 s,
 	// then capped at MaxRetryBackoffMs for all subsequent attempts.
 	// Default: 300 000 ms (5 min). Set to 0 to disable retries entirely.
-	MaxRetryBackoffMs          int
-	MaxTurns                   int
-	Command                    string
+	MaxRetryBackoffMs int
+	MaxTurns          int
+	Command           string
 	// Backend optionally overrides runner selection for the default agent command
 	// when it cannot be inferred from the command string alone.
-	Backend        string
+	Backend string
 	// TurnTimeoutMs is the hard wall-clock limit for an entire agent session
 	// (all turns combined). When the limit is exceeded the subprocess is killed
 	// and the issue is scheduled for retry. Default: 3 600 000 ms (1 hour).
@@ -116,6 +117,10 @@ type AgentConfig struct {
 	// When set, agent turns are executed on these hosts via SSH in order,
 	// falling back to the next host on failure. Empty = run locally.
 	SSHHosts []string
+	// DispatchStrategy controls how issues are routed to SSH hosts when
+	// multiple are configured. Valid values: "round-robin" (default),
+	// "least-loaded". Ignored when SSHHosts is empty.
+	DispatchStrategy string
 	// ReviewerPrompt is the Liquid template used when a reviewer worker is
 	// dispatched (e.g. via the AI Review button). Falls back to DefaultReviewerPrompt.
 	ReviewerPrompt string
@@ -129,6 +134,11 @@ type AgentConfig struct {
 	// "teams":        profile role context injected into the prompt so the agent
 	//                 knows which specialised sub-agents it can call.
 	AgentMode string
+	// BaseBranch is the remote branch used as the base for git diffs when
+	// enriching PR context (e.g. "origin/main", "origin/develop", "origin/master").
+	// When empty, Symphony auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
+	// falling back to "origin/main" if detection fails.
+	BaseBranch string
 }
 
 // HooksConfig holds lifecycle hook settings.
@@ -158,7 +168,9 @@ type Config struct {
 }
 
 // Load reads a WORKFLOW.md file, parses front matter, applies defaults, and resolves env vars.
-// It does not validate required fields — call ValidateDispatch for full validation.
+// It does not validate required fields. Call ValidateDispatch before starting the agent
+// dispatch loop (i.e. before calling Orchestrator.Run). Utility callers that only need
+// cfg.Workspace.Root, cfg.Tracker.Kind, or similar non-critical fields may omit ValidateDispatch.
 func Load(path string) (*Config, error) {
 	wf, err := workflow.Load(path)
 	if err != nil {
@@ -216,12 +228,14 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.MaxTurns = positiveIntField(agent, "max_turns", 20)
 	cfg.Agent.Command = strField(agent, "command", "claude")
 	cfg.Agent.Backend = strField(agent, "backend", "")
-	cfg.Agent.TurnTimeoutMs = positiveIntField(agent, "turn_timeout_ms", 3600000)
+	cfg.Agent.TurnTimeoutMs = intField(agent, "turn_timeout_ms", 3600000)
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)
 	cfg.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(mapField(agent, "max_concurrent_agents_by_state"))
 	cfg.Agent.SSHHosts = strSliceField(agent, "ssh_hosts", nil)
+	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
+	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
 	cfg.Agent.Profiles = parseAgentProfiles(mapField(agent, "profiles"))
 	agentMode := strField(agent, "agent_mode", "")
 	if agentMode == "" && boolField(agent, "enable_agent_teams", false) {
@@ -293,12 +307,15 @@ func defaultWorkspaceRoot() string {
 }
 
 func expandTilde(path string) string {
-	if path == "~" {
-		home, _ := os.UserHomeDir()
-		return home
-	}
-	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			slog.Warn("config: cannot expand ~, using path as-is", "path", path, "error", err)
+			return path // return unexpanded path rather than silently returning ""
+		}
+		if path == "~" {
+			return home
+		}
 		return filepath.Join(home, path[2:])
 	}
 	return path

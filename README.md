@@ -32,7 +32,7 @@
 | **Agents** | Named profiles — run different backends and models per issue type |
 | **Hot reload** | Edit `WORKFLOW.md` while running — config updates without restart |
 | **Logs** | Persistent per-issue logs — survive restarts, streamed from disk |
-| **Timeline** | Full run history — every agent session across all issues |
+| **Timeline** | Full run history — per-run subagent drill-down, session-isolated log filtering |
 | **Binary** | Single static Go binary — no runtime, no Docker required |
 
 ---
@@ -60,11 +60,23 @@ Store credentials in `.symphony/.env` (gitignored by default) or export them in 
 ### Web dashboard dev loop (contributors)
 
 ```bash
+# First time only — install frontend dependencies
+cd web && pnpm install --frozen-lockfile
+# If pnpm asks about untrusted builds:  pnpm approve-builds
+
 # Terminal 1 — run symphony with the HTTP server enabled
 ./symphony path/to/WORKFLOW.md   # server.port: 8090 in WORKFLOW.md
 
 # Terminal 2 — start the Vite dev server (proxies API calls to :8090)
-cd web && pnpm dev               # opens at http://localhost:5173
+cd web && pnpm dev               # HMR at http://localhost:5173
+```
+
+Frontend tests:
+
+```bash
+cd web && pnpm test              # run once
+cd web && pnpm test:watch        # watch mode (re-runs on save)
+cd web && pnpm test:coverage     # with lcov coverage report
 ```
 
 ### Building the web dashboard (optional, from source only)
@@ -215,7 +227,7 @@ For contributors, `make dev` runs the Go server and the Vite dev server together
 | Flag | Default | Description |
 |---|---|---|
 | `-workflow` | `WORKFLOW.md` | Path to your WORKFLOW.md |
-| `-logs-dir` | `~/.simphony/logs/<kind>/<slug>` | Directory for rotating log files (derived from tracker kind and project slug; falls back to `~/.simphony/logs` if config is unreadable) |
+| `-logs-dir` | `~/.symphony/logs/<kind>/<slug>` | Directory for rotating log files (derived from tracker kind and project slug; falls back to `~/.symphony/logs` if config is unreadable) |
 | `-verbose` | false | Enable DEBUG-level logging (includes agent output) |
 
 **`symphony init` flags:**
@@ -342,29 +354,107 @@ agent:
 
 #### SSH Worker Hosts
 
-When `agent.ssh_hosts` is set, Symphony executes each agent turn on a remote machine over SSH instead of locally. The workspace path must exist on the remote host (e.g. via an NFS share or prior provisioning hook).
+When `agent.ssh_hosts` is set, Symphony executes each agent turn on a remote machine over SSH
+instead of locally. This lets you distribute agents across a fleet of build machines, cloud VMs,
+or any SSH-accessible host.
 
 ```yaml
 agent:
   ssh_hosts:
-    - build-worker-1.internal
-    - build-worker-2.internal:2222
+    - build-worker-1.internal          # host only (port 22)
+    - build-worker-2.internal:2222     # custom port
 ```
 
-Hosts are tried in order — if the first host fails, Symphony falls back to the next. The session continues on whichever host succeeds.
+Hosts are selected in round-robin order. If the connection to a host fails, Symphony falls back
+to the next host in the list. The session continues on whichever host succeeds.
 
-**Host key requirement:** Symphony uses `BatchMode=yes` and relies on `~/.ssh/known_hosts` for host verification. You must add each worker host's key before starting Symphony, otherwise SSH will refuse to connect:
+**How Symphony connects:**
+
+```bash
+ssh -t -o StrictHostKeyChecking=no -o BatchMode=yes <host> bash -lc 'cd /path && claude ...'
+```
+
+- `-t`: Allocates a PTY so the agent process receives `SIGHUP` when SSH exits.
+- `BatchMode=yes`: No interactive prompts — authentication must use SSH keys.
+- `StrictHostKeyChecking=no`: Skips the interactive prompt, but still requires a pre-populated
+  `~/.ssh/known_hosts` entry. See below.
+
+**Step 1 — Set up SSH key authentication**
+
+The machine running Symphony must be able to SSH to each worker host without a password prompt.
+Use `ssh-copy-id` or add the public key to `~/.ssh/authorized_keys` on each worker:
+
+```bash
+# From the machine running Symphony
+ssh-copy-id ci-agent@build-worker-1.internal
+ssh-copy-id -p 2222 ci-agent@build-worker-2.internal
+```
+
+**Step 2 — Add host keys to known_hosts**
+
+Symphony uses `BatchMode=yes`, which refuses unknown hosts. Pre-populate `~/.ssh/known_hosts`:
 
 ```bash
 ssh-keyscan build-worker-1.internal >> ~/.ssh/known_hosts
 ssh-keyscan -p 2222 build-worker-2.internal >> ~/.ssh/known_hosts
 ```
 
+**Step 3 — Choose a workspace provisioning strategy**
+
+The workspace path must exist on the remote host. Pick the strategy that fits your setup:
+
+*Option A — NFS (simplest):* Mount a shared filesystem at the same path on all hosts.
+
+```yaml
+workspace:
+  root: /mnt/nfs/symphony/workspaces   # same path on all hosts
+```
+
+*Option B — rsync hook:* Copy the workspace to the remote host before each agent turn.
+
+```yaml
+hooks:
+  before_run: |
+    rsync -az --delete ./ ${SYMPHONY_WORKER_HOST}:${SYMPHONY_WORKSPACE_PATH}/
+```
+
+*Option C — git clone hook:* Each host clones the repo independently on first create.
+
+```yaml
+hooks:
+  after_create: |
+    ssh ${SYMPHONY_WORKER_HOST} \
+      "git clone git@github.com:org/repo.git ${SYMPHONY_WORKSPACE_PATH}"
+```
+
+**Using Docker on remote hosts**
+
+You can combine SSH dispatch with Docker containers by running `docker exec` inside a
+`before_run` hook that starts a container on the remote host:
+
+```yaml
+hooks:
+  after_create: |
+    # Start a persistent container on the worker host
+    ssh ${SYMPHONY_WORKER_HOST} "docker run -d \
+      --name symphony-${SYMPHONY_ISSUE_ID} \
+      -v ${SYMPHONY_WORKSPACE_PATH}:/workspace \
+      ghcr.io/org/agent-image:latest sleep infinity"
+
+  before_remove: |
+    ssh ${SYMPHONY_WORKER_HOST} \
+      "docker rm -f symphony-${SYMPHONY_ISSUE_ID}"
+```
+
+> **Fleet prototype:** See `planning/prototypes/prototypes/fleet-redesign.html` for a UI prototype
+> of the remote agent fleet management interface (host pool, assignment view, dispatch strategy picker).
+> Full design research is in `planning/remote-fleet/research.md`.
+
 #### `workspace`
 
 | Field | Default | Description |
 |---|---|---|
-| `root` | `~/.simphony/workspaces` | Root directory for per-issue workspaces. Supports `~` expansion and `$ENV_VAR` references. |
+| `root` | `~/.symphony/workspaces` | Root directory for per-issue workspaces. Supports `~` expansion and `$ENV_VAR` references. |
 | `auto_clear_workspace` | `false` | When `true`, the workspace directory is automatically deleted after a task reaches the completion state. Togglable at runtime from the Settings page. |
 
 #### `hooks`

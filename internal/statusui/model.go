@@ -17,6 +17,7 @@
 package statusui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -31,6 +32,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 
+	"github.com/vnovick/symphony-go/internal/domain"
 	"github.com/vnovick/symphony-go/internal/logbuffer"
 	"github.com/vnovick/symphony-go/internal/server"
 )
@@ -500,9 +502,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, r := range m.sessions {
 				lines := m.buf.Get(r.Identifier)
 				for i := len(lines) - 1; i >= 0; i-- {
-					if strings.HasPrefix(lines[i], "INFO claude: text") {
-						if v := extractAttr(lines[i], "text"); v != "" {
-							m.lastText[r.Identifier] = v
+					if e, ok := parseBufLine(lines[i]); ok {
+						if (e.Msg == "claude: text" || e.Msg == "codex: text") && e.Text != "" {
+							m.lastText[r.Identifier] = e.Text
 							break
 						}
 					}
@@ -1679,115 +1681,89 @@ func termLine(pfx, pfxColor, msg, msgColor string) string {
 	return p + " " + m
 }
 
+// parseBufLine unmarshals a JSON log buffer line into a BufLogEntry.
+// Returns (entry, true) on success; (zero, false) if the line is not valid JSON.
+func parseBufLine(line string) (domain.BufLogEntry, bool) {
+	var e domain.BufLogEntry
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return domain.BufLogEntry{}, false
+	}
+	return e, true
+}
+
 // colorLine applies terminal-style colour + prefix to a log buffer line.
+// Lines are JSON-encoded BufLogEntry values (written by formatBufLine).
 // Returns "" for noise/lifecycle events that should not appear in the log pane.
 func colorLine(line string) string {
-	switch {
-	case strings.HasPrefix(line, "INFO claude: text") || strings.HasPrefix(line, "INFO codex: text"):
-		if v := extractAttr(line, "text"); v != "" {
-			return termLine(">", "#00ff88", v, "#e2e8f0")
-		}
-		return termLine(">", "#00ff88", line, "#e2e8f0")
+	e, ok := parseBufLine(line)
+	if !ok {
+		return "" // skip unparseable lines
+	}
 
-	case strings.HasPrefix(line, "INFO claude: subagent") || strings.HasPrefix(line, "INFO codex: subagent"):
-		desc := extractAttr(line, "description")
-		tool := extractAttr(line, "tool")
-		msg := desc
+	switch e.Msg {
+	case "claude: text", "codex: text":
+		if e.Text != "" {
+			return termLine(">", "#00ff88", e.Text, "#e2e8f0")
+		}
+		return ""
+
+	case "claude: subagent", "codex: subagent":
+		msg := e.Description
 		if msg == "" {
-			msg = tool + " (subagent)"
+			msg = e.Tool + " (subagent)"
 		}
 		return termLine("◈", "#bf5af2", msg, "#d8b4fe")
 
-	// action_started and action_detail must appear before the generic action case
-	// because "action_started"/"action_detail" both have prefix "action".
-	case strings.HasPrefix(line, "INFO codex: action_detail"):
+	case "codex: action_detail":
 		return "" // structured shell metadata — suppressed from display pane
 
-	case strings.HasPrefix(line, "INFO claude: action_started") || strings.HasPrefix(line, "INFO codex: action_started"):
-		tool := extractAttr(line, "tool")
-		desc := extractAttr(line, "description")
-		msg := tool + "…"
-		if desc != "" {
-			msg = tool + "  " + desc + "…"
+	case "claude: action_started", "codex: action_started":
+		msg := e.Tool + "…"
+		if e.Description != "" {
+			msg = e.Tool + "  " + e.Description + "…"
 		}
 		return termLine("⧖", "#6b7280", msg, "#9ca3af")
 
-	case strings.HasPrefix(line, "INFO claude: action") || strings.HasPrefix(line, "INFO codex: action"):
-		tool := extractAttr(line, "tool")
-		desc := extractAttr(line, "description")
-		msg := tool
-		if desc != "" {
-			msg = tool + "  " + desc
+	case "claude: action", "codex: action":
+		msg := e.Tool
+		if e.Description != "" {
+			msg = e.Tool + "  " + e.Description
 		}
 		if msg == "" {
-			msg = line
+			msg = e.Msg
 		}
 		return termLine("$", "#ffb000", msg, "#cbd5e1")
 
-	case strings.HasPrefix(line, "INFO claude: todo") || strings.HasPrefix(line, "INFO codex: todo"):
-		task := extractAttr(line, "task")
+	case "claude: todo", "codex: todo":
+		task := e.Task
 		if task == "" {
-			task = line
+			task = e.Msg
 		}
 		return termLine("☐", "#ffb000", task, "#cbd5e1")
 
-	case strings.HasPrefix(line, "INFO claude: session started"),
-		strings.HasPrefix(line, "INFO claude: turn done"),
-		strings.HasPrefix(line, "WARN claude: result error"),
-		strings.HasPrefix(line, "INFO codex: session started"),
-		strings.HasPrefix(line, "INFO codex: turn done"),
-		strings.HasPrefix(line, "WARN codex: result error"):
+	case "claude: session started", "claude: turn done",
+		"codex: session started", "codex: turn done":
 		return "" // skip internal lifecycle noise
 
-	case strings.HasPrefix(line, "INFO worker:"):
-		trimmed := strings.TrimPrefix(line, "INFO ")
-		return termLine("~", "#00d4ff", trimmed, "#7dd3fc")
+	case "claude: result error", "codex: result error":
+		return "" // skip internal lifecycle noise
+	}
 
-	case strings.HasPrefix(line, "WARN"):
-		msg := strings.TrimPrefix(line, "WARN ")
-		return termLine("⚡", "#ffb000", msg, "#fcd34d")
-
-	case strings.HasPrefix(line, "ERROR"):
-		msg := strings.TrimPrefix(line, "ERROR ")
-		return termLine("✗", "#ff4040", msg, "#fca5a5")
-
+	switch {
+	case strings.HasPrefix(e.Msg, "worker:"):
+		return termLine("~", "#00d4ff", e.Msg, "#7dd3fc")
+	case e.Level == "WARN":
+		return termLine("⚡", "#ffb000", e.Msg, "#fcd34d")
+	case e.Level == "ERROR":
+		return termLine("✗", "#ff4040", e.Msg, "#fca5a5")
 	default:
-		trimmed := strings.TrimPrefix(line, "INFO ")
-		trimmed = strings.TrimPrefix(trimmed, "DEBUG ")
-		if trimmed == "" {
+		if e.Msg == "" {
 			return ""
 		}
-		return termLine("·", "#4a5568", trimmed, "#718096")
+		return termLine("·", "#4a5568", e.Msg, "#718096")
 	}
 }
 
-// extractAttr finds the value of key=value in a slog-formatted line.
-func extractAttr(line, key string) string {
-	_, rest, found := strings.Cut(line, key+"=")
-	if !found || len(rest) == 0 {
-		return ""
-	}
-	if rest[0] == '"' {
-		end := 1
-		for end < len(rest) {
-			if rest[end] == '\\' {
-				end += 2
-				continue
-			}
-			if rest[end] == '"' {
-				break
-			}
-			end++
-		}
-		unescaped := strings.ReplaceAll(rest[1:end], `\n`, "\n")
-		unescaped = strings.ReplaceAll(unescaped, `\t`, "\t")
-		unescaped = strings.ReplaceAll(unescaped, `\"`, "\"")
-		unescaped = strings.ReplaceAll(unescaped, `\\`, "\\")
-		return unescaped
-	}
-	val, _, _ := strings.Cut(rest, " ")
-	return val
-}
 
 // extractSubagents scans log lines and returns one subagentInfo per
 // "INFO claude: subagent" or "INFO codex: subagent" boundary found. Lines between consecutive
@@ -1795,10 +1771,17 @@ func extractAttr(line, key string) string {
 func extractSubagents(lines []string) []subagentInfo {
 	subs := make([]subagentInfo, 0, len(lines))
 	for i, line := range lines {
-		if !strings.HasPrefix(line, "INFO claude: subagent") && !strings.HasPrefix(line, "INFO codex: subagent") {
+		e, ok := parseBufLine(line)
+		if !ok {
 			continue
 		}
-		desc := extractAttr(line, "description")
+		if e.Msg != "claude: subagent" && e.Msg != "codex: subagent" {
+			continue
+		}
+		desc := e.Description
+		if desc == "" {
+			desc = e.Tool
+		}
 		if len(subs) > 0 {
 			subs[len(subs)-1].endLine = i
 		}
@@ -1864,34 +1847,33 @@ func buildToolStats(lines []string) []toolStat {
 	var lastTool string
 
 	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "INFO claude: action_detail") || strings.HasPrefix(line, "INFO codex: action_detail"):
+		e, ok := parseBufLine(line)
+		if !ok {
+			continue
+		}
+		switch e.Msg {
+		case "claude: action_detail", "codex: action_detail":
 			// Structured shell metadata — the paired action line already counted this call.
 			// Skip to avoid double-counting when tool= is present.
 
-		case strings.HasPrefix(line, "INFO claude: action") || strings.HasPrefix(line, "INFO codex: action"):
-			tool := extractAttr(line, "tool")
-			if tool == "" {
+		case "claude: action", "codex: action",
+			"claude: action_started", "codex: action_started":
+			if e.Tool == "" {
 				continue
 			}
-			if _, ok := stats[tool]; !ok {
-				stats[tool] = &toolStat{name: tool}
-				order = append(order, tool)
+			if _, ok := stats[e.Tool]; !ok {
+				stats[e.Tool] = &toolStat{name: e.Tool}
+				order = append(order, e.Tool)
 			}
-			desc := extractAttr(line, "description")
-			stats[tool].count++
-			stats[tool].lastDesc = desc
-			lastTool = tool
+			stats[e.Tool].count++
+			stats[e.Tool].lastDesc = e.Description
+			lastTool = e.Tool
 
-		case strings.HasPrefix(line, "WARN claude: result error") || strings.HasPrefix(line, "WARN codex: result error"):
+		case "claude: result error", "codex: result error":
 			if lastTool == "" {
 				continue
 			}
-			msg := extractAttr(line, "msg")
-			if msg == "" {
-				_, after, _ := strings.Cut(line, ": result error ")
-				msg = after
-			}
+			msg := e.Msg
 			stats[lastTool].failCount++
 			if len(stats[lastTool].failMsgs) < 3 {
 				stats[lastTool].failMsgs = append(stats[lastTool].failMsgs, msg)
@@ -2053,14 +2035,18 @@ func buildToolCalls(lines []string, toolName string) []toolCall {
 	var lastTool string
 
 	for _, line := range lines {
-		switch {
-		case strings.HasPrefix(line, "INFO claude: action_detail") || strings.HasPrefix(line, "INFO codex: action_detail"):
+		e, ok := parseBufLine(line)
+		if !ok {
+			continue
+		}
+		switch e.Msg {
+		case "claude: action_detail", "codex: action_detail":
 			// Structured shell metadata — the paired action line already recorded this call.
 			// Skip to avoid creating a duplicate toolCall entry.
 
-		case strings.HasPrefix(line, "INFO claude: action") || strings.HasPrefix(line, "INFO codex: action"):
-			tool := extractAttr(line, "tool")
-			if tool == "" {
+		case "claude: action", "codex: action",
+			"claude: action_started", "codex: action_started":
+			if e.Tool == "" {
 				continue
 			}
 			// Commit any pending call (it completed without error).
@@ -2068,22 +2054,17 @@ func buildToolCalls(lines []string, toolName string) []toolCall {
 				calls = append(calls, *pending)
 				pending = nil
 			}
-			lastTool = tool
-			if tool == toolName {
+			lastTool = e.Tool
+			if e.Tool == toolName {
 				pending = &toolCall{
 					seq:  len(calls) + 1,
-					desc: extractAttr(line, "description"),
+					desc: e.Description,
 				}
 			}
-		case strings.HasPrefix(line, "WARN claude: result error") || strings.HasPrefix(line, "WARN codex: result error"):
+		case "claude: result error", "codex: result error":
 			if lastTool == toolName && pending != nil {
-				msg := extractAttr(line, "msg")
-				if msg == "" {
-					_, after, _ := strings.Cut(line, ": result error ")
-					msg = after
-				}
 				pending.failed = true
-				pending.errMsg = msg
+				pending.errMsg = e.Msg
 				calls = append(calls, *pending)
 				pending = nil
 			}
@@ -3100,13 +3081,12 @@ func osc8Link(url, text string) string {
 // when it detects or creates an open pull request.
 func extractPRLink(lines []string) string {
 	for i := len(lines) - 1; i >= 0; i-- {
-		l := lines[i]
-		if idx := strings.Index(l, "pr_opened url="); idx >= 0 {
-			v := strings.TrimSpace(l[idx+len("pr_opened url="):])
-			if sp := strings.IndexByte(v, ' '); sp >= 0 {
-				v = v[:sp]
-			}
-			return v
+		e, ok := parseBufLine(lines[i])
+		if !ok {
+			continue
+		}
+		if e.Msg == "worker: pr_opened" && e.URL != "" {
+			return e.URL
 		}
 	}
 	return ""

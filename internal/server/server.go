@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vnovick/symphony-go/internal/domain"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -48,6 +50,7 @@ type HistoryRow struct {
 	WorkerHost   string    `json:"workerHost,omitempty"`
 	Backend      string    `json:"backend,omitempty"`
 	SessionID    string    `json:"sessionId,omitempty"`
+	AppSessionID string    `json:"appSessionId,omitempty"`
 }
 
 // RateLimitInfo holds the last observed API rate limit snapshot.
@@ -88,6 +91,263 @@ type ProjectManager interface {
 	FetchProjects(ctx context.Context) ([]Project, error)
 	SetProjectFilter(slugs []string)
 	GetProjectFilter() []string
+}
+
+// OrchestratorClient abstracts the orchestrator and workflow operations called
+// by HTTP handlers. A nil value in Config is replaced with noopClient.
+type OrchestratorClient interface {
+	FetchIssues(ctx context.Context) ([]TrackerIssue, error)
+	CancelIssue(identifier string) bool
+	ResumeIssue(identifier string) bool
+	TerminateIssue(identifier string) bool
+	ReanalyzeIssue(identifier string) bool
+	FetchLogs(identifier string) []string
+	ClearLogs(identifier string) error
+	ClearAllLogs() error
+	ClearIssueSubLogs(identifier string) error
+	ClearSessionSublog(identifier, sessionID string) error
+	FetchSubLogs(identifier string) ([]domain.IssueLogEntry, error)
+	DispatchReviewer(identifier string) error
+	UpdateIssueState(ctx context.Context, identifier, stateName string) error
+	SetWorkers(n int)
+	BumpWorkers(delta int) int
+	SetIssueProfile(identifier, profile string)
+	ProfileDefs() map[string]ProfileDef
+	UpsertProfile(name string, def ProfileDef) error
+	DeleteProfile(name string) error
+	SetAgentMode(mode string) error
+	SetAutoClearWorkspace(enabled bool) error
+	ClearAllWorkspaces() error
+	FetchLogIdentifiers() []string
+	UpdateTrackerStates(active, terminal []string, completion string) error
+	AddSSHHost(host, description string) error
+	RemoveSSHHost(host string) error
+	SetDispatchStrategy(strategy string) error
+}
+
+// noopClient implements OrchestratorClient with harmless defaults.
+// Boolean methods return false; error methods return errNotConfigured.
+type noopClient struct{}
+
+func (noopClient) FetchIssues(context.Context) ([]TrackerIssue, error)           { return nil, errNotConfigured }
+func (noopClient) CancelIssue(string) bool                                        { return false }
+func (noopClient) ResumeIssue(string) bool                                        { return false }
+func (noopClient) TerminateIssue(string) bool                                     { return false }
+func (noopClient) ReanalyzeIssue(string) bool                                     { return false }
+func (noopClient) FetchLogs(string) []string                                      { return nil }
+func (noopClient) ClearLogs(string) error                                         { return errNotConfigured }
+func (noopClient) ClearAllLogs() error                                            { return errNotConfigured }
+func (noopClient) ClearIssueSubLogs(string) error                                 { return errNotConfigured }
+func (noopClient) ClearSessionSublog(string, string) error                        { return errNotConfigured }
+func (noopClient) FetchSubLogs(string) ([]domain.IssueLogEntry, error)            { return nil, nil }
+func (noopClient) DispatchReviewer(string) error                                  { return errNotConfigured }
+func (noopClient) UpdateIssueState(context.Context, string, string) error         { return errNotConfigured }
+func (noopClient) SetWorkers(int)                                                  {}
+func (noopClient) BumpWorkers(int) int                                             { return 0 }
+func (noopClient) SetIssueProfile(string, string)                                 {}
+func (noopClient) ProfileDefs() map[string]ProfileDef                             { return nil }
+func (noopClient) UpsertProfile(string, ProfileDef) error                         { return errNotConfigured }
+func (noopClient) DeleteProfile(string) error                                     { return errNotConfigured }
+func (noopClient) SetAgentMode(string) error                                      { return errNotConfigured }
+func (noopClient) SetAutoClearWorkspace(bool) error                               { return errNotConfigured }
+func (noopClient) ClearAllWorkspaces() error                                       { return errNotConfigured }
+func (noopClient) FetchLogIdentifiers() []string                                   { return nil }
+func (noopClient) UpdateTrackerStates([]string, []string, string) error           { return errNotConfigured }
+func (noopClient) AddSSHHost(string, string) error                                { return errNotConfigured }
+func (noopClient) RemoveSSHHost(string) error                                     { return errNotConfigured }
+func (noopClient) SetDispatchStrategy(string) error                               { return errNotConfigured }
+
+// FuncClient builds an OrchestratorClient from individual function fields.
+// Any nil field falls back to the noopClient default. Intended for tests.
+type FuncClient struct {
+	FetchIssuesFn           func(context.Context) ([]TrackerIssue, error)
+	CancelIssueFn           func(string) bool
+	ResumeIssueFn           func(string) bool
+	TerminateIssueFn        func(string) bool
+	ReanalyzeIssueFn        func(string) bool
+	FetchLogsFn             func(string) []string
+	ClearLogsFn             func(string) error
+	ClearAllLogsFn          func() error
+	ClearIssueSubLogsFn     func(string) error
+	ClearSessionSublogFn    func(string, string) error
+	DispatchReviewerFn      func(string) error
+	UpdateIssueStateFn      func(context.Context, string, string) error
+	SetWorkersFn            func(int)
+	BumpWorkersFn           func(int) int
+	SetIssueProfileFn       func(string, string)
+	ProfileDefsFn           func() map[string]ProfileDef
+	UpsertProfileFn         func(string, ProfileDef) error
+	DeleteProfileFn         func(string) error
+	SetAgentModeFn          func(string) error
+	SetAutoClearWorkspaceFn  func(bool) error
+	ClearAllWorkspacesFn     func() error
+	FetchLogIdentifiersFn    func() []string
+	UpdateTrackerStatesFn    func([]string, []string, string) error
+	FetchSubLogsFn           func(string) ([]domain.IssueLogEntry, error)
+	AddSSHHostFn             func(string, string) error
+	RemoveSSHHostFn          func(string) error
+	SetDispatchStrategyFn    func(string) error
+}
+
+func (c *FuncClient) FetchIssues(ctx context.Context) ([]TrackerIssue, error) {
+	if c.FetchIssuesFn != nil {
+		return c.FetchIssuesFn(ctx)
+	}
+	return nil, errNotConfigured
+}
+func (c *FuncClient) CancelIssue(id string) bool {
+	if c.CancelIssueFn != nil {
+		return c.CancelIssueFn(id)
+	}
+	return false
+}
+func (c *FuncClient) ResumeIssue(id string) bool {
+	if c.ResumeIssueFn != nil {
+		return c.ResumeIssueFn(id)
+	}
+	return false
+}
+func (c *FuncClient) TerminateIssue(id string) bool {
+	if c.TerminateIssueFn != nil {
+		return c.TerminateIssueFn(id)
+	}
+	return false
+}
+func (c *FuncClient) ReanalyzeIssue(id string) bool {
+	if c.ReanalyzeIssueFn != nil {
+		return c.ReanalyzeIssueFn(id)
+	}
+	return false
+}
+func (c *FuncClient) FetchLogs(id string) []string {
+	if c.FetchLogsFn != nil {
+		return c.FetchLogsFn(id)
+	}
+	return nil
+}
+func (c *FuncClient) ClearLogs(id string) error {
+	if c.ClearLogsFn != nil {
+		return c.ClearLogsFn(id)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) ClearAllLogs() error {
+	if c.ClearAllLogsFn != nil {
+		return c.ClearAllLogsFn()
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) ClearIssueSubLogs(id string) error {
+	if c.ClearIssueSubLogsFn != nil {
+		return c.ClearIssueSubLogsFn(id)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) ClearSessionSublog(id, sessionID string) error {
+	if c.ClearSessionSublogFn != nil {
+		return c.ClearSessionSublogFn(id, sessionID)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) FetchSubLogs(id string) ([]domain.IssueLogEntry, error) {
+	if c.FetchSubLogsFn != nil {
+		return c.FetchSubLogsFn(id)
+	}
+	return nil, nil
+}
+func (c *FuncClient) DispatchReviewer(id string) error {
+	if c.DispatchReviewerFn != nil {
+		return c.DispatchReviewerFn(id)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) UpdateIssueState(ctx context.Context, id, state string) error {
+	if c.UpdateIssueStateFn != nil {
+		return c.UpdateIssueStateFn(ctx, id, state)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) SetWorkers(n int) {
+	if c.SetWorkersFn != nil {
+		c.SetWorkersFn(n)
+	}
+}
+func (c *FuncClient) BumpWorkers(delta int) int {
+	if c.BumpWorkersFn != nil {
+		return c.BumpWorkersFn(delta)
+	}
+	return 0
+}
+func (c *FuncClient) SetIssueProfile(id, profile string) {
+	if c.SetIssueProfileFn != nil {
+		c.SetIssueProfileFn(id, profile)
+	}
+}
+func (c *FuncClient) ProfileDefs() map[string]ProfileDef {
+	if c.ProfileDefsFn != nil {
+		return c.ProfileDefsFn()
+	}
+	return nil
+}
+func (c *FuncClient) UpsertProfile(name string, def ProfileDef) error {
+	if c.UpsertProfileFn != nil {
+		return c.UpsertProfileFn(name, def)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) DeleteProfile(name string) error {
+	if c.DeleteProfileFn != nil {
+		return c.DeleteProfileFn(name)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) SetAgentMode(mode string) error {
+	if c.SetAgentModeFn != nil {
+		return c.SetAgentModeFn(mode)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) SetAutoClearWorkspace(enabled bool) error {
+	if c.SetAutoClearWorkspaceFn != nil {
+		return c.SetAutoClearWorkspaceFn(enabled)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) ClearAllWorkspaces() error {
+	if c.ClearAllWorkspacesFn != nil {
+		return c.ClearAllWorkspacesFn()
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) FetchLogIdentifiers() []string {
+	if c.FetchLogIdentifiersFn != nil {
+		return c.FetchLogIdentifiersFn()
+	}
+	return nil
+}
+func (c *FuncClient) UpdateTrackerStates(active, terminal []string, completion string) error {
+	if c.UpdateTrackerStatesFn != nil {
+		return c.UpdateTrackerStatesFn(active, terminal, completion)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) AddSSHHost(host, description string) error {
+	if c.AddSSHHostFn != nil {
+		return c.AddSSHHostFn(host, description)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) RemoveSSHHost(host string) error {
+	if c.RemoveSSHHostFn != nil {
+		return c.RemoveSSHHostFn(host)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) SetDispatchStrategy(strategy string) error {
+	if c.SetDispatchStrategyFn != nil {
+		return c.SetDispatchStrategyFn(strategy)
+	}
+	return errNotConfigured
 }
 
 // StateSnapshot is the payload returned by GET /api/v1/state.
@@ -133,6 +393,21 @@ type StateSnapshot struct {
 	// AutoClearWorkspace indicates whether workspace directories are
 	// automatically deleted after a task succeeds.
 	AutoClearWorkspace bool `json:"autoClearWorkspace,omitempty"`
+	// CurrentAppSessionID is the ID of the current daemon invocation.
+	// All history rows produced during this run share this ID.
+	CurrentAppSessionID string `json:"currentAppSessionId,omitempty"`
+	// SSHHosts is the configured SSH worker host pool with optional descriptions.
+	// Empty/absent means all work runs locally.
+	SSHHosts []SSHHostInfo `json:"sshHosts,omitempty"`
+	// DispatchStrategy is the active SSH host dispatch strategy.
+	// "round-robin" (default) | "least-loaded"
+	DispatchStrategy string `json:"dispatchStrategy,omitempty"`
+}
+
+// SSHHostInfo is one entry in the configured SSH host pool.
+type SSHHostInfo struct {
+	Host        string `json:"host"`
+	Description string `json:"description,omitempty"`
 }
 
 // ProfileDef is the JSON representation of one named agent profile.
@@ -182,7 +457,8 @@ type IssueLogEntry struct {
 	Time    string `json:"time,omitempty"` // HH:MM:SS wall-clock time of the event
 	// Detail carries backend-specific structured metadata as a JSON string.
 	// Populated for Codex shell completions (exit_code, status, output_size).
-	Detail string `json:"detail,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 // broadcaster fans out state-change notifications to multiple SSE clients.
@@ -222,10 +498,9 @@ func (b *broadcaster) notify() {
 
 // Config holds all constructor parameters for a Server.
 // Required fields: Snapshot, RefreshChan.
-// Optional callback fields left nil are replaced with no-op stubs in New() so that
-// handler bodies never need to nil-check before calling a function field.
-// Exceptions: ProjectManager (interface; nil = GitHub tracker) and FetchIssue
-// (fast-path optimisation; nil falls back to FetchIssues).
+// Client provides orchestrator operations; nil → noopClient.
+// FetchIssue is an optional fast-path for single-issue detail lookups; nil falls back to Client.FetchIssues.
+// ProjectManager is optional: nil means GitHub tracker (no project API).
 type Config struct {
 	// Required
 	Snapshot    func() StateSnapshot
@@ -233,139 +508,42 @@ type Config struct {
 	// LogFile is the path to the rotating log file for /api/v1/logs; empty disables it.
 	LogFile string
 
-	// Optional – nil fields are replaced with no-op stubs by New()
-	FetchIssues           func(ctx context.Context) ([]TrackerIssue, error)
-	FetchIssue            func(ctx context.Context, identifier string) (*TrackerIssue, error)
-	CancelIssue           func(identifier string) bool
-	ResumeIssue           func(identifier string) bool
-	TerminateIssue        func(identifier string) bool
-	ReanalyzeIssue        func(identifier string) bool
-	FetchLogs             func(identifier string) []string
-	ClearLogs             func(identifier string) error
-	DispatchReviewer      func(identifier string) error
-	UpdateIssueState      func(ctx context.Context, identifier, stateName string) error
-	SetWorkers            func(n int)
-	SetIssueProfile       func(identifier, profile string)
-	ProfileDefs           func() map[string]ProfileDef
-	UpsertProfile         func(name string, def ProfileDef) error
-	DeleteProfile         func(name string) error
-	SetAgentMode          func(mode string) error
-	SetAutoClearWorkspace func(enabled bool) error
-	UpdateTrackerStates   func(active, terminal []string, completion string) error
-	ProjectManager        ProjectManager
+	// Client provides all orchestrator operations. Nil → noopClient (no-ops).
+	Client OrchestratorClient
+	// FetchIssue is an optional fast-path for single-issue lookups.
+	// Nil falls back to Client.FetchIssues scanning all issues.
+	FetchIssue func(ctx context.Context, identifier string) (*TrackerIssue, error)
+	// ProjectManager supports project filtering (Linear only). Nil = no project API.
+	ProjectManager ProjectManager
 }
 
 // Server is an HTTP server exposing orchestrator state.
 type Server struct {
-	router               *chi.Mux
-	snapshot             func() StateSnapshot
-	refreshChan          chan struct{}
-	logFile              string
-	fetchIssues          func(ctx context.Context) ([]TrackerIssue, error)
-	fetchIssue           func(ctx context.Context, identifier string) (*TrackerIssue, error)
-	cancelIssue          func(identifier string) bool
-	resumeIssue          func(identifier string) bool
-	terminateIssue       func(identifier string) bool
-	fetchLogs            func(identifier string) []string
-	clearLogs            func(identifier string) error
-	dispatchReviewer     func(identifier string) error
-	updateIssueState     func(ctx context.Context, identifier, stateName string) error
-	setWorkers           func(n int)
-	setIssueProfile      func(identifier, profile string)
-	profileDefs          func() map[string]ProfileDef
-	upsertProfile        func(name string, def ProfileDef) error
-	deleteProfile        func(name string) error
-	setAgentMode         func(mode string) error
-	setAutoClearWorkspace func(enabled bool) error
-	updateTrackerStates  func(active, terminal []string, completion string) error
-	reanalyzeIssue       func(identifier string) bool
-	projectManager       ProjectManager
-	bc                   *broadcaster
+	router         *chi.Mux
+	snapshot       func() StateSnapshot
+	refreshChan    chan struct{}
+	logFile        string
+	client         OrchestratorClient
+	fetchIssue     func(ctx context.Context, identifier string) (*TrackerIssue, error)
+	projectManager ProjectManager
+	bc             *broadcaster
 }
 
 // New constructs a Server from a Config. Snapshot and RefreshChan must be non-nil.
 func New(cfg Config) *Server {
+	client := cfg.Client
+	if client == nil {
+		client = noopClient{}
+	}
 	s := &Server{
-		router:               chi.NewRouter(),
-		snapshot:             cfg.Snapshot,
-		refreshChan:          cfg.RefreshChan,
-		logFile:              cfg.LogFile,
-		fetchIssues:          cfg.FetchIssues,
-		fetchIssue:           cfg.FetchIssue,
-		cancelIssue:          cfg.CancelIssue,
-		resumeIssue:          cfg.ResumeIssue,
-		terminateIssue:       cfg.TerminateIssue,
-		reanalyzeIssue:       cfg.ReanalyzeIssue,
-		fetchLogs:            cfg.FetchLogs,
-		clearLogs:            cfg.ClearLogs,
-		dispatchReviewer:     cfg.DispatchReviewer,
-		updateIssueState:     cfg.UpdateIssueState,
-		setWorkers:           cfg.SetWorkers,
-		setIssueProfile:      cfg.SetIssueProfile,
-		profileDefs:          cfg.ProfileDefs,
-		upsertProfile:        cfg.UpsertProfile,
-		deleteProfile:        cfg.DeleteProfile,
-		setAgentMode:         cfg.SetAgentMode,
-		setAutoClearWorkspace: cfg.SetAutoClearWorkspace,
-		updateTrackerStates:  cfg.UpdateTrackerStates,
-		projectManager:       cfg.ProjectManager,
-		bc:                   newBroadcaster(),
-	}
-	// Install no-op stubs for nil optional callbacks so handler bodies can call
-	// function fields unconditionally without nil guards.
-	// projectManager and fetchIssue are deliberately excluded:
-	//   - projectManager is a legitimate optional (nil = GitHub tracker, no project API)
-	//   - fetchIssue is a fast-path optimisation; nil simply falls back to fetchIssues
-	if s.cancelIssue == nil {
-		s.cancelIssue = func(string) bool { return false }
-	}
-	if s.resumeIssue == nil {
-		s.resumeIssue = func(string) bool { return false }
-	}
-	if s.terminateIssue == nil {
-		s.terminateIssue = func(string) bool { return false }
-	}
-	if s.reanalyzeIssue == nil {
-		s.reanalyzeIssue = func(string) bool { return false }
-	}
-	if s.fetchIssues == nil {
-		s.fetchIssues = func(context.Context) ([]TrackerIssue, error) { return nil, errNotConfigured }
-	}
-	if s.fetchLogs == nil {
-		s.fetchLogs = func(string) []string { return nil }
-	}
-	if s.clearLogs == nil {
-		s.clearLogs = func(string) error { return errNotConfigured }
-	}
-	if s.dispatchReviewer == nil {
-		s.dispatchReviewer = func(string) error { return errNotConfigured }
-	}
-	if s.updateIssueState == nil {
-		s.updateIssueState = func(context.Context, string, string) error { return errNotConfigured }
-	}
-	if s.setWorkers == nil {
-		s.setWorkers = func(int) {}
-	}
-	if s.setIssueProfile == nil {
-		s.setIssueProfile = func(string, string) {}
-	}
-	if s.profileDefs == nil {
-		s.profileDefs = func() map[string]ProfileDef { return nil }
-	}
-	if s.upsertProfile == nil {
-		s.upsertProfile = func(string, ProfileDef) error { return errNotConfigured }
-	}
-	if s.deleteProfile == nil {
-		s.deleteProfile = func(string) error { return errNotConfigured }
-	}
-	if s.setAgentMode == nil {
-		s.setAgentMode = func(string) error { return errNotConfigured }
-	}
-	if s.setAutoClearWorkspace == nil {
-		s.setAutoClearWorkspace = func(bool) error { return errNotConfigured }
-	}
-	if s.updateTrackerStates == nil {
-		s.updateTrackerStates = func([]string, []string, string) error { return errNotConfigured }
+		router:         chi.NewRouter(),
+		snapshot:       cfg.Snapshot,
+		refreshChan:    cfg.RefreshChan,
+		logFile:        cfg.LogFile,
+		client:         client,
+		fetchIssue:     cfg.FetchIssue,
+		projectManager: cfg.ProjectManager,
+		bc:             newBroadcaster(),
 	}
 	s.routes()
 	return s
@@ -430,7 +608,13 @@ func (s *Server) routes() {
 		r.Get("/issues", s.handleIssues)
 		r.Get("/issues/{identifier}", s.handleIssueDetail)
 		r.Get("/issues/{identifier}/logs", s.handleIssueLogs)
+		r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
+		r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
 		r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
+		r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
+		r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
+		r.Get("/logs/identifiers", s.handleLogIdentifiers)
+		r.Delete("/logs", s.handleClearAllLogs)
 		r.Delete("/issues/{identifier}", s.handleCancelIssue)
 		r.Post("/issues/{identifier}/cancel", s.handleCancelIssue)
 		r.Post("/issues/{identifier}/resume", s.handleResumeIssue)
@@ -446,12 +630,15 @@ func (s *Server) routes() {
 		r.Put("/projects/filter", s.handleSetProjectFilter)
 		r.Post("/settings/workers", s.handleSetWorkers)
 		r.Post("/settings/agent-mode", s.handleSetAgentMode)
+		r.Delete("/workspaces", s.handleClearAllWorkspaces)
 		r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
 		r.Get("/settings/profiles", s.handleListProfiles)
 		r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
 		r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)
 		r.Put("/settings/tracker/states", s.handleUpdateTrackerStates)
-		r.Get("/{identifier}", s.handleIssue)
+		r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
+		r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
+		r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
 
 		r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")

@@ -105,5 +105,5 @@ func TestAvailableSlots(t *testing.T) {
 	cfg.Agent.MaxConcurrentAgents = 3
 	state := orchestrator.NewState(cfg)
 	state.Running["a"] = &orchestrator.RunEntry{}
-	assert.Equal(t, 2, orchestrator.AvailableSlots(state, cfg))
+	assert.Equal(t, 2, orchestrator.AvailableSlots(state))
 }

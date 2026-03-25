@@ -6,7 +6,7 @@ export default function NotFound() {
   return (
     <>
       <PageMeta
-        title="404 Not Found | Simphony"
+        title="404 Not Found | Symphony"
         description="The page you are looking for could not be found."
       />
       <div className="relative z-1 flex min-h-screen flex-col items-center justify-center overflow-hidden p-6">

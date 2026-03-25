@@ -71,16 +71,10 @@ export const useSymphonyStore = create<SymphonyStore>((set) => ({
     set({ selectedIdentifier });
   },
 
-  patchSnapshot: (patch) => {
-    set((state) => {
-      // If no snapshot has arrived yet, apply the patch as soon as the
-      // snapshot is set (the next setSnapshot call will overwrite this).
-      // We still apply it immediately so optimistic UI updates are not silently
-      // dropped before the first SSE event.
-      const base = state.snapshot ?? ({} as StateSnapshot);
-      return { snapshot: { ...base, ...patch } };
-    });
-  },
+  patchSnapshot: (patch) =>
+    set((state) => ({
+      snapshot: { ...(state.snapshot ?? {}), ...patch } as StateSnapshot,
+    })),
 
   refreshSnapshot: async () => {
     try {
@@ -91,8 +85,10 @@ export const useSymphonyStore = create<SymphonyStore>((set) => ({
         snapshot: data,
         tokenSamples: appendTokenSample(state.tokenSamples, data),
       }));
-    } catch {
-      /* network error — silently ignore */
+    } catch (err) {
+      if (import.meta.env.DEV) {
+        console.warn('[symphony] refreshSnapshot failed — state may be stale', err);
+      }
     }
   },
 }));

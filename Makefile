@@ -1,4 +1,4 @@
-.PHONY: all build verify dev test lint lint-go fmt vet web-build web-test coverage clean benchmark tui-golden
+.PHONY: all build verify dev test lint lint-go fmt vet web-build web-test web-spelling coverage clean benchmark tui-golden
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
 # always use go1.25.8, even on machines where /usr/local/go is an older version.
@@ -9,7 +9,7 @@ all: build verify
 build: web-build
 	go build ./...
 
-verify: fmt vet lint-go test web-test
+verify: fmt vet lint-go test web-test web-spelling
 
 fmt:
 	gofmt -l -w .
@@ -50,6 +50,13 @@ web-build:
 
 web-test:
 	cd web && pnpm install --frozen-lockfile && pnpm test
+
+# Guard against the common misspelling "Symphony" slipping into web source.
+web-spelling:
+	@if grep -r "Symphony" web/src/ --include="*.ts" --include="*.tsx" -l 2>/dev/null | grep -q .; then \
+		echo "ERROR: 'Symphony' (typo) found in web/src/ — run: grep -r Symphony web/src/"; \
+		exit 1; \
+	fi
 
 dev:
 	cd web && pnpm dev

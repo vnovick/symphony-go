@@ -14,10 +14,10 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if issue.ID == "" || issue.Identifier == "" || issue.Title == "" || issue.State == "" {
 		return "missing_fields"
 	}
-	if !isActiveState(issue.State, cfg) {
+	if !isActiveState(issue.State, state) {
 		return "not_active_state"
 	}
-	if isTerminalState(issue.State, cfg) {
+	if isTerminalState(issue.State, state) {
 		return "terminal_state"
 	}
 	if _, paused := state.PausedIdentifiers[issue.Identifier]; paused {
@@ -32,7 +32,7 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if _, claimed := state.Claimed[issue.ID]; claimed {
 		return "claimed"
 	}
-	if AvailableSlots(state, cfg) <= 0 {
+	if AvailableSlots(state) <= 0 {
 		return "no_slots"
 	}
 	stateKey := strings.ToLower(issue.State)
@@ -46,7 +46,7 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 			if blocker.State == nil {
 				continue
 			}
-			if isTerminalState(*blocker.State, cfg) {
+			if isTerminalState(*blocker.State, state) {
 				continue
 			}
 			if blocker.Identifier != nil {
@@ -66,68 +66,7 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 
 // IsEligible returns true when an issue passes all dispatch eligibility checks.
 func IsEligible(issue domain.Issue, state State, cfg *config.Config) bool {
-	// 1. Required fields present
-	if issue.ID == "" || issue.Identifier == "" || issue.Title == "" || issue.State == "" {
-		return false
-	}
-
-	// 2. State in active_states and not in terminal_states
-	if !isActiveState(issue.State, cfg) || isTerminalState(issue.State, cfg) {
-		return false
-	}
-
-	// 3. Not paused or being discarded
-	if _, paused := state.PausedIdentifiers[issue.Identifier]; paused {
-		return false
-	}
-	if _, discarding := state.DiscardingIdentifiers[issue.Identifier]; discarding {
-		return false
-	}
-
-	// 4. Not already running or claimed
-	if _, running := state.Running[issue.ID]; running {
-		return false
-	}
-	if _, claimed := state.Claimed[issue.ID]; claimed {
-		return false
-	}
-
-	// 5. Global slots available
-	if AvailableSlots(state, cfg) <= 0 {
-		return false
-	}
-
-	// 5. Per-state slots
-	stateKey := strings.ToLower(issue.State)
-	if limit, ok := cfg.Agent.MaxConcurrentAgentsByState[stateKey]; ok {
-		count := countRunningInState(state, issue.State)
-		if count >= limit {
-			return false
-		}
-	}
-
-	// 6. Todo with non-terminal blockers.
-	// A blocker is considered resolved if its Linear state is terminal OR if
-	// Symphony has auto-paused it (open PR detected — work is done even if Linear
-	// still shows "In Progress").
-	if strings.EqualFold(issue.State, "todo") {
-		for _, blocker := range issue.BlockedBy {
-			if blocker.State == nil {
-				continue
-			}
-			if isTerminalState(*blocker.State, cfg) {
-				continue
-			}
-			if blocker.Identifier != nil {
-				if _, autoPaused := state.PausedIdentifiers[*blocker.Identifier]; autoPaused {
-					continue
-				}
-			}
-			return false
-		}
-	}
-
-	return true
+	return IneligibleReason(issue, state, cfg) == ""
 }
 
 // SortForDispatch sorts issues: priority ASC (nil last), then created_at oldest first,
@@ -166,7 +105,7 @@ func SortForDispatch(issues []domain.Issue) []domain.Issue {
 // It reads state.MaxConcurrentAgents (snapshotted from cfg at the start of
 // each tick under cfgMu) rather than cfg directly, so the event loop can call
 // it lock-free throughout a tick.
-func AvailableSlots(state State, cfg *config.Config) int {
+func AvailableSlots(state State) int {
 	n := state.MaxConcurrentAgents - len(state.Running)
 	if n < 0 {
 		return 0
@@ -174,8 +113,8 @@ func AvailableSlots(state State, cfg *config.Config) int {
 	return n
 }
 
-func isActiveState(s string, cfg *config.Config) bool {
-	for _, a := range cfg.Tracker.ActiveStates {
+func isActiveState(s string, state State) bool {
+	for _, a := range state.ActiveStates {
 		if strings.EqualFold(s, a) {
 			return true
 		}
@@ -183,8 +122,8 @@ func isActiveState(s string, cfg *config.Config) bool {
 	return false
 }
 
-func isTerminalState(s string, cfg *config.Config) bool {
-	for _, t := range cfg.Tracker.TerminalStates {
+func isTerminalState(s string, state State) bool {
+	for _, t := range state.TerminalStates {
 		if strings.EqualFold(s, t) {
 			return true
 		}

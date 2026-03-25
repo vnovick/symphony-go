@@ -22,6 +22,7 @@ import {
   normalizeCommandForSave,
   type SupportedBackend,
 } from './profileCommands';
+import { proseClass } from '../../utils/format';
 
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
@@ -172,19 +173,9 @@ type SuggestedProfile = (typeof SUGGESTED_PROFILES)[number];
 // ─── Shared style constants ───────────────────────────────────────────────────
 
 const selectCls =
-  'w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 text-sm text-gray-800 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-brand-500';
+  'w-full rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] cursor-pointer focus:outline-none bg-[var(--panel-strong)] border-[var(--line)] text-[var(--text)]';
 const textareaCls =
-  'w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded px-3 py-1.5 text-xs text-gray-800 dark:text-gray-100 font-mono focus:outline-none focus:ring-2 focus:ring-brand-500 resize-y min-h-[56px]';
-const proseClass = [
-  'prose prose-sm dark:prose-invert max-w-none',
-  'text-gray-800 dark:text-gray-200',
-  'prose-p:my-1 prose-p:leading-relaxed',
-  'prose-headings:font-semibold prose-headings:mt-4 prose-headings:mb-1',
-  'prose-code:text-xs prose-code:bg-gray-100 dark:prose-code:bg-gray-800 prose-code:px-1 prose-code:rounded prose-code:before:content-none prose-code:after:content-none',
-  'prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5',
-  'prose-strong:text-gray-900 dark:prose-strong:text-white',
-  'prose-em:text-gray-600 dark:prose-em:text-gray-300',
-].join(' ');
+  'w-full rounded-[var(--radius-sm)] border px-3 py-2 text-xs font-mono focus:outline-none resize-y min-h-[56px] bg-[var(--panel-strong)] border-[var(--line)] text-[var(--text)]';
 
 function backendLabel(backend: SupportedBackend): string {
   return backend === 'codex' ? 'Codex' : 'Claude';
@@ -192,8 +183,8 @@ function backendLabel(backend: SupportedBackend): string {
 
 function backendBadgeClass(backend: SupportedBackend): string {
   return backend === 'codex'
-    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
-    : 'bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-300';
+    ? 'bg-[var(--teal-soft)] text-[var(--teal)]'
+    : 'bg-[var(--accent-soft)] text-[var(--accent-strong)]';
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -306,17 +297,17 @@ function ProfileEditorFields({
       <BackendSelect value={backend} onChange={onBackendChange} />
       <ModelInput backend={backend} value={model} onChange={onModelChange} />
       <CommandInput value={command} backend={backend} onChange={onCommandChange} />
-      <p className="text-[11px] text-gray-500 dark:text-gray-400">
+      <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
         Raw command is preserved as-is. Set the backend explicitly when this profile uses a wrapper
         script.
       </p>
       {isCustomCommand && (
-        <p className="text-[11px] text-amber-600 dark:text-amber-400">
+        <p className="text-[11px]" style={{ color: 'var(--warning)' }}>
           Custom command detected. Backend selects the runner, and model changes only rewrite the
           `--model` flag.
         </p>
       )}
-      <p className="text-[11px] font-medium tracking-wider text-gray-500 uppercase dark:text-gray-400">
+      <p className="text-[11px] font-medium tracking-wider uppercase" style={{ color: 'var(--muted)' }}>
         Role description
       </p>
       <textarea
@@ -378,8 +369,8 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
 
   if (editing) {
     return (
-      <tr className="border-b border-gray-200 bg-gray-50/50 dark:border-gray-700 dark:bg-gray-800/20">
-        <td className="px-4 py-3 align-top font-mono text-sm text-gray-700 dark:text-gray-200">
+      <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg-soft)' }}>
+        <td className="px-4 py-3 align-top font-mono text-sm" style={{ color: 'var(--text)' }}>
           {name}
         </td>
         <td className="space-y-2 px-4 py-3">
@@ -409,7 +400,7 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
             }}
           />
           {errors.command && (
-            <p role="alert" className="text-xs text-red-500 dark:text-red-400">
+            <p role="alert" className="text-xs" style={{ color: 'var(--danger)' }}>
               {errors.command.message}
             </p>
           )}
@@ -420,13 +411,15 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
               void onSubmit();
             }}
             disabled={isSubmitting}
-            className="bg-brand-500 hover:bg-brand-600 mr-2 rounded-lg px-3 py-1 text-sm text-white transition-colors disabled:opacity-50"
+            className="mr-2 rounded-[var(--radius-sm)] px-3 py-1 text-sm text-white transition-colors disabled:opacity-50"
+            style={{ background: 'var(--accent)' }}
           >
             {isSubmitting ? 'Saving…' : 'Save'}
           </button>
           <button
             onClick={handleCancel}
-            className="rounded-lg border border-gray-300 px-3 py-1 text-sm text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+            className="rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80"
+            style={{ borderColor: 'var(--line)', color: 'var(--text-secondary)' }}
           >
             Cancel
           </button>
@@ -440,8 +433,11 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
   const displayModel = modelId ? modelLabel(displayBackend, modelId) : 'Default';
   const displayCommand = normalizeCommandForSave(def.command, displayBackend);
   return (
-    <tr className="border-b border-gray-200 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-800/50">
-      <td className="px-4 py-3 align-top font-mono text-sm text-gray-700 dark:text-gray-200">
+    <tr
+      className="transition-colors hover:bg-[var(--bg-soft)]"
+      style={{ borderBottom: '1px solid var(--line)' }}
+    >
+      <td className="px-4 py-3 align-top font-mono text-sm font-bold" style={{ color: 'var(--text)' }}>
         {name}
       </td>
       <td className="space-y-1 px-4 py-3 align-top">
@@ -450,12 +446,16 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
         >
           {backendLabel(backend)}
         </span>
-        <span className="ml-2 inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+        <span
+          className="ml-2 inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium"
+          style={{ background: 'var(--bg-soft)', color: 'var(--text-secondary)' }}
+        >
           {displayModel}
         </span>
         {def.prompt && (
           <p
-            className="max-w-xs truncate text-xs text-gray-400 italic dark:text-gray-500"
+            className="max-w-xs truncate text-xs italic"
+            style={{ color: 'var(--muted)' }}
             title={def.prompt}
           >
             {def.prompt.slice(0, 80)}
@@ -463,7 +463,8 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
           </p>
         )}
         <p
-          className="max-w-xs truncate font-mono text-[11px] text-gray-500 dark:text-gray-400"
+          className="max-w-xs truncate font-mono text-[11px]"
+          style={{ color: 'var(--text-secondary)' }}
           title={displayCommand}
         >
           {displayCommand}
@@ -472,7 +473,9 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
       <td className="px-4 py-3 text-right align-top whitespace-nowrap">
         {confirmDelete ? (
           <span className="inline-flex items-center gap-2">
-            <span className="text-xs text-gray-500 dark:text-gray-400">Delete "{name}"?</span>
+            <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+              Delete "{name}"?
+            </span>
             <button
               onClick={async () => {
                 setDeleting(true);
@@ -481,16 +484,16 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
                 setConfirmDelete(false);
               }}
               disabled={deleting}
-              className="rounded-lg bg-red-600 px-3 py-1 text-sm text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+              className="rounded-[var(--radius-sm)] px-3 py-1 text-sm text-white transition-colors disabled:opacity-50"
+              style={{ background: 'var(--danger)' }}
             >
               {deleting ? 'Deleting…' : 'Confirm'}
             </button>
             <button
-              onClick={() => {
-                setConfirmDelete(false);
-              }}
+              onClick={() => { setConfirmDelete(false); }}
               disabled={deleting}
-              className="rounded-lg border border-gray-300 px-3 py-1 text-sm text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+              className="rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80"
+              style={{ borderColor: 'var(--line)', color: 'var(--text-secondary)' }}
             >
               Cancel
             </button>
@@ -502,15 +505,15 @@ function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
                 reset(draftFromProfileDef(def));
                 setEditing(true);
               }}
-              className="mr-2 rounded-lg border border-gray-300 px-3 py-1 text-sm text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+              className="mr-2 rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80"
+              style={{ borderColor: 'var(--line)', color: 'var(--text-secondary)' }}
             >
               Edit
             </button>
             <button
-              onClick={() => {
-                setConfirmDelete(true);
-              }}
-              className="rounded-lg border border-red-200 px-3 py-1 text-sm text-red-600 transition-colors hover:bg-red-50 dark:border-red-800/60 dark:text-red-400 dark:hover:bg-red-900/20"
+              onClick={() => { setConfirmDelete(true); }}
+              className="rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80"
+              style={{ borderColor: 'var(--danger-soft)', color: 'var(--danger)' }}
             >
               Delete
             </button>
@@ -542,11 +545,12 @@ function SuggestedProfileCard({
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') onPreview(suggestion);
       }}
-      className="flex cursor-pointer flex-col gap-2 rounded-xl border border-dashed border-gray-200 bg-gray-50/50 p-3 transition-colors hover:border-gray-300 hover:bg-gray-100/60 dark:border-gray-700 dark:bg-gray-800/20 dark:hover:border-gray-600 dark:hover:bg-gray-800/40"
+      className="flex cursor-pointer flex-col gap-2 rounded-[var(--radius-md)] border border-dashed p-3 transition-all hover:opacity-90"
+      style={{ borderColor: 'var(--line)', background: 'var(--bg-soft)' }}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+          <p className="text-xs font-semibold" style={{ color: 'var(--text)' }}>
             {suggestion.label}
           </p>
           <span
@@ -561,15 +565,16 @@ function SuggestedProfileCard({
             void onAdd(suggestion);
           }}
           disabled={saving}
-          className="flex-shrink-0 rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+          className="flex-shrink-0 rounded-[var(--radius-sm)] border px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 hover:opacity-80"
+          style={{ borderColor: 'var(--line)', background: 'var(--panel)', color: 'var(--text-secondary)' }}
         >
           {saving ? '…' : '+ Add'}
         </button>
       </div>
-      <p className="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+      <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
         {suggestion.description}
       </p>
-      <p className="text-[10px] text-gray-400 dark:text-gray-600">Click to preview full prompt</p>
+      <p className="text-[10px]" style={{ color: 'var(--muted)' }}>Click to preview full prompt</p>
     </div>
   );
 }
@@ -590,10 +595,10 @@ function TemplatePreviewModal({
       {suggestion && (
         <div className="space-y-5 p-6">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 className="text-lg font-semibold" style={{ color: 'var(--text)' }}>
               {suggestion.label}
             </h2>
-            <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+            <p className="mt-0.5 text-sm" style={{ color: 'var(--text-secondary)' }}>
               {suggestion.description}
             </p>
             <div className="mt-2 flex items-center gap-2">
@@ -602,29 +607,42 @@ function TemplatePreviewModal({
               >
                 {backendLabel(suggestion.backend)}
               </span>
-              <span className="font-mono text-xs text-gray-500 dark:text-gray-400">
+              <span className="font-mono text-xs" style={{ color: 'var(--text-secondary)' }}>
                 {suggestion.model}
               </span>
-              <span className="text-xs text-gray-400 dark:text-gray-500">
+              <span className="text-xs" style={{ color: 'var(--muted)' }}>
                 · profile id:{' '}
-                <code className="rounded bg-gray-100 px-1 font-mono text-[11px] dark:bg-gray-800">
+                <code
+                  className="rounded px-1 font-mono text-[11px]"
+                  style={{ background: 'var(--bg-soft)', color: 'var(--text-secondary)' }}
+                >
                   {suggestion.id}
                 </code>
               </span>
             </div>
           </div>
-          <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/50">
-            <p className="mb-3 text-[11px] font-medium tracking-wider text-gray-400 uppercase dark:text-gray-500">
+          <div
+            className="rounded-[var(--radius-md)] p-4"
+            style={{ border: '1px solid var(--line)', background: 'var(--panel-strong)' }}
+          >
+            <p
+              className="mb-3 text-[11px] font-medium tracking-wider uppercase"
+              style={{ color: 'var(--muted)' }}
+            >
               Role description — system prompt saved to WORKFLOW.md
             </p>
             <div className={proseClass}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{suggestion.prompt}</ReactMarkdown>
             </div>
           </div>
-          <div className="flex items-center justify-end gap-2 border-t border-gray-100 pt-4 dark:border-gray-800">
+          <div
+            className="flex items-center justify-end gap-2 border-t pt-4"
+            style={{ borderColor: 'var(--line)' }}
+          >
             <button
               onClick={onClose}
-              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+              className="rounded-[var(--radius-sm)] border px-4 py-2 text-sm transition-colors hover:opacity-80"
+              style={{ borderColor: 'var(--line)', color: 'var(--text-secondary)' }}
             >
               Cancel
             </button>
@@ -634,7 +652,8 @@ function TemplatePreviewModal({
                 onClose();
               }}
               disabled={saving}
-              className="bg-brand-500 hover:bg-brand-600 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
+              className="rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
+              style={{ background: 'var(--accent)' }}
             >
               {saving ? 'Adding…' : `Add "${suggestion.id}" profile`}
             </button>
@@ -748,13 +767,19 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
 
   return (
     <>
-      <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-        <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-6 py-4 dark:border-gray-800 dark:bg-gray-900/40">
+      <div
+        className="overflow-hidden rounded-[var(--radius-md)]"
+        style={{ border: '1px solid var(--line)', background: 'var(--bg-elevated)' }}
+      >
+        <div
+          className="flex items-center justify-between border-b px-5 py-4"
+          style={{ borderColor: 'var(--line)', background: 'var(--panel-strong)' }}
+        >
           <div>
-            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+            <h2 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
               Agent Profiles
             </h2>
-            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+            <p className="mt-0.5 text-xs" style={{ color: 'var(--text-secondary)' }}>
               Select per-issue from the issue detail modal. Backend and model controls stay
               backend-aware, and custom wrapper commands are preserved instead of flattened.
             </p>
@@ -762,7 +787,8 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
           {!adding && (
             <button
               onClick={openAddForm}
-              className="bg-brand-500 hover:bg-brand-600 flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors"
+              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90"
+              style={{ background: 'var(--accent)' }}
             >
               <svg
                 className="h-3.5 w-3.5"
@@ -780,18 +806,24 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 dark:bg-gray-900/50">
+            <thead style={{ background: 'var(--bg-soft)' }}>
               <tr>
-                <th className="w-40 px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase dark:text-gray-400">
+                <th
+                  className="w-40 px-4 py-3 text-left text-xs font-medium tracking-wider uppercase"
+                  style={{ color: 'var(--muted)' }}
+                >
                   Name
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase dark:text-gray-400">
+                <th
+                  className="px-4 py-3 text-left text-xs font-medium tracking-wider uppercase"
+                  style={{ color: 'var(--muted)' }}
+                >
                   Backend / Model
                 </th>
                 <th className="w-40 px-4 py-3" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+            <tbody>
               {profileEntries.map(([name, def]) => (
                 <ProfileRow
                   key={name}
@@ -803,10 +835,11 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
               ))}
 
               {adding && (
-                <tr className="border-b border-gray-200 bg-gray-50/50 dark:border-gray-700 dark:bg-gray-800/30">
+                <tr style={{ borderBottom: '1px solid var(--line)', background: 'var(--bg-soft)' }}>
                   <td className="px-4 py-3 align-top">
                     <input
-                      className="focus:ring-brand-500 w-full rounded border border-gray-300 bg-white px-3 py-1.5 font-mono text-sm text-gray-800 focus:ring-2 focus:outline-none dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                      className="w-full rounded border px-3 py-1.5 font-mono text-sm focus:outline-none focus:ring-1"
+                      style={{ borderColor: 'var(--line)', background: 'var(--panel-strong)', color: 'var(--text)' }}
                       placeholder="profile-name"
                       {...addForm.register('name')}
                       onKeyDown={(e) => {
@@ -815,7 +848,7 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
                       autoFocus
                     />
                     {addForm.formState.errors.name && (
-                      <p role="alert" className="mt-1 text-xs text-red-500 dark:text-red-400">
+                      <p role="alert" className="mt-1 text-xs" style={{ color: 'var(--danger)' }}>
                         {addForm.formState.errors.name.message}
                       </p>
                     )}
@@ -850,12 +883,12 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
                       }}
                     />
                     {addForm.formState.errors.command && (
-                      <p role="alert" className="text-xs text-red-500 dark:text-red-400">
+                      <p role="alert" className="text-xs" style={{ color: 'var(--danger)' }}>
                         {addForm.formState.errors.command.message}
                       </p>
                     )}
                     {addForm.formState.errors.root && (
-                      <p role="alert" className="text-xs text-red-500 dark:text-red-400">
+                      <p role="alert" className="text-xs" style={{ color: 'var(--danger)' }}>
                         {addForm.formState.errors.root.message}
                       </p>
                     )}
@@ -866,13 +899,15 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
                         void handleAdd();
                       }}
                       disabled={addForm.formState.isSubmitting}
-                      className="bg-brand-500 hover:bg-brand-600 mr-2 rounded-lg px-3 py-1 text-sm text-white transition-colors disabled:opacity-50"
+                      className="mr-2 rounded-[var(--radius-sm)] px-3 py-1 text-sm text-white transition-colors disabled:opacity-50"
+                      style={{ background: 'var(--accent)' }}
                     >
                       {addForm.formState.isSubmitting ? 'Saving…' : 'Save'}
                     </button>
                     <button
                       onClick={handleAddCancel}
-                      className="rounded-lg border border-gray-300 px-3 py-1 text-sm text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                      className="rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80"
+                      style={{ borderColor: 'var(--line)', color: 'var(--text-secondary)' }}
                     >
                       Cancel
                     </button>
@@ -884,10 +919,15 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
                 <tr>
                   <td
                     colSpan={3}
-                    className="px-4 py-10 text-center text-sm text-gray-400 dark:text-gray-500"
+                    className="px-4 py-10 text-center text-sm"
+                    style={{ color: 'var(--muted)' }}
                   >
                     No profiles configured yet.{' '}
-                    <button onClick={openAddForm} className="text-brand-500 hover:underline">
+                    <button
+                      onClick={openAddForm}
+                      className="hover:underline"
+                      style={{ color: 'var(--accent)' }}
+                    >
                       Add one
                     </button>
                   </td>
@@ -898,8 +938,8 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
         </div>
 
         {suggestedToShow.length > 0 && (
-          <div className="border-t border-gray-100 px-6 py-4 dark:border-gray-800">
-            <p className="mb-3 text-[11px] font-medium tracking-wider text-gray-400 uppercase dark:text-gray-500">
+          <div className="border-t px-6 py-4" style={{ borderColor: 'var(--line)' }}>
+            <p className="mb-3 text-[11px] font-medium tracking-wider uppercase" style={{ color: 'var(--muted)' }}>
               Quick-add templates
             </p>
             <div className="grid grid-cols-3 gap-3">
@@ -917,7 +957,7 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
         )}
       </div>
 
-      {deleteError && <p className="text-sm text-red-600 dark:text-red-400">{deleteError}</p>}
+      {deleteError && <p className="text-sm" style={{ color: 'var(--danger)' }}>{deleteError}</p>}
 
       <TemplatePreviewModal
         suggestion={previewSuggestion}

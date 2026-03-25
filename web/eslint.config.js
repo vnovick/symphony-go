@@ -32,6 +32,18 @@ export default tseslint.config(
         'error',
         { checksVoidReturn: { attributes: false } },
       ],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/types/symphony'],
+              message:
+                "Import from '../types/schemas' or '../types/symphony-types' instead — types/symphony.ts is @deprecated.",
+            },
+          ],
+        },
+      ],
     },
   },
   {

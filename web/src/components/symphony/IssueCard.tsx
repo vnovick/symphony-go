@@ -1,12 +1,29 @@
-import { fmtMs, orchDotClass, priorityDotClass } from '../../utils/format';
-import type { TrackerIssue } from '../../types/symphony';
+import { fmtMs, EMPTY_PROFILE_LABEL } from '../../utils/format';
+import type { TrackerIssue, ProfileDef } from '../../types/schemas';
+import { Card } from '../ui/Card/Card';
 
 interface CardProps {
   issue: TrackerIssue;
   isDragging?: boolean;
   onSelect: (id: string) => void;
   availableProfiles?: string[];
+  profileDefs?: Record<string, ProfileDef>;
+  runningBackend?: string;
   onProfileChange?: (identifier: string, profile: string) => void;
+  onDispatch?: (identifier: string) => void;
+}
+
+// Resolve the actual runner backend for display:
+// 1. Prefer the live backend from RunningRow (most accurate for active sessions)
+// 2. Fall back to the declared backend in the profile definition
+// 3. Last resort: detect "codex" in the profile name
+function resolveBackend(
+  profile: string | undefined,
+  profileDefs: Record<string, ProfileDef> | undefined,
+  runningBackend: string | undefined,
+): 'claude' | 'codex' {
+  const src = runningBackend ?? (profile ? profileDefs?.[profile]?.backend : undefined) ?? profile ?? '';
+  return /codex/i.test(src) ? 'codex' : 'claude';
 }
 
 export default function IssueCard({
@@ -14,84 +31,103 @@ export default function IssueCard({
   isDragging,
   onSelect,
   availableProfiles,
+  profileDefs,
+  runningBackend,
   onProfileChange,
+  onDispatch,
 }: CardProps) {
-  const priorityDot = priorityDotClass(issue.priority);
-  const orchDot = orchDotClass(issue.orchestratorState);
   const showProfileSelector = availableProfiles && availableProfiles.length > 0 && onProfileChange;
+  const isRunning = issue.orchestratorState === 'running';
+  const backend = resolveBackend(issue.agentProfile, profileDefs, runningBackend);
 
   return (
-    <div
-      onClick={() => {
-        onSelect(issue.identifier);
-      }}
-      className={`cursor-pointer rounded-xl border bg-white p-3 shadow-xs transition-all select-none dark:bg-gray-900/70 ${
-        isDragging
-          ? 'border-brand-400 rotate-1 opacity-90 shadow-lg'
-          : 'hover:border-brand-300 dark:hover:border-brand-600 border-gray-200 hover:shadow-md dark:border-gray-700'
-      }`}
+    <Card
+      variant={isDragging ? 'elevated' : 'default'}
+      padding="md"
+      className={`issue-card group min-h-[130px] cursor-pointer select-none ${isDragging ? 'rotate-1 opacity-90' : ''}`}
+      onClick={() => { onSelect(issue.identifier); }}
     >
-      <div className="mb-1.5 flex items-center justify-between gap-2">
-        <div className="min-w-0 flex-1">
+      {/* Top row: identifier + backend badge + state badge | profile selector (top-right) */}
+      <div className="mb-2 flex items-start gap-1.5">
+        {/* Left: identifier + badges */}
+        <div className="flex flex-1 flex-wrap items-center gap-1.5 min-w-0">
           {issue.url ? (
             <a
               href={issue.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="block truncate font-mono text-xs font-semibold text-blue-600 hover:underline dark:text-blue-400"
-              onClick={(e) => {
-                e.stopPropagation();
-              }}
+              className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold hover:underline bg-[var(--bg-soft)] text-[var(--accent)]"
+              onClick={(e) => { e.stopPropagation(); }}
             >
               {issue.identifier}
             </a>
           ) : (
-            <span className="block truncate font-mono text-xs font-semibold text-gray-700 dark:text-gray-300">
+            <span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold bg-[var(--bg-soft)] text-[var(--text-secondary)]">
               {issue.identifier}
             </span>
           )}
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-1.5">
-          {priorityDot && (
-            <span
-              className={`h-2 w-2 rounded-full ${priorityDot}`}
-              title={`P${String(issue.priority ?? '')}`}
-            />
+          <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium uppercase ${
+            backend === 'codex'
+              ? 'bg-[rgba(16,185,129,0.12)] text-[#34d399]'
+              : 'bg-[var(--accent-soft)] text-[var(--accent-strong)]'
+          }`}>
+            {backend === 'codex' ? 'CODEX' : 'CLAUDE'}
+          </span>
+          {issue.orchestratorState !== 'idle' && (
+            <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${
+              issue.orchestratorState === 'running'
+                ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
+                : 'bg-[var(--warning-soft)] text-[var(--warning)]'
+            }`}>
+              {issue.orchestratorState}
+            </span>
           )}
-          <span className={`h-2 w-2 rounded-full ${orchDot}`} title={issue.orchestratorState} />
         </div>
+
+        {/* Right: profile selector — always visible in top-right corner; disabled while running */}
+        {showProfileSelector && (
+          <div
+            className="flex-shrink-0"
+            onClick={(e) => { e.stopPropagation(); }}
+            title={isRunning ? 'Cannot change agent while In Progress' : undefined}
+          >
+            <select
+              value={issue.agentProfile ?? ''}
+              onChange={(e) => { onProfileChange(issue.identifier, e.target.value); }}
+              disabled={isRunning}
+              className={`min-w-[90px] max-w-[140px] rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--panel-strong)] text-[var(--text-secondary)] px-2 py-1 text-xs font-medium focus:outline-none disabled:opacity-40 ${isRunning ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+            >
+              <option value="">{EMPTY_PROFILE_LABEL}</option>
+              {availableProfiles.map((p) => (
+                <option key={p} value={p}>{p}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Queue icon — compact ▶ with tooltip, visible on hover */}
+        {onDispatch && (
+          <button
+            title="Send to queue"
+            onClick={(e) => { e.stopPropagation(); onDispatch(issue.identifier); }}
+            className="flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] opacity-0 transition-opacity group-hover:opacity-100 text-[var(--accent)] bg-[var(--accent-soft)]"
+          >
+            ▶
+          </button>
+        )}
       </div>
-      <p className="line-clamp-2 text-xs leading-relaxed text-gray-700 dark:text-gray-300">
+
+      {/* Title — 2-line clamp, larger text */}
+      <p className="line-clamp-2 text-sm font-medium leading-relaxed text-[var(--text-secondary)]">
         {issue.title}
       </p>
+
+      {/* Elapsed time */}
       {(issue.elapsedMs ?? 0) > 0 && (
-        <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+        <p className="mt-1.5 font-mono text-[11px] text-[var(--muted)]">
           ⏱ {fmtMs(issue.elapsedMs ?? 0)}
         </p>
       )}
-      {showProfileSelector && (
-        <div
-          className="mt-2 border-t border-gray-100 pt-1.5 dark:border-gray-800"
-          onClick={(e) => {
-            e.stopPropagation();
-          }}
-        >
-          <select
-            value={issue.agentProfile ?? ''}
-            onChange={(e) => {
-              onProfileChange(issue.identifier, e.target.value);
-            }}
-            className="w-full rounded border border-gray-200 bg-transparent px-1.5 py-0.5 text-[10px] text-gray-500 focus:outline-none dark:border-gray-700 dark:bg-transparent dark:text-gray-400"
-          >
-            <option value="">◈ No agent</option>
-            {availableProfiles.map((p) => (
-              <option key={p} value={p}>
-                ◈ {p}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-    </div>
+    </Card>
   );
 }

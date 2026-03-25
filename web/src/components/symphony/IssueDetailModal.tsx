@@ -1,21 +1,20 @@
-import { useState } from 'react';
-
-// Stable fallbacks — prevent new array references on every render, which would
-// cause Zustand's useSyncExternalStore to call forceStoreRerender in a loop.
-const EMPTY_PROFILES: string[] = [];
+import { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useQueryClient } from '@tanstack/react-query';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import Badge from '../ui/badge/Badge';
 import {
   useIssues,
+  useIssue,
   useCancelIssue,
   useResumeIssue,
   useTerminateIssue,
   useTriggerAIReview,
   useSetIssueProfile,
+  ISSUES_KEY,
 } from '../../queries/issues';
-import { stateBadgeColor, type BadgeColor } from '../../utils/format';
+import { stateBadgeColor, EMPTY_PROFILE_LABEL, EMPTY_PROFILES, proseClass, type BadgeColor } from '../../utils/format';
 
 function orchestratorBadgeColor(state: 'running' | 'retrying' | 'paused' | 'idle'): BadgeColor {
   if (state === 'running') return 'success';
@@ -23,27 +22,15 @@ function orchestratorBadgeColor(state: 'running' | 'retrying' | 'paused' | 'idle
   return 'light';
 }
 
-// Prose styles for markdown content — requires @tailwindcss/typography
-const proseClass = `
-  prose prose-sm dark:prose-invert max-w-none
-  text-gray-800 dark:text-gray-200
-  prose-p:my-1 prose-p:leading-relaxed
-  prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1
-  prose-code:text-xs prose-code:bg-gray-100 dark:prose-code:bg-gray-800 prose-code:px-1 prose-code:rounded prose-code:text-gray-800 dark:prose-code:text-gray-200 prose-code:before:content-none prose-code:after:content-none
-  prose-pre:bg-gray-100 dark:prose-pre:bg-gray-800 prose-pre:p-3 prose-pre:rounded-lg prose-pre:text-xs
-  prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5
-  prose-blockquote:border-l-2 prose-blockquote:border-gray-300 dark:prose-blockquote:border-gray-600 prose-blockquote:pl-3 prose-blockquote:text-gray-500 dark:prose-blockquote:text-gray-400
-  prose-a:text-blue-600 dark:prose-a:text-blue-400
-  prose-strong:text-gray-900 dark:prose-strong:text-white
-`
-  .trim()
-  .replace(/\s+/g, ' ');
-
 export default function IssueDetailModal() {
   const selectedIdentifier = useSymphonyStore((s) => s.selectedIdentifier);
   const setSelectedIdentifier = useSymphonyStore((s) => s.setSelectedIdentifier);
+  const queryClient = useQueryClient();
   const { data: issuesList = [] } = useIssues();
-  const issue = issuesList.find((i) => i.identifier === selectedIdentifier) ?? null;
+  // WIRE-14: fetch fresh single-issue data when the modal opens so comments,
+  // branch info, and blockers are not stale from the 30s bulk-list poll.
+  const { data: freshIssue } = useIssue(selectedIdentifier ?? '');
+  const issue = freshIssue ?? issuesList.find((i) => i.identifier === selectedIdentifier) ?? null;
   const cancelIssueMutation = useCancelIssue();
   const terminateIssueMutation = useTerminateIssue();
   const resumeIssueMutation = useResumeIssue();
@@ -60,6 +47,41 @@ export default function IssueDetailModal() {
   const [reviewing, setReviewing] = useState(false);
   const [reviewQueued, setReviewQueued] = useState(false);
 
+  // Timer refs for setTimeout cleanup — prevents React memory leak warnings when
+  // a pending timer fires after the component has unmounted (FE-H3).
+  const cancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const terminateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (cancelTimerRef.current !== null) clearTimeout(cancelTimerRef.current);
+      if (reviewTimerRef.current !== null) clearTimeout(reviewTimerRef.current);
+      if (terminateTimerRef.current !== null) clearTimeout(terminateTimerRef.current);
+    };
+  }, []);
+
+  // FE-M2: Invalidate issues cache when modal opens (selectedIdentifier changes).
+  useEffect(() => {
+    if (selectedIdentifier) {
+      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+    }
+  }, [selectedIdentifier, queryClient]);
+
+  const close = useCallback(() => {
+    // Unmounting discards all local state automatically — no need to reset flags here.
+    setSelectedIdentifier(null);
+  }, [setSelectedIdentifier]);
+
+  // FE-L8: Close modal on Escape key.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [close]);
+
   if (!selectedIdentifier || !issue) return null;
 
   const handleCancel = async () => {
@@ -67,7 +89,7 @@ export default function IssueDetailModal() {
     try {
       await cancelIssueMutation.mutateAsync(issue.identifier);
       setCancelled(true);
-      setTimeout(() => {
+      cancelTimerRef.current = setTimeout(() => {
         setCancelled(false);
       }, 2000);
     } catch {
@@ -82,7 +104,7 @@ export default function IssueDetailModal() {
     try {
       await triggerAIReviewMutation.mutateAsync(issue.identifier);
       setReviewQueued(true);
-      setTimeout(() => {
+      reviewTimerRef.current = setTimeout(() => {
         setReviewQueued(false);
       }, 3000);
     } catch {
@@ -97,7 +119,7 @@ export default function IssueDetailModal() {
     try {
       await terminateIssueMutation.mutateAsync(issue.identifier);
       setTerminated(true);
-      setTimeout(() => {
+      terminateTimerRef.current = setTimeout(() => {
         setTerminated(false);
         close();
       }, 1500);
@@ -108,21 +130,23 @@ export default function IssueDetailModal() {
     }
   };
 
-  const close = () => {
-    setSelectedIdentifier(null);
-    setCancelled(false);
-    setTerminated(false);
-    setReviewQueued(false);
-  };
+  // FE-M6: Exact match for "in review" state — avoids false positives like
+  // "Reviewed", "Pre-review", "Under Review", etc.
+  const isInReview = issue.state.toLowerCase() === 'in review';
 
-  const isInReview = issue.state.toLowerCase().includes('review');
+  // FE-L4: Hoist profile-lock variable above JSX — removes the IIFE.
+  const isProfileLocked = issue.state.toLowerCase().includes('progress');
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
       onClick={close}
     >
+      {/* FE-L8: role/aria attributes on the dialog panel */}
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="modal-title"
         className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-900"
         onClick={(e) => {
           e.stopPropagation();
@@ -132,7 +156,8 @@ export default function IssueDetailModal() {
         <div className="flex items-start justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-800">
           <div>
             <div className="mb-1 flex items-center gap-3">
-              <span className="font-mono text-lg font-bold text-gray-900 dark:text-white">
+              {/* FE-L8: id for aria-labelledby */}
+              <span id="modal-title" className="font-mono text-lg font-bold text-gray-900 dark:text-white">
                 {issue.identifier}
               </span>
               <Badge color={stateBadgeColor(issue.state)} size="sm">
@@ -185,43 +210,40 @@ export default function IssueDetailModal() {
             </div>
           )}
 
-          {/* Agent Profile */}
+          {/* Agent Profile — FE-L4: uses hoisted isProfileLocked, no IIFE */}
           {availableProfiles.length > 0 && (
             <div>
               <h4 className="mb-1 text-xs font-medium tracking-wider text-gray-500 uppercase">
                 Agent Profile
               </h4>
-              {(() => {
-                const locked = issue.state.toLowerCase().includes('progress');
-                return locked ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500 dark:text-gray-400">
-                      {issue.agentProfile ?? 'Default'}
-                    </span>
-                    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600 dark:bg-amber-900/20 dark:text-amber-400">
-                      locked while In Progress
-                    </span>
-                  </div>
-                ) : (
-                  <select
-                    value={issue.agentProfile ?? ''}
-                    onChange={(e) => {
-                      setIssueProfileMutation.mutate({
-                        identifier: issue.identifier,
-                        profile: e.target.value,
-                      });
-                    }}
-                    className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
-                  >
-                    <option value="">Default</option>
-                    {availableProfiles.map((p) => (
-                      <option key={p} value={p}>
-                        {p}
-                      </option>
-                    ))}
-                  </select>
-                );
-              })()}
+              {isProfileLocked ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {issue.agentProfile ?? EMPTY_PROFILE_LABEL}
+                  </span>
+                  <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-600 dark:bg-amber-900/20 dark:text-amber-400">
+                    locked while In Progress
+                  </span>
+                </div>
+              ) : (
+                <select
+                  value={issue.agentProfile ?? ''}
+                  onChange={(e) => {
+                    setIssueProfileMutation.mutate({
+                      identifier: issue.identifier,
+                      profile: e.target.value,
+                    });
+                  }}
+                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                >
+                  <option value="">{EMPTY_PROFILE_LABEL}</option>
+                  {availableProfiles.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           )}
 
@@ -290,15 +312,15 @@ export default function IssueDetailModal() {
               <div className="space-y-4">
                 {issue.comments.map((c, i) => (
                   <div
-                    key={i}
+                    key={`${c.author}-${c.createdAt ?? String(i)}`}
                     className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900/40"
                   >
                     <div className="mb-2 flex items-center gap-2">
                       <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-blue-400 to-purple-500 text-[10px] font-bold text-white">
-                        {(c.author.charAt(0) || '?').toUpperCase()}
+                        {(c.author || '?').charAt(0).toUpperCase()}
                       </span>
                       <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                        {c.author}
+                        {c.author || 'Unknown'}
                       </span>
                       {c.createdAt && (
                         <span className="ml-auto text-xs text-gray-400">
@@ -320,8 +342,9 @@ export default function IssueDetailModal() {
           )}
         </div>
 
-        {/* Footer */}
+        {/* Footer — FE-M1: also shown for 'retrying' state */}
         {(issue.orchestratorState === 'running' ||
+          issue.orchestratorState === 'retrying' ||
           issue.orchestratorState === 'paused' ||
           isInReview) && (
           <div className="flex items-center justify-between gap-3 border-t border-gray-200 px-6 py-4 dark:border-gray-800">
@@ -376,7 +399,7 @@ export default function IssueDetailModal() {
                   </span>
                 ) : terminated ? (
                   <span className="text-sm font-medium text-red-600 dark:text-red-400">
-                    ✕ Cancelled
+                    ✕ Discarded
                   </span>
                 ) : (
                   <>
@@ -395,6 +418,21 @@ export default function IssueDetailModal() {
                       {terminating ? 'Cancelling...' : '✕ Cancel Agent'}
                     </button>
                   </>
+                ))}
+              {/* FE-M1: Cancel button for retrying state */}
+              {issue.orchestratorState === 'retrying' &&
+                (cancelled ? (
+                  <span className="text-sm font-medium text-green-600 dark:text-green-400">
+                    ⏸ Paused
+                  </span>
+                ) : (
+                  <button
+                    onClick={handleCancel}
+                    disabled={cancelling}
+                    className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+                  >
+                    {cancelling ? 'Cancelling...' : '✕ Cancel Retry'}
+                  </button>
                 ))}
             </div>
           </div>

@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from 'react';
 import {
   DndContext,
   DragOverlay,
+  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
@@ -59,22 +60,29 @@ function AgentColumn({
   return (
     <div
       ref={setNodeRef}
-      className={`flex w-64 flex-shrink-0 flex-col overflow-hidden rounded-2xl border shadow-xs transition-all ${
-        isOver
-          ? 'border-brand-300 bg-brand-50/40 dark:bg-brand-900/10 shadow-md'
-          : 'border-gray-200 bg-gray-50/60 dark:border-gray-800 dark:bg-white/[0.02]'
-      }`}
+      className="flex w-64 flex-shrink-0 flex-col overflow-hidden rounded-[var(--radius-md)] border transition-all"
+      style={{
+        borderColor: isOver ? 'var(--accent)' : 'var(--line)',
+        background: isOver ? 'var(--accent-soft)' : 'var(--bg-soft)',
+        boxShadow: isOver ? 'var(--shadow-md)' : undefined,
+      }}
     >
       <div className="flex flex-shrink-0 items-center justify-between px-3 py-2.5">
         <div className="flex items-center gap-1.5">
-          <span className={`text-xs ${isUnassigned ? 'text-gray-400' : 'text-purple-500'}`}>
+          <span className="text-xs" style={{ color: isUnassigned ? 'var(--muted)' : 'var(--purple)' }}>
             {isUnassigned ? '○' : '◈'}
           </span>
-          <span className="truncate text-xs font-semibold tracking-wide text-gray-600 uppercase dark:text-gray-400">
+          <span
+            className="truncate text-xs font-semibold tracking-wide uppercase"
+            style={{ color: 'var(--text-secondary)' }}
+          >
             {label}
           </span>
         </div>
-        <span className="ml-2 flex h-5 min-w-[20px] flex-shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white px-1.5 text-[10px] font-bold text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+        <span
+          className="ml-2 flex h-5 min-w-[20px] flex-shrink-0 items-center justify-center rounded-full border px-1.5 text-[10px] font-bold"
+          style={{ borderColor: 'var(--line)', background: 'var(--panel)', color: 'var(--muted)' }}
+        >
           {issues.length}
         </span>
       </div>
@@ -83,7 +91,10 @@ function AgentColumn({
           <DraggableQueueCard key={issue.identifier} issue={issue} onSelect={onSelect} />
         ))}
         {issues.length === 0 && (
-          <div className="flex h-16 items-center justify-center rounded-xl border-2 border-dashed border-gray-200 text-xs text-gray-300 dark:border-gray-800 dark:text-gray-600">
+          <div
+            className="flex h-16 items-center justify-center rounded-[var(--radius-sm)] border-2 border-dashed text-xs"
+            style={{ borderColor: 'var(--line)', color: 'var(--muted)' }}
+          >
             Drop here
           </div>
         )}
@@ -110,7 +121,10 @@ export default function AgentQueueView({
   const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor),
+  );
 
   const backlogSet = useMemo(() => new Set(backlogStates), [backlogStates]);
 
@@ -134,7 +148,8 @@ export default function AgentQueueView({
   }, [issues, backlogSet, availableProfiles]);
 
   const onDragStart = useCallback((e: DragStartEvent) => {
-    setActiveIssue((e.active.data.current as { issue: TrackerIssue }).issue);
+    const data = e.active.data.current as { issue?: TrackerIssue } | undefined;
+    if (data?.issue) setActiveIssue(data.issue);
   }, []);
 
   const onDragOver = useCallback((e: DragOverEvent) => {
@@ -150,7 +165,7 @@ export default function AgentQueueView({
       // Map the sentinel back to an empty string (clears the profile assignment).
       const newProfile = droppedOn === UNASSIGNED ? '' : droppedOn;
       const currentProfile =
-        (e.active.data.current as { issue: TrackerIssue }).issue.agentProfile ?? '';
+        (e.active.data.current as { issue?: TrackerIssue } | undefined)?.issue?.agentProfile ?? '';
       if (newProfile !== currentProfile) {
         onProfileChange(String(e.active.id), newProfile);
       }
@@ -162,7 +177,10 @@ export default function AgentQueueView({
 
   if (totalBacklog === 0) {
     return (
-      <div className="rounded-2xl border border-gray-200 bg-white px-6 py-12 text-center text-sm text-gray-400 dark:border-gray-800 dark:bg-white/[0.03]">
+      <div
+        className="rounded-[var(--radius-md)] px-6 py-12 text-center text-sm"
+        style={{ border: '1px solid var(--line)', background: 'var(--bg-elevated)', color: 'var(--muted)' }}
+      >
         No backlog issues to route
       </div>
     );

@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,9 +15,18 @@ import (
 // If issue.BranchName is one of these, ResolveWorktreeBranch falls back to
 // the symphony/<slug> convention.
 var defaultBranches = map[string]bool{
+	"":        true,
 	"main":    true,
 	"master":  true,
 	"develop": true,
+	"HEAD":    true,
+}
+
+// IsDefaultBranch reports whether branch is a well-known default branch name
+// (empty string, "main", "master", "develop", or "HEAD"). These names are
+// treated as "no feature branch" and should never be used as worktree branch names.
+func IsDefaultBranch(branch string) bool {
+	return defaultBranches[branch]
 }
 
 // SlugifyIdentifier lowercases the identifier and replaces any non-alphanumeric
@@ -45,7 +55,7 @@ func SlugifyIdentifier(id string) string {
 //  1. branchName if non-nil, non-empty, and not a default branch (main/master/develop)
 //  2. "symphony/" + SlugifyIdentifier(identifier)
 func ResolveWorktreeBranch(branchName *string, identifier string) string {
-	if branchName != nil && *branchName != "" && !defaultBranches[*branchName] {
+	if branchName != nil && !IsDefaultBranch(*branchName) {
 		return *branchName
 	}
 	return "symphony/" + SlugifyIdentifier(identifier)
@@ -69,6 +79,11 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName str
 
 	// Reuse existing worktree (retry case).
 	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
+		// Still assert containment: a symlink placed at wtPath pointing outside root
+		// would bypass the check on the creation path.
+		if err := AssertContained(root, wtPath); err != nil {
+			return Workspace{}, err
+		}
 		return Workspace{Path: wtPath, Identifier: identifier, CreatedNow: false}, nil
 	}
 
@@ -76,6 +91,12 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName str
 	worktreesDir := filepath.Join(root, "worktrees")
 	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
 		return Workspace{}, fmt.Errorf("worktree: create worktrees dir: %w", err)
+	}
+
+	// Best-effort fetch so that remote-only PR branches are available locally.
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", root, "fetch", "origin", branchName)
+	if err := fetchCmd.Run(); err != nil {
+		slog.Debug("worktree: fetch failed (best-effort)", "branch", branchName, "error", err)
 	}
 
 	// git -C <root> worktree add <wtPath> -b <branchName>
@@ -101,6 +122,8 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName str
 
 // runGitWorktreeAdd runs git worktree add. If createBranch is true it passes
 // -b <branchName>; otherwise checks out the existing branch directly.
+// LANG=C and LC_ALL=C are forced so that the English error text ("already exists")
+// is reliably produced on non-English systems and can be matched by ensureWorktree.
 func runGitWorktreeAdd(ctx context.Context, root, wtPath, branchName string, createBranch bool) error {
 	var args []string
 	if createBranch {
@@ -109,6 +132,7 @@ func runGitWorktreeAdd(ctx context.Context, root, wtPath, branchName string, cre
 		args = []string{"-C", root, "worktree", "add", wtPath, branchName}
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = append(os.Environ(), "LANG=C", "LC_ALL=C")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -118,12 +142,12 @@ func runGitWorktreeAdd(ctx context.Context, root, wtPath, branchName string, cre
 // removeWorktree removes the git worktree for identifier and, if branchName is
 // non-empty, deletes the branch from the base repo.
 // Safe to call when the worktree does not exist (idempotent).
-func (m *Manager) removeWorktree(identifier, branchName string) error {
+func (m *Manager) removeWorktree(ctx context.Context, identifier, branchName string) error {
 	root := m.cfg.Workspace.Root
 	wtPath := worktreePath(root, identifier)
 
 	// git -C <root> worktree remove --force <wtPath>
-	cmd := exec.Command("git", "-C", root, "worktree", "remove", "--force", wtPath)
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "worktree", "remove", "--force", wtPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		output := strings.TrimSpace(string(out))
 		// These messages mean the worktree is already gone — treat as success.
@@ -134,11 +158,11 @@ func (m *Manager) removeWorktree(identifier, branchName string) error {
 	}
 
 	// Prune stale metadata from .git/worktrees/
-	_ = exec.Command("git", "-C", root, "worktree", "prune").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", root, "worktree", "prune").Run()
 
 	// Delete branch (best-effort, only when caller provides a name).
 	if branchName != "" {
-		_ = exec.Command("git", "-C", root, "branch", "-D", branchName).Run()
+		_ = exec.CommandContext(ctx, "git", "-C", root, "branch", "-D", branchName).Run()
 	}
 
 	return nil

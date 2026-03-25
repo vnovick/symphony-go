@@ -54,6 +54,14 @@ pnpm install --frozen-lockfile
 pnpm dev     # HMR at http://localhost:5173, proxies /api/* to localhost:8090
 ```
 
+> **First-time setup note:** pnpm requires explicit approval for packages that run install scripts. If `pnpm install` prompts you about untrusted builds, run:
+>
+> ```bash
+> pnpm approve-builds
+> ```
+>
+> This adds the affected packages to your local trusted-builds allowlist and lets `pnpm install` complete. You only need to do this once per machine.
+
 `make dev` is a shortcut for the Vite step only. The Go binary must be running separately from a project directory.
 
 ### Make commands

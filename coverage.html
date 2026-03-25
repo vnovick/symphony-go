@@ -1110,7 +1110,7 @@ func runClear(args []string) <span class="cov0" title="0">{
 type repoInfo struct {
         RemoteURL     string // raw git remote URL
         Owner         string // e.g. "vnovick"
-        Repo          string // e.g. "simphony"
+        Repo          string // e.g. "symphony"
         CloneURL      string // SSH clone URL reconstructed for after_create hook
         DefaultBranch string // "main" or "master"
         ProjectName   string // repo name, used for workspace.root
@@ -1338,7 +1338,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string <span cl
         b.WriteString("  read_timeout_ms: 120000\n")
         b.WriteString("  stall_timeout_ms: 300000\n")
 
-        b.WriteString("\nworkspace:\n  root: ~/.simphony/workspaces/" + info.ProjectName + "\n")
+        b.WriteString("\nworkspace:\n  root: ~/.symphony/workspaces/" + info.ProjectName + "\n")
 
         cloneURL := info.CloneURL
         if cloneURL == "" </span><span class="cov0" title="0">{
@@ -3150,11 +3150,11 @@ func resolvePathValue(value, defaultVal string) string <span class="cov8" title=
         <span class="cov8" title="1">return expanded</span>
 }
 
-// defaultWorkspaceRoot returns ~/.simphony/workspaces, falling back to
+// defaultWorkspaceRoot returns ~/.symphony/workspaces, falling back to
 // os.TempDir()/symphony_workspaces if the home directory cannot be determined.
 func defaultWorkspaceRoot() string <span class="cov8" title="1">{
         if home, err := os.UserHomeDir(); err == nil </span><span class="cov8" title="1">{
-                return filepath.Join(home, ".simphony", "workspaces")
+                return filepath.Join(home, ".symphony", "workspaces")
         }</span>
         <span class="cov0" title="0">return filepath.Join(os.TempDir(), "symphony_workspaces")</span>
 }

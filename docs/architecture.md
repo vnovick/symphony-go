@@ -46,7 +46,20 @@ These are protected by `Orchestrator.cfgMu` (`sync.RWMutex`). All other config f
 
 ### Workspace isolation
 
-Each issue gets a dedicated workspace directory under `~/.simphony/workspaces/<identifier>/`. The `workspace.Manager` ensures the directory exists before the agent is invoked and enforces that the agent cannot escape to parent directories (`workspace.Safety`).
+Each issue gets a dedicated workspace directory under `~/.symphony/workspaces/<identifier>/`. The `workspace.Manager` ensures the directory exists before the agent is invoked and enforces that the agent cannot escape to parent directories (`workspace.Safety`).
+
+### Per-run log isolation
+
+Every daemon invocation generates a unique `AppSessionID` (a 16-byte `crypto/rand` hex token). It is
+stamped on every `CompletedRun` entry in history, and surfaced as `StateSnapshot.CurrentAppSessionID`
+in the live snapshot. The Timeline page uses it to identify which runs belong to the current daemon
+session.
+
+Within a single run, each Claude Code subprocess emits a `session_id` key in its slog output. The log
+pipeline (`formatBufLine` → `BufLogEntry.SessionID` → `IssueLogEntry.SessionID`) preserves this ID so
+that the Timeline's `extractSubagents` function can filter the full per-issue log to only the entries
+that belong to the specific run being expanded — preventing subagents from earlier runs from appearing
+under a later one.
 
 ### Tracker abstraction
 

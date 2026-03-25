@@ -30,10 +30,10 @@ import (
 // without waiting for a real tickCmd to fire.
 func newCatwalkModel() Model {
 	buf := logbuffer.New()
-	buf.Add("PROJ-1", `INFO claude: action session_id=s1 tool=Bash description="ls -la"`)
-	buf.Add("PROJ-1", `INFO claude: action session_id=s1 tool=Bash description="cat go.mod"`)
-	buf.Add("PROJ-1", `INFO claude: action session_id=s1 tool=Read description="README.md"`)
-	buf.Add("PROJ-1", `INFO claude: text session_id=s1 text="Analysing the codebase."`)
+	buf.Add("PROJ-1", logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "ls -la"}))
+	buf.Add("PROJ-1", logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Bash", "description": "cat go.mod"}))
+	buf.Add("PROJ-1", logLine("INFO", "claude: action", map[string]string{"session_id": "s1", "tool": "Read", "description": "README.md"}))
+	buf.Add("PROJ-1", logLine("INFO", "claude: text", map[string]string{"session_id": "s1", "text": "Analysing the codebase."}))
 
 	snap := newTestSnap(server.StateSnapshot{
 		Running: []server.RunningRow{{Identifier: "PROJ-1", State: "Running"}},

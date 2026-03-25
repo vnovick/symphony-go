@@ -26,9 +26,6 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.90.21
         version: 5.91.0(react@19.2.4)
-      apexcharts:
-        specifier: ^5.10.4
-        version: 5.10.4
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
@@ -38,9 +35,6 @@ importers:
       react:
         specifier: ^19.0.0
         version: 19.2.4
-      react-apexcharts:
-        specifier: ^2.1.0
-        version: 2.1.0(apexcharts@5.10.4)(react@19.2.4)
       react-dom:
         specifier: ^19.0.0
         version: 19.2.4(react@19.2.4)
@@ -1145,9 +1139,6 @@ packages:
   ansi-styles@5.2.0:
     resolution: {integrity: sha512-Cxwpt2SfTzTtXcfOlzGEee8O+c+MmUgGrNiBcXnuWxuFJHe6a5Hz7qwhwe5OgaSYI0IJvkLqWX1ASG+cJOkEiA==}
     engines: {node: '>=10'}
-
-  apexcharts@5.10.4:
-    resolution: {integrity: sha512-gt0VUqZ2+mr25ScbUcKZgJr96jKYm4vjOcxEWCEh/E5F4dWqhyo3dBhPRvNNnkKiWxkMd2cBwj3ZYH3rK39fkA==}
 
   argparse@2.0.1:
     resolution: {integrity: sha512-8+9WqebbFzpX9OR+Wa6O29asIogeRMzcGtAINdpMHHyAg10f05aSFVBbcEqGf/PXw1EjAZ+q2/bEBg3DvurK3Q==}
@@ -2433,12 +2424,6 @@ packages:
   punycode@2.3.1:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
     engines: {node: '>=6'}
-
-  react-apexcharts@2.1.0:
-    resolution: {integrity: sha512-xrmeTKRKHh3cvvLc8SasqFjlOgIqGpyHc81qjnRtcjUM0Fu7qEjgVRWGPokGFjqhwRZVgEym8zmuEyYr5LMYIg==}
-    peerDependencies:
-      apexcharts: '>=5.10.1'
-      react: '>=16.8.0'
 
   react-dom@19.2.4:
     resolution: {integrity: sha512-AXJdLo8kgMbimY95O2aKQqsz2iWi9jMgKJhRBAxECE4IFxfcazB2LmzloIoibJI3C12IlY20+KFaLv+71bUJeQ==}
@@ -3963,8 +3948,6 @@ snapshots:
   ansi-regex@5.0.1: {}
 
   ansi-styles@5.2.0: {}
-
-  apexcharts@5.10.4: {}
 
   argparse@2.0.1: {}
 
@@ -5512,12 +5495,6 @@ snapshots:
   property-information@7.1.0: {}
 
   punycode@2.3.1: {}
-
-  react-apexcharts@2.1.0(apexcharts@5.10.4)(react@19.2.4):
-    dependencies:
-      apexcharts: 5.10.4
-      prop-types: 15.8.1
-      react: 19.2.4
 
   react-dom@19.2.4(react@19.2.4):
     dependencies:

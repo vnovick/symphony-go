@@ -1,14 +1,146 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@100..900&display=swap')
-layer(base);
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 
 @custom-variant dark (&:is(.dark *));
 
+/* ─── Control-room design tokens ──────────────────────────────────────────── */
+/* Dark is the default. Override with [data-theme='light'] on <html>.         */
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Surfaces — zinc-black (canonical spec) */
+  --bg:           #09090b;
+  --bg-soft:      #111113;
+  --bg-elevated:  #18181b;
+  --panel:        #18181b;
+
+  /* Text */
+  --text:           #fafafa;
+  --text-secondary: #a1a1aa;
+  --muted:          #71717a;
+
+  /* Borders */
+  --line:        rgba(255,255,255,0.06);
+  --line-strong: rgba(255,255,255,0.12);
+
+  /* Accent — indigo → teal */
+  --accent:        #6366f1;
+  --accent-soft:   rgba(99,102,241,0.15);
+  --accent-strong: #818cf8;
+  --teal:          #14b8a6;
+  --purple:        #a855f7;
+  --gradient-accent: linear-gradient(135deg, var(--accent), var(--teal));
+
+  /* Signal */
+  --success:        #22c55e;
+  --success-soft:   rgba(34,197,94,0.15);
+  --success-strong: #4ade80;
+  --warning:        #f59e0b;
+  --warning-soft:   rgba(245,158,11,0.15);
+  --danger:         #ef4444;
+  --danger-soft:    rgba(239,68,68,0.15);
+
+  /* Extended palette */
+  --teal-soft:   rgba(20,184,166,0.15);
+  --purple-soft: rgba(168,85,247,0.15);
+
+  /* Radius */
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   14px;
+  --radius-full: 9999px;
+
+  /* Extended surfaces */
+  --panel-strong: #1f1f23;
+  --panel-dark:   #0a0a0c;
+
+  /* Shadows */
+  --shadow-sm:   0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md:   0 4px 12px rgba(0,0,0,0.5);
+  --shadow-lg:   0 8px 32px rgba(0,0,0,0.6);
+  --accent-glow: rgba(99,102,241,0.4);
+  --shadow-glow: 0 0 40px -10px var(--accent-glow);
+
+  /* Gradients */
+  --gradient-hero:   linear-gradient(180deg, rgba(99,102,241,0.1) 0%, transparent 50%);
+  --gradient-border: linear-gradient(135deg, rgba(99,102,241,0.3), rgba(20,184,166,0.3));
+
+  /* Animation durations */
+  --duration-fast:   150ms;
+  --duration-normal: 300ms;
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --bg:           #fafafa;
+  --bg-soft:      #f4f4f5;
+  --bg-elevated:  #ffffff;
+  --panel:        #ffffff;
+  --text:           #09090b;
+  --text-secondary: #3f3f46;
+  --muted:          #71717a;
+  --panel-strong: #fafafa;
+  --panel-dark:   #f4f4f5;
+  --line:        rgba(0,0,0,0.06);
+  --line-strong: rgba(0,0,0,0.12);
+  --gradient-border: linear-gradient(135deg, rgba(79,70,229,0.25), rgba(13,148,136,0.25));
+  --accent:        #4f46e5;
+  --accent-soft:   rgba(79,70,229,0.1);
+  --accent-strong: #6366f1;
+  --success:        #16a34a;
+  --success-soft:   rgba(22,163,74,0.12);
+  --success-strong: #22c55e;
+  --warning:        #d97706;
+  --warning-soft:   rgba(217,119,6,0.12);
+  --danger:         #dc2626;
+  --danger-soft:    rgba(220,38,38,0.12);
+  --teal-soft:      rgba(20,184,166,0.12);
+  --purple-soft:    rgba(168,85,247,0.12);
+  --accent-glow:    rgba(79,70,229,0.25);
+  --shadow-glow:    0 0 40px -10px var(--accent-glow);
+  --gradient-hero:  linear-gradient(180deg, rgba(79,70,229,0.06) 0%, transparent 50%);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.12);
+}
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* ─── Prototype hover states ────────────────────────────────────────────── */
+/* Inline styles have higher specificity than class selectors, so !important  */
+/* is required here to apply hover effects to components using inline styles. */
+
+/* Issue cards (board + row) */
+.issue-card { transition: all 0.15s ease; }
+.issue-card:hover { border-color: var(--line-strong) !important; box-shadow: var(--shadow-md) !important; }
+
+/* Action buttons in running / paused sessions table */
+.btn-action-pause:hover    { background: rgba(245,158,11,0.15)  !important; }
+.btn-action-cancel:hover   { background: rgba(239,68,68,0.15)   !important; }
+.btn-action-resume:hover   { background: rgba(34,197,94,0.15)   !important; }
+.btn-action-reanalyze:hover{ background: rgba(99,102,241,0.2)   !important; }
+
+/* Terminal / subagent sidebar tabs */
+.terminal-tab { transition: background 0.1s ease; }
+.terminal-tab:hover { background: #141414 !important; }
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+/* Base body styles matching prototype */
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans, 'Inter', sans-serif);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 @theme {
   --font-*: initial;
   --font-outfit: Outfit, sans-serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', monospace;
 
   --breakpoint-*: initial;
   --breakpoint-2xsm: 375px;
@@ -41,6 +173,12 @@ layer(base);
   --color-transparent: transparent;
   --color-white: #ffffff;
   --color-black: #101828;
+
+  /* Terminal UI palette — used by the Logs page dark terminal surface */
+  --color-terminal-void: #0d0f0e;
+  --color-terminal-base: #111318;
+  --color-terminal-header: #111814;
+  --color-terminal-cursor: #4ade80;
 
   --color-brand-25: #f2f7ff;
   --color-brand-50: #ecf3ff;
@@ -185,7 +323,9 @@ layer(base);
     cursor: pointer;
   }
   body {
-    @apply font-outfit relative z-1 bg-gray-50 font-normal;
+    @apply font-sans relative z-1 font-normal;
+    background-color: var(--bg);
+    color: var(--text);
   }
 }
 
@@ -297,60 +437,6 @@ layer(base);
   @apply border-brand-500 bg-brand-500;
 }
 
-/* third-party libraries CSS */
-.apexcharts-legend-text {
-  @apply !text-gray-700 dark:!text-gray-400;
-}
-
-.apexcharts-text {
-  @apply !fill-gray-700 dark:!fill-gray-400;
-}
-
-.apexcharts-tooltip.apexcharts-theme-light {
-  @apply !shadow-theme-sm gap-1 !rounded-lg !border-gray-200 p-3 dark:!border-gray-800 dark:!bg-gray-900;
-}
-
-.apexcharts-tooltip-marker {
-  margin-right: 6px;
-  height: 6px;
-  width: 6px;
-}
-.apexcharts-legend-text {
-  @apply !pl-5 !text-gray-700 dark:!text-gray-400;
-}
-.apexcharts-tooltip-series-group {
-  @apply !p-0;
-}
-.apexcharts-tooltip-y-group {
-  @apply !p-0;
-}
-.apexcharts-tooltip-title {
-  @apply !mb-0 !border-b-0 !bg-transparent !p-0 !text-[10px] !leading-4 !text-gray-800 dark:!text-white/90;
-}
-.apexcharts-tooltip-text {
-  @apply !text-theme-xs !text-gray-700 dark:!text-white/90;
-}
-.apexcharts-tooltip-text-y-value {
-  @apply !font-medium;
-}
-
-.apexcharts-gridline {
-  @apply !stroke-gray-100 dark:!stroke-gray-800;
-}
-#chartTwo .apexcharts-datalabels-group {
-  @apply !-translate-y-24;
-}
-#chartTwo .apexcharts-datalabels-group .apexcharts-text {
-  @apply !fill-gray-800 !font-semibold dark:!fill-white/90;
-}
-
-#chartDarkStyle .apexcharts-datalabels-group .apexcharts-text {
-  @apply !fill-gray-800 !font-semibold dark:!fill-white/90;
-}
-
-#chartSixteen .apexcharts-legend {
-  @apply !p-0 !pl-6;
-}
 
 .jvectormap-container {
   @apply !bg-gray-50 dark:!bg-gray-900;
@@ -832,4 +918,32 @@ span.flatpickr-weekday,
   50% {
     opacity: 0;
   }
+}
+
+/* ─── Board responsive grid ───────────────────────────────────────────────── */
+.board-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .board-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .board-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─── Slide panel animation ───────────────────────────────────────────────── */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.slide-panel-right {
+  animation: slide-in-right 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }

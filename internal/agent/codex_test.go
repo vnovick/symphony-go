@@ -109,7 +109,8 @@ func TestCodexRunnerFreshTurn(t *testing.T) {
 	result, err := runner.RunTurn(
 		context.Background(), slog.Default(), nil,
 		nil, "hello", dir, fakeExe, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "tid-1", result.SessionID)
@@ -137,7 +138,8 @@ func TestCodexRunnerResumeTurn(t *testing.T) {
 	result, err := runner.RunTurn(
 		context.Background(), slog.Default(), nil,
 		&sessionID, "continue", dir, fakeExe, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "resumed", result.LastText)
@@ -169,7 +171,8 @@ func TestMultiRunnerDispatchesToCodex(t *testing.T) {
 	result, err := multi.RunTurn(
 		context.Background(), slog.Default(), nil,
 		nil, "hi", dir, fakeCodex, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "mtr-1", result.SessionID)
@@ -195,7 +198,8 @@ func TestCodexRunnerLogsSubagentEvents(t *testing.T) {
 	_, err := runner.RunTurn(
 		context.Background(), log, nil,
 		nil, "hi", dir, fakeExe, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	assert.Contains(t, strings.Join(log.info, "\n"), "codex: subagent")
@@ -221,7 +225,8 @@ func TestMultiRunnerDispatchesToHintedBackend(t *testing.T) {
 	result, err := multi.RunTurn(
 		context.Background(), slog.Default(), nil,
 		nil, "hi", dir, command, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "hint-1", result.SessionID)
@@ -312,7 +317,8 @@ func TestMultiRunnerStripsBackendHintFromPrompt(t *testing.T) {
 	result, err := multi.RunTurn(
 		context.Background(), slog.Default(), nil,
 		nil, "@@symphony-backend=codex actual prompt text", dir, fakeCodex, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "strip-1", result.SessionID)
@@ -328,7 +334,8 @@ func TestCodexRunnerStartupFailure(t *testing.T) {
 	result, err := runner.RunTurn(
 		context.Background(), slog.Default(), nil,
 		nil, "test", t.TempDir(), "/nonexistent/path/to/codex", "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.Error(t, err)
 	assert.True(t, result.Failed)
@@ -350,7 +357,8 @@ func TestCodexRunnerWithNonExeCommand(t *testing.T) {
 	result, err := runner.RunTurn(
 		context.Background(), slog.Default(), nil,
 		nil, "test", dir, fakeWrapper, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "shell-1", result.SessionID)
@@ -498,7 +506,8 @@ func TestCodexRunnerLogsActionStarted(t *testing.T) {
 	_, err := runner.RunTurn(
 		context.Background(), log, nil,
 		nil, "build it", dir, fakeExe, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
@@ -529,7 +538,8 @@ func TestCodexShellNonZeroExitInDescription(t *testing.T) {
 	_, err := runner.RunTurn(
 		context.Background(), log, nil,
 		nil, "run bad cmd", dir, fakeExe, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
@@ -554,7 +564,8 @@ func TestCodexShellZeroExitNoExitSuffix(t *testing.T) {
 	_, err := runner.RunTurn(
 		context.Background(), log, nil,
 		nil, "echo ok", dir, fakeExe, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
@@ -579,7 +590,8 @@ func TestCodexShellDetailLoggedAtInfoLevel(t *testing.T) {
 	_, err := runner.RunTurn(
 		context.Background(), log, nil,
 		nil, "build", dir, fakeExe, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	allInfo := strings.Join(log.info, "\n")
@@ -607,7 +619,8 @@ func TestMultiRunnerWarnsOnUnsupportedBackend(t *testing.T) {
 	result, err := multi.RunTurn(
 		context.Background(), slog.Default(), nil,
 		nil, "hi", dir, "@@symphony-backend=gemini "+fakeClaude, "",
-		5000, 10000,
+		"",
+		30000, 60000,
 	)
 	require.NoError(t, err)
 	assert.Equal(t, "warn-1", result.SessionID)

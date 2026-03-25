@@ -116,13 +116,13 @@ server:
 
 ```yaml
 workspace:
-  root: ~/.simphony/workspaces   # default
+  root: ~/.symphony/workspaces   # default
   auto_clear_workspace: false    # set true to delete workspace after task succeeds
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | `~/.simphony/workspaces` | Root directory for per-issue workspaces. Supports `~` and `$ENV_VAR` expansion. |
+| `root` | string | `~/.symphony/workspaces` | Root directory for per-issue workspaces. Supports `~` and `$ENV_VAR` expansion. |
 | `auto_clear_workspace` | bool | `false` | When `true`, the workspace directory is deleted after a task reaches the completion state. Togglable at runtime from the Settings page without restarting Symphony. |
 
 Each issue gets an isolated subdirectory under `root` that persists across runs.

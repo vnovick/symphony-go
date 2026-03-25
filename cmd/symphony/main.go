@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,6 +23,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/vnovick/symphony-go/internal/agent"
 	"github.com/vnovick/symphony-go/internal/config"
+	"github.com/vnovick/symphony-go/internal/domain"
 	"github.com/vnovick/symphony-go/internal/logbuffer"
 	"github.com/vnovick/symphony-go/internal/orchestrator"
 	"github.com/vnovick/symphony-go/internal/server"
@@ -39,6 +42,12 @@ var (
 	commit  = "none"
 	date    = "unknown"
 )
+
+func newAppSessionID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
 
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: symphony [command] [flags]
@@ -62,13 +71,13 @@ Run mode (default when no command given):
 	flag.PrintDefaults()
 }
 
-// defaultLogsDir returns a per-project logs directory under ~/.simphony/logs/
+// defaultLogsDir returns a per-project logs directory under ~/.symphony/logs/
 // derived from the tracker kind and project slug in the WORKFLOW.md at path.
-// Falls back to ~/.simphony/logs if the config can't be read or has no slug.
+// Falls back to ~/.symphony/logs if the config can't be read or has no slug.
 func defaultLogsDir(workflowPath string) string {
-	base := filepath.Join("~", ".simphony", "logs")
+	base := filepath.Join("~", ".symphony", "logs")
 	if home, err := os.UserHomeDir(); err == nil {
-		base = filepath.Join(home, ".simphony", "logs")
+		base = filepath.Join(home, ".symphony", "logs")
 	}
 	cfg, err := config.Load(workflowPath)
 	if err != nil || cfg.Tracker.Kind == "" || cfg.Tracker.ProjectSlug == "" {
@@ -93,11 +102,13 @@ func configuredBackend(command, explicit string) string {
 // present and accessible. validatedBackends is a dedup set so each backend
 // is validated at most once per startup. profileName is "" for the default
 // agent and non-empty for named profiles (affects log messages only).
-func validateBackend(backend, profileName string, validatedBackends map[string]struct{}, cfg *config.Config) {
+// Returns a non-nil error when the default backend fails validation so the
+// caller can abort startup rather than silently waiting until dispatch time.
+func validateBackend(backend, profileName string, validatedBackends map[string]struct{}, cfg *config.Config) error {
 	switch backend {
 	case "", "claude":
 		if _, ok := validatedBackends["claude"]; ok {
-			return
+			return nil
 		}
 		validatedBackends["claude"] = struct{}{}
 		// Use the already-resolved command (absolute path or bare name) so
@@ -112,26 +123,28 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 		if err := agent.ValidateClaudeCLICommand(resolvedCmd); err != nil {
 			if profileName != "" {
 				slog.Warn("claude CLI validation failed for profile", "profile", profileName, "error", err)
-			} else {
-				slog.Warn("claude CLI validation failed — agent commands may fail", "error", err)
+				return nil // profile failures are non-fatal
 			}
-		} else if profileName != "" {
+			return fmt.Errorf("claude CLI not found or not executable: %w", err)
+		}
+		if profileName != "" {
 			slog.Info("claude CLI validated successfully for profile", "profile", profileName)
 		} else {
 			slog.Info("claude CLI validated successfully")
 		}
 	case "codex":
 		if _, ok := validatedBackends["codex"]; ok {
-			return
+			return nil
 		}
 		validatedBackends["codex"] = struct{}{}
 		if err := agent.ValidateCodexCLI(); err != nil {
 			if profileName != "" {
 				slog.Warn("codex CLI validation failed for profile", "profile", profileName, "error", err)
-			} else {
-				slog.Warn("codex CLI validation failed — codex commands may fail", "error", err)
+				return nil // profile failures are non-fatal
 			}
-		} else if profileName != "" {
+			return fmt.Errorf("codex CLI not found or not executable: %w", err)
+		}
+		if profileName != "" {
 			slog.Info("codex CLI validated successfully for profile", "profile", profileName)
 		} else {
 			slog.Info("codex CLI validated successfully")
@@ -143,6 +156,7 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 			slog.Warn("unsupported default backend, will fall back to default runner", "backend", backend)
 		}
 	}
+	return nil
 }
 
 // loadDotEnv silently loads .symphony/.env then .env from the current working
@@ -186,7 +200,7 @@ func main() {
 
 	flag.Usage = printUsage
 	workflowPath := flag.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md")
-	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: ~/.simphony/logs/<kind>/<project>)")
+	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: ~/.symphony/logs/<kind>/<project>)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
 	flag.Parse()
 
@@ -196,7 +210,7 @@ func main() {
 	}
 
 	// Resolve the logs directory.  When --logs-dir is not set we derive a
-	// per-project path under ~/.simphony/logs/<kind>/<slug> so that logs are
+	// per-project path under ~/.symphony/logs/<kind>/<slug> so that logs are
 	// co-located with workspaces and automatically scoped to the project.
 	// We do a lightweight early config read solely to get the tracker kind and
 	// project slug; failures are non-fatal and fall back to a shared default.
@@ -282,16 +296,23 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	)
 
 	// Validate CLI availability for the default agent command and all profiles.
+	// A missing default binary is a hard error — fail before entering the
+	// dispatch loop so the user sees it immediately rather than at dispatch time.
 	validatedBackends := make(map[string]struct{})
-	validateBackend(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend), "", validatedBackends, cfg)
+	if err := validateBackend(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend), "", validatedBackends, cfg); err != nil {
+		return fmt.Errorf("agent startup: %w", err)
+	}
 	for name, profile := range cfg.Agent.Profiles {
-		validateBackend(configuredBackend(profile.Command, profile.Backend), name, validatedBackends, cfg)
+		// Profile failures are non-fatal (the profile may target a different host).
+		if err := validateBackend(configuredBackend(profile.Command, profile.Backend), name, validatedBackends, cfg); err != nil {
+			slog.Warn("agent startup: profile validation failed", "profile", name, "error", err)
+		}
 	}
 	wm := workspace.NewManager(cfg)
 
 	// Remove workspaces for issues that were terminal when we last shut down.
 	orchestrator.StartupTerminalCleanup(ctx, tr, cfg.Tracker.TerminalStates, func(id string) error {
-		return wm.RemoveWorkspace(id, "")
+		return wm.RemoveWorkspace(ctx, id, "")
 	})
 
 	refreshChan := make(chan struct{}, 1)
@@ -308,414 +329,29 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	}
 	orch.SetLogBuffer(logBuf)
 	if logFile != "" {
-		orch.SetHistoryFile(filepath.Join(filepath.Dir(logFile), "history.json"))
-		orch.SetPausedFile(filepath.Join(filepath.Dir(logFile), "paused.json"))
+		logDir := filepath.Dir(logFile)
+		orch.SetHistoryFile(filepath.Join(logDir, "history.json"))
+		orch.SetPausedFile(filepath.Join(logDir, "paused.json"))
+		orch.SetAgentLogDir(filepath.Join(logDir, "sessions"))
 	}
 	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
 		orch.SetHistoryKey(cfg.Tracker.Kind + ":" + cfg.Tracker.ProjectSlug)
 	}
 
-	snap := func() server.StateSnapshot {
-		s := orch.Snapshot()
-		now := time.Now()
+	appSessionID := newAppSessionID()
+	orch.SetAppSessionID(appSessionID)
 
-		running := make([]server.RunningRow, 0, len(s.Running))
-		for _, r := range s.Running {
-			msg := r.LastMessage
-			if len(msg) > 120 {
-				msg = msg[:120] + "…"
-			}
-			var lastEvAt string
-			if r.LastEventAt != nil {
-				lastEvAt = r.LastEventAt.Format(time.RFC3339)
-			}
-			running = append(running, server.RunningRow{
-				Identifier:   r.Issue.Identifier,
-				State:        r.Issue.State,
-				TurnCount:    r.TurnCount,
-				Tokens:       r.TotalTokens,
-				InputTokens:  r.InputTokens,
-				OutputTokens: r.OutputTokens,
-				LastEvent:    msg,
-				LastEventAt:  lastEvAt,
-				SessionID:    r.SessionID,
-				WorkerHost:   r.WorkerHost,
-				Backend:      r.Backend,
-				ElapsedMs:    now.Sub(r.StartedAt).Milliseconds(),
-				StartedAt:    r.StartedAt,
-			})
-		}
-		// Sort by start time (oldest first) so order is stable across ticks.
-		sort.Slice(running, func(i, j int) bool {
-			return running[i].StartedAt.Before(running[j].StartedAt)
-		})
-
-		retrying := make([]server.RetryRow, 0, len(s.RetryAttempts))
-		for _, r := range s.RetryAttempts {
-			row := server.RetryRow{
-				Identifier: r.Identifier,
-				Attempt:    r.Attempt,
-				DueAt:      r.DueAt,
-			}
-			if r.Error != nil {
-				row.Error = *r.Error
-			}
-			retrying = append(retrying, row)
-		}
-
-		paused := make([]string, 0, len(s.PausedIdentifiers))
-		for identifier := range s.PausedIdentifiers {
-			paused = append(paused, identifier)
-		}
-
-		var rateLimits *server.RateLimitInfo
-		var activeProjectFilter []string
-		if lc, ok := tr.(*linear.Client); ok {
-			reqLim, reqRem, reset, cplxLim, cplxRem := lc.RateLimits()
-			if reqLim > 0 || cplxLim > 0 {
-				rateLimits = &server.RateLimitInfo{
-					RequestsLimit:       reqLim,
-					RequestsRemaining:   reqRem,
-					RequestsReset:       reset,
-					ComplexityLimit:     cplxLim,
-					ComplexityRemaining: cplxRem,
-				}
-			}
-			activeProjectFilter = lc.GetProjectFilter()
-		} else if gc, ok := tr.(*github.Client); ok {
-			limit, remaining, reset := gc.RateLimits()
-			if limit > 0 {
-				rateLimits = &server.RateLimitInfo{
-					RequestsLimit:     limit,
-					RequestsRemaining: remaining,
-					RequestsReset:     reset,
-				}
-			}
-		}
-		// Read the mutable cfg fields once, under cfgMu, for a consistent snapshot.
-		profiles := orch.ProfilesCfg()
-		agentMode := orch.AgentModeCfg()
-		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
-		activeStates, terminalStates, completionState := orch.TrackerStatesCfg()
-
-		// Collect available profile names (sorted for stable output).
-		var availableProfiles []string
-		for name := range profiles {
-			availableProfiles = append(availableProfiles, name)
-		}
-		sort.Strings(availableProfiles)
-
-		// Build profileDefs map.
-		var profileDefs map[string]server.ProfileDef
-		if len(profiles) > 0 {
-			profileDefs = make(map[string]server.ProfileDef, len(profiles))
-			for n, p := range profiles {
-				profileDefs[n] = server.ProfileDef{
-					Command: p.Command,
-					Prompt:  p.Prompt,
-					Backend: p.Backend,
-				}
-			}
-		}
-
-		// Build history rows from the orchestrator's completed-run ring buffer.
-		completedRuns := orch.RunHistory()
-		history := make([]server.HistoryRow, 0, len(completedRuns))
-		for _, r := range completedRuns {
-			history = append(history, server.HistoryRow{
-				Identifier:   r.Identifier,
-				Title:        r.Title,
-				StartedAt:    r.StartedAt,
-				FinishedAt:   r.FinishedAt,
-				ElapsedMs:    r.ElapsedMs,
-				TurnCount:    r.TurnCount,
-				TotalTokens:  r.TotalTokens,
-				InputTokens:  r.InputTokens,
-				OutputTokens: r.OutputTokens,
-				Status:       r.Status,
-				WorkerHost:   r.WorkerHost,
-				Backend:      r.Backend,
-				SessionID:    r.SessionID,
-			})
-		}
-
-		pausedWithPR := orch.GetPausedOpenPRs()
-		return server.StateSnapshot{
-			GeneratedAt:         now,
-			Counts:              server.Counts{Running: len(running), Retrying: len(retrying), Paused: len(paused)},
-			Running:             running,
-			History:             history,
-			Retrying:            retrying,
-			Paused:              paused,
-			PausedWithPR:        pausedWithPR,
-			MaxConcurrentAgents: orch.MaxWorkers(), // always read from orchestrator, not stale cfg copy
-			RateLimits:          rateLimits,
-			TrackerKind:         cfg.Tracker.Kind,
-			ActiveProjectFilter: activeProjectFilter,
-			AvailableProfiles:   availableProfiles,
-			ProfileDefs:         profileDefs,
-			AgentMode:           agentMode,
-			ActiveStates:        activeStates,
-			TerminalStates:      terminalStates,
-			CompletionState:     completionState,
-			BacklogStates:       cfg.Tracker.BacklogStates,
-			PollIntervalMs:      cfg.Polling.IntervalMs,
-			AutoClearWorkspace:  autoClearWorkspace,
-		}
-	}
-
-	// Terminal status UI — full-screen ANSI panel, refreshes every second.
-	tuiCfg := statusui.Config{
-		MaxAgents:     cfg.Agent.MaxConcurrentAgents,
-		TodoStates:    cfg.Tracker.ActiveStates,
-		BacklogStates: cfg.Tracker.BacklogStates,
-	}
-	if cfg.Server.Port != nil {
-		tuiCfg.DashboardURL = fmt.Sprintf("http://%s:%d/", cfg.Server.Host, *cfg.Server.Port)
-	}
-	// Wire project picker to TUI when the tracker is Linear.
-	if lc, ok := tr.(*linear.Client); ok {
-		tuiCfg.FetchProjects = func() ([]statusui.ProjectItem, error) {
-			fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			lps, err := lc.FetchProjects(fetchCtx)
-			if err != nil {
-				return nil, err
-			}
-			items := make([]statusui.ProjectItem, len(lps))
-			for i, lp := range lps {
-				items[i] = statusui.ProjectItem{ID: lp.ID, Name: lp.Name, Slug: lp.Slug}
-			}
-			return items, nil
-		}
-		tuiCfg.SetProjectFilter = func(slugs []string) {
-			lc.SetProjectFilter(slugs)
-			updateWorkflowProjectSlug(workflowPath, slugs)
-		}
-	}
-	// Wire + / - worker adjustment into TUI.
-	tuiCfg.AdjustWorkers = func(delta int) {
-		next := orch.MaxWorkers() + delta
-		orch.SetMaxWorkers(next)
-		if err := workflow.PatchIntField(workflowPath, "max_concurrent_agents", orch.MaxWorkers()); err != nil {
-			slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md", "error", err)
-		}
-	}
-	// Wire backlog panel: fetch issues in backlog states AND active states (Todo items).
-	// This allows users to see both queued backlog items AND actionable TODO items.
-	{
-		backlogAndActive := append(append([]string{}, cfg.Tracker.BacklogStates...), cfg.Tracker.ActiveStates...)
-		tuiCfg.FetchBacklog = func() ([]statusui.BacklogIssueItem, error) {
-			fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			issues, err := tr.FetchIssuesByStates(fetchCtx, backlogAndActive)
-			if err != nil {
-				return nil, err
-			}
-			items := make([]statusui.BacklogIssueItem, len(issues))
-			for i, iss := range issues {
-				pri := 0
-				if iss.Priority != nil {
-					pri = *iss.Priority
-				}
-				var desc string
-				if iss.Description != nil {
-					desc = *iss.Description
-				}
-				var comments []statusui.CommentItem
-				for _, c := range iss.Comments {
-					comments = append(comments, statusui.CommentItem{
-						Author: c.AuthorName,
-						Body:   c.Body,
-					})
-				}
-				items[i] = statusui.BacklogIssueItem{
-					Identifier:  iss.Identifier,
-					Title:       iss.Title,
-					State:       iss.State,
-					Priority:    pri,
-					Description: desc,
-					Comments:    comments,
-				}
-			}
-			return items, nil
-		}
-		// Wire dispatch: move a backlog issue into the first active state.
-		if len(cfg.Tracker.ActiveStates) > 0 {
-			targetState := cfg.Tracker.ActiveStates[0]
-			tuiCfg.DispatchIssue = func(identifier string) error {
-				dispCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				allStates := append(append([]string{}, cfg.Tracker.BacklogStates...), cfg.Tracker.ActiveStates...)
-				issues, err := tr.FetchIssuesByStates(dispCtx, allStates)
-				if err != nil {
-					return err
-				}
-				for _, iss := range issues {
-					if iss.Identifier == identifier {
-						return tr.UpdateIssueState(dispCtx, iss.ID, targetState)
-					}
-				}
-				return fmt.Errorf("issue %s not found", identifier)
-			}
-		}
-	}
+	snap := buildSnapFunc(orch, tr, cfg, appSessionID)
 	// Redirect slog to file-only before the TUI takes the alt-screen.
 	// Without this, concurrent slog writes to stderr corrupt the bubbletea display.
 	// The TUI log pane reads directly from logBuf instead of stderr.
 	slog.SetDefault(slog.New(slog.NewTextHandler(fileWriter, &slog.HandlerOptions{Level: logLevel})))
-	// tuiCancel lets the TUI kill an agent via the 'x' key; it's the same logic as the HTTP cancel.
-	tuiCancel := func(identifier string) bool {
-		return orch.CancelIssue(identifier)
-	}
-	// tuiResume lets the TUI resume a paused agent via the 'r' key.
-	tuiResume := func(identifier string) bool {
-		ok := orch.ResumeIssue(identifier)
-		if ok {
-			orch.Refresh()
-		}
-		return ok
-	}
-	tuiCfg.ResumeIssue = tuiResume
-	tuiCfg.TerminateIssue = func(identifier string) bool {
-		ok := orch.TerminateIssue(identifier)
-		if ok {
-			// Safe to Refresh here: DiscardingIdentifiers blocks re-dispatch until
-			// the async UpdateIssueState goroutine completes (EventDiscardComplete),
-			// so a poll triggered immediately after discard cannot re-pick the issue.
-			orch.Refresh()
-		}
-		return ok
-	}
-	tuiCfg.TriggerPoll = orch.Refresh
+	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath)
 	go statusui.Run(ctx, snap, logBuf, tuiCfg, tuiCancel)
-
-	// fetchIssues enriches tracker issues with live orchestrator state for the dashboard.
-	fetchIssues := func(ctx context.Context) ([]server.TrackerIssue, error) {
-		seen := map[string]bool{}
-		var allStates []string
-		base := append(append(append([]string{}, cfg.Tracker.BacklogStates...), cfg.Tracker.ActiveStates...), cfg.Tracker.TerminalStates...)
-		if cfg.Tracker.CompletionState != "" {
-			base = append(base, cfg.Tracker.CompletionState)
-		}
-		for _, s := range base {
-			if !seen[s] {
-				seen[s] = true
-				allStates = append(allStates, s)
-			}
-		}
-		issues, err := tr.FetchIssuesByStates(ctx, allStates)
-		if err != nil {
-			return nil, err
-		}
-		snap := orch.Snapshot()
-		now := time.Now()
-		result := make([]server.TrackerIssue, len(issues))
-		for i, issue := range issues {
-			ti := server.TrackerIssue{
-				Identifier: issue.Identifier,
-				Title:      issue.Title,
-				State:      issue.State,
-				Labels:     issue.Labels,
-				Priority:   issue.Priority,
-				BranchName: issue.BranchName,
-			}
-			if issue.Description != nil {
-				ti.Description = *issue.Description
-			}
-			if issue.URL != nil {
-				ti.URL = *issue.URL
-			}
-			// BlockedBy: collect non-nil identifiers from []domain.BlockerRef
-			for _, b := range issue.BlockedBy {
-				if b.Identifier != nil && *b.Identifier != "" {
-					ti.BlockedBy = append(ti.BlockedBy, *b.Identifier)
-				}
-			}
-			// Comments: map domain.Comment to server.CommentRow
-			for _, c := range issue.Comments {
-				row := server.CommentRow{
-					Author: c.AuthorName,
-					Body:   c.Body,
-				}
-				if c.CreatedAt != nil {
-					row.CreatedAt = c.CreatedAt.Format(time.RFC3339)
-				}
-				ti.Comments = append(ti.Comments, row)
-			}
-			// Per-issue agent profile override.
-			if profileName, ok := snap.IssueProfiles[issue.Identifier]; ok && profileName != "" {
-				ti.AgentProfile = profileName
-			}
-			// Orchestrator state
-			if re, ok := snap.Running[issue.ID]; ok {
-				ti.OrchestratorState = "running"
-				ti.TurnCount = re.TurnCount
-				ti.Tokens = re.TotalTokens
-				ti.ElapsedMs = now.Sub(re.StartedAt).Milliseconds()
-				if re.LastMessage != "" {
-					ti.LastMessage = re.LastMessage
-				}
-			} else if re, ok := snap.RetryAttempts[issue.ID]; ok {
-				ti.OrchestratorState = "retrying"
-				if re.Error != nil {
-					ti.Error = *re.Error
-				}
-			} else if _, paused := snap.PausedIdentifiers[issue.Identifier]; paused {
-				ti.OrchestratorState = "paused"
-			} else {
-				ti.OrchestratorState = "idle"
-				// IneligibleReason: only for active-state idle issues.
-				// Calling IneligibleReason on terminal/inactive issues returns
-				// "not_active_state" which is noise — filter those out.
-				reason := orchestrator.IneligibleReason(issue, snap, cfg)
-				if reason != "" && reason != "not_active_state" && reason != "terminal_state" {
-					ti.IneligibleReason = reason
-				}
-			}
-			result[i] = ti
-		}
-		return result, nil
-	}
 
 	// HTTP server — only started when server.port is configured.
 	var srvDone <-chan error
 	if cfg.Server.Port != nil {
-		// pauseIssue cancels the running worker and marks it paused (no auto-retry).
-		pauseIssue := func(identifier string) bool {
-			issue := orch.GetRunningIssue(identifier)
-			if issue == nil {
-				return false
-			}
-			if !orch.CancelIssue(identifier) {
-				return false
-			}
-			go func() {
-				pauseCtx, pauseFn := context.WithTimeout(ctx, 30*time.Second)
-				defer pauseFn()
-				if err := tr.CreateComment(pauseCtx, issue.ID, "⏸ Agent paused via Symphony dashboard. Click Resume to continue."); err != nil {
-					slog.Warn("pause: create comment failed", "identifier", identifier, "error", err)
-				}
-			}()
-			return true
-		}
-		resumeIssue := tuiResume
-		terminateIssue := func(identifier string) bool {
-			ok := orch.TerminateIssue(identifier)
-			if ok {
-				// Safe to Refresh here: the web server has no TriggerPoll background
-				// ticker, so there's no race with the async UpdateIssueState goroutine
-				// in EventTerminatePaused (unlike the TUI path).
-				orch.Refresh()
-			}
-			return ok
-		}
-		fetchLogs := func(identifier string) []string {
-			return logBuf.Get(identifier)
-		}
-		clearLogs := func(identifier string) error {
-			return logBuf.Clear(identifier)
-		}
 		fetchIssue := func(ctx context.Context, identifier string) (*server.TrackerIssue, error) {
 			issue, err := tr.FetchIssueByIdentifier(ctx, identifier)
 			if err != nil {
@@ -724,190 +360,31 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			if issue == nil {
 				return nil, nil
 			}
-			snap := orch.Snapshot()
-			now := time.Now()
-			ti := server.TrackerIssue{
-				Identifier: issue.Identifier,
-				Title:      issue.Title,
-				State:      issue.State,
-				Labels:     issue.Labels,
-				Priority:   issue.Priority,
-				BranchName: issue.BranchName,
-			}
-			if issue.Description != nil {
-				ti.Description = *issue.Description
-			}
-			if issue.URL != nil {
-				ti.URL = *issue.URL
-			}
-			for _, b := range issue.BlockedBy {
-				if b.Identifier != nil && *b.Identifier != "" {
-					ti.BlockedBy = append(ti.BlockedBy, *b.Identifier)
-				}
-			}
-			for _, c := range issue.Comments {
-				row := server.CommentRow{Author: c.AuthorName, Body: c.Body}
-				if c.CreatedAt != nil {
-					row.CreatedAt = c.CreatedAt.Format(time.RFC3339)
-				}
-				ti.Comments = append(ti.Comments, row)
-			}
-			if profileName, ok := snap.IssueProfiles[issue.Identifier]; ok && profileName != "" {
-				ti.AgentProfile = profileName
-			}
-			if re, ok := snap.Running[issue.ID]; ok {
-				ti.OrchestratorState = "running"
-				ti.TurnCount = re.TurnCount
-				ti.Tokens = re.TotalTokens
-				ti.ElapsedMs = now.Sub(re.StartedAt).Milliseconds()
-				if re.LastMessage != "" {
-					ti.LastMessage = re.LastMessage
-				}
-			} else if re, ok := snap.RetryAttempts[issue.ID]; ok {
-				ti.OrchestratorState = "retrying"
-				if re.Error != nil {
-					ti.Error = *re.Error
-				}
-			} else if _, paused := snap.PausedIdentifiers[issue.Identifier]; paused {
-				ti.OrchestratorState = "paused"
-			} else {
-				ti.OrchestratorState = "idle"
-				reason := orchestrator.IneligibleReason(*issue, snap, cfg)
-				if reason != "" && reason != "not_active_state" && reason != "terminal_state" {
-					ti.IneligibleReason = reason
-				}
-			}
+			ti := enrichIssue(*issue, orch.Snapshot(), time.Now(), cfg)
 			return &ti, nil
 		}
-		// notify is a forward reference: the closures below call srv.Notify after construction.
-		var notify func()
 
 		var pm server.ProjectManager
-		if lc, ok := tr.(*linear.Client); ok {
-			pm = &linearProjectManager{client: lc, workflowPath: workflowPath}
+		if tpm, ok := tr.(tracker.ProjectManager); ok {
+			pm = &linearProjectManager{pm: tpm, workflowPath: workflowPath}
 		}
 
+		adapter := &orchestratorAdapter{
+			orch:         orch,
+			logBuf:       logBuf,
+			cfg:          cfg,
+			tr:           tr,
+			workflowPath: workflowPath,
+		}
 		srv := server.New(server.Config{
-			Snapshot:         snap,
-			RefreshChan:      refreshChan,
-			LogFile:          logFile,
-			FetchIssues:      fetchIssues,
-			FetchIssue:       fetchIssue,
-			CancelIssue:      pauseIssue,
-			ResumeIssue:      resumeIssue,
-			FetchLogs:        fetchLogs,
-			TerminateIssue:   terminateIssue,
-			ReanalyzeIssue:   orch.ReanalyzeIssue,
-			ClearLogs:        clearLogs,
-			ProjectManager:   pm,
-			DispatchReviewer: orch.DispatchReviewer,
-			SetWorkers: func(n int) {
-				orch.SetMaxWorkers(n)
-				if err := workflow.PatchIntField(workflowPath, "max_concurrent_agents", n); err != nil {
-					slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md", "error", err)
-				}
-			},
-			SetIssueProfile: orch.SetIssueProfile,
-			ProfileDefs: func() map[string]server.ProfileDef {
-				profiles := orch.ProfilesCfg()
-				defs := make(map[string]server.ProfileDef, len(profiles))
-				for name, p := range profiles {
-					defs[name] = server.ProfileDef{
-						Command: p.Command,
-						Prompt:  p.Prompt,
-						Backend: p.Backend,
-					}
-				}
-				return defs
-			},
-			UpsertProfile: func(name string, def server.ProfileDef) error {
-				profiles := orch.ProfilesCfg()
-				if profiles == nil {
-					profiles = make(map[string]config.AgentProfile)
-				}
-				profiles[name] = config.AgentProfile{
-					Command: def.Command,
-					Prompt:  def.Prompt,
-					Backend: def.Backend,
-				}
-				orch.SetProfilesCfg(profiles)
-				entries := profilesToEntries(profiles)
-				if err := workflow.PatchProfilesBlock(workflowPath, entries); err != nil {
-					return err
-				}
-				notify()
-				return nil
-			},
-			DeleteProfile: func(name string) error {
-				profiles := orch.ProfilesCfg()
-				delete(profiles, name)
-				orch.SetProfilesCfg(profiles)
-				entries := profilesToEntries(profiles)
-				if err := workflow.PatchProfilesBlock(workflowPath, entries); err != nil {
-					return err
-				}
-				notify()
-				return nil
-			},
-			SetAgentMode: func(mode string) error {
-				orch.SetAgentModeCfg(mode)
-				if err := workflow.PatchAgentStringField(workflowPath, "agent_mode", mode); err != nil {
-					slog.Warn("failed to persist agent_mode to WORKFLOW.md", "error", err)
-				}
-				notify()
-				return nil
-			},
-			SetAutoClearWorkspace: func(enabled bool) error {
-				orch.SetAutoClearWorkspaceCfg(enabled)
-				if err := workflow.PatchWorkspaceBoolField(workflowPath, "auto_clear", enabled); err != nil {
-					slog.Warn("failed to persist auto_clear to WORKFLOW.md", "error", err)
-				}
-				notify()
-				return nil
-			},
-			UpdateTrackerStates: func(active, terminal []string, completion string) error {
-				orch.SetTrackerStatesCfg(active, terminal, completion)
-				// Best-effort WORKFLOW.md persistence: keys may not exist if the user
-				// hasn't configured them yet. In-memory update above is authoritative.
-				if err := workflow.PatchStringSliceField(workflowPath, "active_states", active); err != nil {
-					slog.Warn("could not patch active_states in WORKFLOW.md", "error", err)
-				}
-				if err := workflow.PatchStringSliceField(workflowPath, "terminal_states", terminal); err != nil {
-					slog.Warn("could not patch terminal_states in WORKFLOW.md", "error", err)
-				}
-				if err := workflow.PatchStringField(workflowPath, "completion_state", completion); err != nil {
-					slog.Warn("could not patch completion_state in WORKFLOW.md", "error", err)
-				}
-				notify()
-				return nil
-			},
-			UpdateIssueState: func(ctx context.Context, identifier, stateName string) error {
-				seen := map[string]bool{}
-				var allStates []string
-				active, terminal, completion := orch.TrackerStatesCfg()
-				base := append(append(append([]string{}, cfg.Tracker.BacklogStates...), active...), terminal...)
-				if completion != "" {
-					base = append(base, completion)
-				}
-				for _, s := range base {
-					if !seen[s] {
-						seen[s] = true
-						allStates = append(allStates, s)
-					}
-				}
-				issues, err := tr.FetchIssuesByStates(ctx, allStates)
-				if err != nil {
-					return fmt.Errorf("fetch issues: %w", err)
-				}
-				for _, iss := range issues {
-					if iss.Identifier == identifier {
-						return tr.UpdateIssueState(ctx, iss.ID, stateName)
-					}
-				}
-				return fmt.Errorf("issue %s not found", identifier)
-			},
+			Snapshot:       snap,
+			RefreshChan:    refreshChan,
+			LogFile:        logFile,
+			Client:         adapter,
+			FetchIssue:     fetchIssue,
+			ProjectManager: pm,
 		})
-		notify = srv.Notify
+		adapter.notify = srv.Notify
 		if err := srv.Validate(); err != nil {
 			return fmt.Errorf("server configuration error: %w", err)
 		}
@@ -949,6 +426,346 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 // and therefore picks up PATH additions from nvm, volta, homebrew, etc.
 // If the command is already absolute, or resolution fails, the original value
 // is returned unchanged.
+// buildSnapFunc returns the StateSnapshot function wired to the live orchestrator,
+// tracker, and config. Extracted from run() to keep that function scannable.
+func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *config.Config, appSessionID string) func() server.StateSnapshot {
+	return func() server.StateSnapshot {
+		s := orch.Snapshot()
+		now := time.Now()
+
+		running := make([]server.RunningRow, 0, len(s.Running))
+		for _, r := range s.Running {
+			msg := r.LastMessage
+			if len(msg) > 120 {
+				msg = msg[:120] + "…"
+			}
+			var lastEvAt string
+			if r.LastEventAt != nil {
+				lastEvAt = r.LastEventAt.Format(time.RFC3339)
+			}
+			running = append(running, server.RunningRow{
+				Identifier:   r.Issue.Identifier,
+				State:        r.Issue.State,
+				TurnCount:    r.TurnCount,
+				Tokens:       r.TotalTokens,
+				InputTokens:  r.InputTokens,
+				OutputTokens: r.OutputTokens,
+				LastEvent:    msg,
+				LastEventAt:  lastEvAt,
+				SessionID:    r.SessionID,
+				WorkerHost:   r.WorkerHost,
+				Backend:      r.Backend,
+				ElapsedMs:    now.Sub(r.StartedAt).Milliseconds(),
+				StartedAt:    r.StartedAt,
+			})
+		}
+		sort.Slice(running, func(i, j int) bool {
+			return running[i].StartedAt.Before(running[j].StartedAt)
+		})
+
+		retrying := make([]server.RetryRow, 0, len(s.RetryAttempts))
+		for _, r := range s.RetryAttempts {
+			row := server.RetryRow{
+				Identifier: r.Identifier,
+				Attempt:    r.Attempt,
+				DueAt:      r.DueAt,
+			}
+			if r.Error != nil {
+				row.Error = *r.Error
+			}
+			retrying = append(retrying, row)
+		}
+
+		paused := make([]string, 0, len(s.PausedIdentifiers))
+		for identifier := range s.PausedIdentifiers {
+			paused = append(paused, identifier)
+		}
+
+		var rateLimits *server.RateLimitInfo
+		var activeProjectFilter []string
+		if rl, ok := tr.(tracker.RateLimiter); ok {
+			if snap := rl.RateLimitSnapshot(); snap != nil {
+				rateLimits = &server.RateLimitInfo{
+					RequestsLimit:       snap.RequestsLimit,
+					RequestsRemaining:   snap.RequestsRemaining,
+					RequestsReset:       snap.Reset,
+					ComplexityLimit:     snap.ComplexityLimit,
+					ComplexityRemaining: snap.ComplexityRemaining,
+				}
+			}
+		}
+		if tpm, ok := tr.(tracker.ProjectManager); ok {
+			activeProjectFilter = tpm.GetProjectFilter()
+		}
+		profiles := orch.ProfilesCfg()
+		agentMode := orch.AgentModeCfg()
+		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
+		activeStates, terminalStates, completionState := orch.TrackerStatesCfg()
+
+		var availableProfiles []string
+		for name := range profiles {
+			availableProfiles = append(availableProfiles, name)
+		}
+		sort.Strings(availableProfiles)
+
+		var profileDefs map[string]server.ProfileDef
+		if len(profiles) > 0 {
+			profileDefs = make(map[string]server.ProfileDef, len(profiles))
+			for n, p := range profiles {
+				profileDefs[n] = server.ProfileDef{Command: p.Command, Prompt: p.Prompt, Backend: p.Backend}
+			}
+		}
+
+		completedRuns := orch.RunHistory()
+		history := make([]server.HistoryRow, 0, len(completedRuns))
+		for _, r := range completedRuns {
+			history = append(history, server.HistoryRow{
+				Identifier:   r.Identifier,
+				Title:        r.Title,
+				StartedAt:    r.StartedAt,
+				FinishedAt:   r.FinishedAt,
+				ElapsedMs:    r.ElapsedMs,
+				TurnCount:    r.TurnCount,
+				TotalTokens:  r.TotalTokens,
+				InputTokens:  r.InputTokens,
+				OutputTokens: r.OutputTokens,
+				Status:       r.Status,
+				WorkerHost:   r.WorkerHost,
+				Backend:      r.Backend,
+				SessionID:    r.SessionID,
+				AppSessionID: r.AppSessionID,
+			})
+		}
+
+		sshHostAddrs, sshHostDescs := orch.SSHHostsCfg()
+		sshHostInfos := make([]server.SSHHostInfo, 0, len(sshHostAddrs))
+		for _, h := range sshHostAddrs {
+			sshHostInfos = append(sshHostInfos, server.SSHHostInfo{
+				Host:        h,
+				Description: sshHostDescs[h],
+			})
+		}
+
+		pausedWithPR := orch.GetPausedOpenPRs()
+		return server.StateSnapshot{
+			GeneratedAt:         now,
+			Counts:              server.Counts{Running: len(running), Retrying: len(retrying), Paused: len(paused)},
+			Running:             running,
+			History:             history,
+			Retrying:            retrying,
+			Paused:              paused,
+			PausedWithPR:        pausedWithPR,
+			MaxConcurrentAgents: orch.MaxWorkers(),
+			RateLimits:          rateLimits,
+			TrackerKind:         cfg.Tracker.Kind,
+			ActiveProjectFilter: activeProjectFilter,
+			AvailableProfiles:   availableProfiles,
+			ProfileDefs:         profileDefs,
+			AgentMode:           agentMode,
+			ActiveStates:        activeStates,
+			TerminalStates:      terminalStates,
+			CompletionState:     completionState,
+			BacklogStates:       cfg.Tracker.BacklogStates,
+			PollIntervalMs:      cfg.Polling.IntervalMs,
+			AutoClearWorkspace:  autoClearWorkspace,
+			CurrentAppSessionID: appSessionID,
+			SSHHosts:            sshHostInfos,
+			DispatchStrategy:    orch.DispatchStrategyCfg(),
+		}
+	}
+}
+
+// buildTUIConfig wires the terminal status-UI config and returns the cancel
+// function (used as the 'x' key handler in statusui.Run). Extracted from run().
+func buildTUIConfig(
+	orch *orchestrator.Orchestrator,
+	tr tracker.Tracker,
+	cfg *config.Config,
+	workflowPath string,
+) (statusui.Config, func(string) bool) {
+	tuiCfg := statusui.Config{
+		MaxAgents:     cfg.Agent.MaxConcurrentAgents,
+		TodoStates:    cfg.Tracker.ActiveStates,
+		BacklogStates: cfg.Tracker.BacklogStates,
+	}
+	if cfg.Server.Port != nil {
+		tuiCfg.DashboardURL = fmt.Sprintf("http://%s:%d/", cfg.Server.Host, *cfg.Server.Port)
+	}
+	if tpm, ok := tr.(tracker.ProjectManager); ok {
+		tuiCfg.FetchProjects = func() ([]statusui.ProjectItem, error) {
+			fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			projects, err := tpm.FetchProjects(fetchCtx)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]statusui.ProjectItem, len(projects))
+			for i, p := range projects {
+				items[i] = statusui.ProjectItem{ID: p.ID, Name: p.Name, Slug: p.Slug}
+			}
+			return items, nil
+		}
+		tuiCfg.SetProjectFilter = func(slugs []string) {
+			tpm.SetProjectFilter(slugs)
+			updateWorkflowProjectSlug(workflowPath, slugs)
+		}
+	}
+	tuiCfg.AdjustWorkers = func(delta int) {
+		next := orch.MaxWorkers() + delta
+		orch.SetMaxWorkers(next)
+		if err := workflow.PatchIntField(workflowPath, "max_concurrent_agents", orch.MaxWorkers()); err != nil {
+			slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md", "error", err)
+		}
+	}
+	{
+		backlogAndActive := append(append([]string{}, cfg.Tracker.BacklogStates...), cfg.Tracker.ActiveStates...)
+		tuiCfg.FetchBacklog = func() ([]statusui.BacklogIssueItem, error) {
+			fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			issues, err := tr.FetchIssuesByStates(fetchCtx, backlogAndActive)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]statusui.BacklogIssueItem, len(issues))
+			for i, iss := range issues {
+				pri := 0
+				if iss.Priority != nil {
+					pri = *iss.Priority
+				}
+				var desc string
+				if iss.Description != nil {
+					desc = *iss.Description
+				}
+				var comments []statusui.CommentItem
+				for _, c := range iss.Comments {
+					comments = append(comments, statusui.CommentItem{Author: c.AuthorName, Body: c.Body})
+				}
+				items[i] = statusui.BacklogIssueItem{
+					Identifier:  iss.Identifier,
+					Title:       iss.Title,
+					State:       iss.State,
+					Priority:    pri,
+					Description: desc,
+					Comments:    comments,
+				}
+			}
+			return items, nil
+		}
+		if len(cfg.Tracker.ActiveStates) > 0 {
+			targetState := cfg.Tracker.ActiveStates[0]
+			tuiCfg.DispatchIssue = func(identifier string) error {
+				dispCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				allStates := append(append([]string{}, cfg.Tracker.BacklogStates...), cfg.Tracker.ActiveStates...)
+				issues, err := tr.FetchIssuesByStates(dispCtx, allStates)
+				if err != nil {
+					return err
+				}
+				for _, iss := range issues {
+					if iss.Identifier == identifier {
+						return tr.UpdateIssueState(dispCtx, iss.ID, targetState)
+					}
+				}
+				return fmt.Errorf("issue %s not found", identifier)
+			}
+		}
+	}
+	tuiCfg.ResumeIssue = func(identifier string) bool {
+		ok := orch.ResumeIssue(identifier)
+		if ok {
+			orch.Refresh()
+		}
+		return ok
+	}
+	tuiCfg.TerminateIssue = func(identifier string) bool {
+		ok := orch.TerminateIssue(identifier)
+		if ok {
+			orch.Refresh()
+		}
+		return ok
+	}
+	tuiCfg.TriggerPoll = orch.Refresh
+
+	tuiCancel := func(identifier string) bool {
+		issue := orch.GetRunningIssue(identifier)
+		if issue == nil {
+			return false
+		}
+		if !orch.CancelIssue(identifier) {
+			return false
+		}
+		return true
+	}
+	return tuiCfg, tuiCancel
+}
+
+// enrichIssue maps a domain.Issue to a server.TrackerIssue, overlaying live
+// orchestrator state (running, retrying, paused, idle) and ineligibility reasons.
+// now is the current wall-clock time used to compute ElapsedMs for running issues.
+// Extracted to eliminate duplication between the bulk (fetchIssues) and single
+// (fetchIssue) closures that both build the same mapping (GO-R11-9).
+func enrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg *config.Config) server.TrackerIssue {
+	ti := server.TrackerIssue{
+		Identifier: issue.Identifier,
+		Title:      issue.Title,
+		State:      issue.State,
+		Labels:     issue.Labels,
+		Priority:   issue.Priority,
+		BranchName: issue.BranchName,
+	}
+	if issue.Description != nil {
+		ti.Description = *issue.Description
+	}
+	if issue.URL != nil {
+		ti.URL = *issue.URL
+	}
+	// BlockedBy: collect non-nil identifiers from []domain.BlockerRef
+	for _, b := range issue.BlockedBy {
+		if b.Identifier != nil && *b.Identifier != "" {
+			ti.BlockedBy = append(ti.BlockedBy, *b.Identifier)
+		}
+	}
+	// Comments: map domain.Comment to server.CommentRow
+	for _, c := range issue.Comments {
+		row := server.CommentRow{Author: c.AuthorName, Body: c.Body}
+		if c.CreatedAt != nil {
+			row.CreatedAt = c.CreatedAt.Format(time.RFC3339)
+		}
+		ti.Comments = append(ti.Comments, row)
+	}
+	// Per-issue agent profile override.
+	if profileName, ok := snap.IssueProfiles[issue.Identifier]; ok && profileName != "" {
+		ti.AgentProfile = profileName
+	}
+	// Orchestrator state
+	if re, ok := snap.Running[issue.ID]; ok {
+		ti.OrchestratorState = "running"
+		ti.TurnCount = re.TurnCount
+		ti.Tokens = re.TotalTokens
+		ti.ElapsedMs = now.Sub(re.StartedAt).Milliseconds()
+		if re.LastMessage != "" {
+			ti.LastMessage = re.LastMessage
+		}
+	} else if re, ok := snap.RetryAttempts[issue.ID]; ok {
+		ti.OrchestratorState = "retrying"
+		if re.Error != nil {
+			ti.Error = *re.Error
+		}
+	} else if _, paused := snap.PausedIdentifiers[issue.Identifier]; paused {
+		ti.OrchestratorState = "paused"
+	} else {
+		ti.OrchestratorState = "idle"
+		// IneligibleReason: only for active-state idle issues.
+		// Calling IneligibleReason on terminal/inactive issues returns
+		// "not_active_state" which is noise — filter those out.
+		reason := orchestrator.IneligibleReason(issue, snap, cfg)
+		if reason != "" && reason != "not_active_state" && reason != "terminal_state" {
+			ti.IneligibleReason = reason
+		}
+	}
+	return ti
+}
+
 // profilesToEntries converts config.AgentProfile map to workflow.ProfileEntry map
 // for persistence to WORKFLOW.md.
 func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workflow.ProfileEntry {
@@ -961,6 +778,311 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 		}
 	}
 	return entries
+}
+
+// orchestratorAdapter implements server.OrchestratorClient using the live
+// orchestrator, log buffer, tracker, and WORKFLOW.md persistence helpers.
+// notify must be set after server construction (adapter.notify = srv.Notify).
+type orchestratorAdapter struct {
+	orch         *orchestrator.Orchestrator
+	logBuf       *logbuffer.Buffer
+	cfg          *config.Config
+	tr           tracker.Tracker
+	workflowPath string
+	notify       func()
+}
+
+func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.TrackerIssue, error) {
+	seen := map[string]bool{}
+	var allStates []string
+	base := append(append(append([]string{}, a.cfg.Tracker.BacklogStates...), a.cfg.Tracker.ActiveStates...), a.cfg.Tracker.TerminalStates...)
+	if a.cfg.Tracker.CompletionState != "" {
+		base = append(base, a.cfg.Tracker.CompletionState)
+	}
+	for _, s := range base {
+		if !seen[s] {
+			seen[s] = true
+			allStates = append(allStates, s)
+		}
+	}
+	issues, err := a.tr.FetchIssuesByStates(ctx, allStates)
+	if err != nil {
+		return nil, err
+	}
+	snap := a.orch.Snapshot()
+	now := time.Now()
+	result := make([]server.TrackerIssue, len(issues))
+	for i, issue := range issues {
+		result[i] = enrichIssue(issue, snap, now, a.cfg)
+	}
+	return result, nil
+}
+
+func (a *orchestratorAdapter) CancelIssue(identifier string) bool {
+	issue := a.orch.GetRunningIssue(identifier)
+	if issue == nil {
+		return false
+	}
+	if !a.orch.CancelIssue(identifier) {
+		return false
+	}
+	return true
+}
+
+func (a *orchestratorAdapter) ResumeIssue(identifier string) bool {
+	ok := a.orch.ResumeIssue(identifier)
+	if ok {
+		a.orch.Refresh()
+	}
+	return ok
+}
+
+func (a *orchestratorAdapter) TerminateIssue(identifier string) bool {
+	ok := a.orch.TerminateIssue(identifier)
+	if ok {
+		a.orch.Refresh()
+	}
+	return ok
+}
+
+func (a *orchestratorAdapter) ReanalyzeIssue(identifier string) bool {
+	return a.orch.ReanalyzeIssue(identifier)
+}
+
+func (a *orchestratorAdapter) FetchLogs(identifier string) []string {
+	return a.logBuf.Get(identifier)
+}
+
+func (a *orchestratorAdapter) FetchLogIdentifiers() []string {
+	return a.logBuf.Identifiers()
+}
+
+func (a *orchestratorAdapter) ClearLogs(identifier string) error {
+	return a.logBuf.Clear(identifier)
+}
+
+func (a *orchestratorAdapter) ClearAllLogs() error {
+	return a.logBuf.ClearAll()
+}
+
+func (a *orchestratorAdapter) ClearIssueSubLogs(identifier string) error {
+	logDir := a.orch.AgentLogDir()
+	if logDir == "" {
+		return nil
+	}
+	issueDir := filepath.Join(logDir, identifier)
+	entries, err := os.ReadDir(issueDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(issueDir, e.Name()))
+	}
+	return nil
+}
+
+func (a *orchestratorAdapter) ClearSessionSublog(identifier, sessionID string) error {
+	logDir := a.orch.AgentLogDir()
+	if logDir == "" {
+		return nil
+	}
+	// JSONL files are named {sessionID}.jsonl inside {logDir}/{identifier}/
+	p := filepath.Join(logDir, identifier, sessionID+".jsonl")
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// FetchSubLogs returns parsed Claude Code session logs from CLAUDE_CODE_LOG_DIR.
+// The fetcher is selected based on where the issue was last run:
+//   - SSH host → SSHSublogFetcher (tar-over-SSH, session IDs from filenames)
+//   - local    → LocalSublogFetcher (direct disk read)
+//   - Docker   → DockerSublogFetcher (planned)
+func (a *orchestratorAdapter) FetchSubLogs(identifier string) ([]domain.IssueLogEntry, error) {
+	logDir := a.orch.AgentLogDir()
+	if logDir == "" {
+		return nil, nil
+	}
+	issueLogDir := filepath.Join(logDir, identifier)
+	return a.sublogFetcher(identifier).FetchSubLogs(context.Background(), issueLogDir)
+}
+
+// sublogFetcher resolves the correct SublogFetcher for identifier by inspecting
+// run history and live running sessions. Returns LocalSublogFetcher when no
+// remote host is found.
+func (a *orchestratorAdapter) sublogFetcher(identifier string) agent.SublogFetcher {
+	// Check currently-running sessions first (most recent wins).
+	snap := a.orch.Snapshot()
+	if entry, ok := snap.Running[identifier]; ok && entry.WorkerHost != "" {
+		return agent.SSHSublogFetcher{Host: entry.WorkerHost}
+	}
+	// Fall back to run history.
+	for _, run := range a.orch.RunHistory() {
+		if run.Identifier == identifier && run.WorkerHost != "" {
+			return agent.SSHSublogFetcher{Host: run.WorkerHost}
+		}
+	}
+	return agent.LocalSublogFetcher{}
+}
+
+func (a *orchestratorAdapter) DispatchReviewer(identifier string) error {
+	return a.orch.DispatchReviewer(identifier)
+}
+
+func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, stateName string) error {
+	seen := map[string]bool{}
+	var allStates []string
+	active, terminal, completion := a.orch.TrackerStatesCfg()
+	base := append(append(append([]string{}, a.cfg.Tracker.BacklogStates...), active...), terminal...)
+	if completion != "" {
+		base = append(base, completion)
+	}
+	for _, s := range base {
+		if !seen[s] {
+			seen[s] = true
+			allStates = append(allStates, s)
+		}
+	}
+	issues, err := a.tr.FetchIssuesByStates(ctx, allStates)
+	if err != nil {
+		return fmt.Errorf("fetch issues: %w", err)
+	}
+	for _, iss := range issues {
+		if iss.Identifier == identifier {
+			return a.tr.UpdateIssueState(ctx, iss.ID, stateName)
+		}
+	}
+	return fmt.Errorf("issue %s not found", identifier)
+}
+
+func (a *orchestratorAdapter) SetWorkers(n int) {
+	a.orch.SetMaxWorkers(n)
+	if err := workflow.PatchIntField(a.workflowPath, "max_concurrent_agents", n); err != nil {
+		slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md", "error", err)
+	}
+}
+
+func (a *orchestratorAdapter) BumpWorkers(delta int) int {
+	next := a.orch.BumpMaxWorkers(delta)
+	if err := workflow.PatchIntField(a.workflowPath, "max_concurrent_agents", next); err != nil {
+		slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md", "error", err)
+	}
+	return next
+}
+
+func (a *orchestratorAdapter) SetIssueProfile(identifier, profile string) {
+	a.orch.SetIssueProfile(identifier, profile)
+}
+
+func (a *orchestratorAdapter) ProfileDefs() map[string]server.ProfileDef {
+	profiles := a.orch.ProfilesCfg()
+	defs := make(map[string]server.ProfileDef, len(profiles))
+	for name, p := range profiles {
+		defs[name] = server.ProfileDef{Command: p.Command, Prompt: p.Prompt, Backend: p.Backend}
+	}
+	return defs
+}
+
+func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef) error {
+	profiles := a.orch.ProfilesCfg()
+	if profiles == nil {
+		profiles = make(map[string]config.AgentProfile)
+	}
+	profiles[name] = config.AgentProfile{Command: def.Command, Prompt: def.Prompt, Backend: def.Backend}
+	a.orch.SetProfilesCfg(profiles)
+	if err := workflow.PatchProfilesBlock(a.workflowPath, profilesToEntries(profiles)); err != nil {
+		return err
+	}
+	a.notify()
+	return nil
+}
+
+func (a *orchestratorAdapter) DeleteProfile(name string) error {
+	profiles := a.orch.ProfilesCfg()
+	delete(profiles, name)
+	a.orch.SetProfilesCfg(profiles)
+	if err := workflow.PatchProfilesBlock(a.workflowPath, profilesToEntries(profiles)); err != nil {
+		return err
+	}
+	a.notify()
+	return nil
+}
+
+func (a *orchestratorAdapter) SetAgentMode(mode string) error {
+	a.orch.SetAgentModeCfg(mode)
+	if err := workflow.PatchAgentStringField(a.workflowPath, "agent_mode", mode); err != nil {
+		slog.Warn("failed to persist agent_mode to WORKFLOW.md", "error", err)
+	}
+	a.notify()
+	return nil
+}
+
+func (a *orchestratorAdapter) ClearAllWorkspaces() error {
+	// Clear run history (in-memory + disk) so Timeline resets.
+	a.orch.ClearHistory()
+
+	root := a.cfg.Workspace.Root
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("clear workspaces: read dir %s: %w", root, err)
+	}
+	var firstErr error
+	for _, e := range entries {
+		path := filepath.Join(root, e.Name())
+		if err := os.RemoveAll(path); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
+	a.orch.SetAutoClearWorkspaceCfg(enabled)
+	if err := workflow.PatchWorkspaceBoolField(a.workflowPath, "auto_clear", enabled); err != nil {
+		slog.Warn("failed to persist auto_clear to WORKFLOW.md", "error", err)
+	}
+	a.notify()
+	return nil
+}
+
+func (a *orchestratorAdapter) UpdateTrackerStates(active, terminal []string, completion string) error {
+	a.orch.SetTrackerStatesCfg(active, terminal, completion)
+	if err := workflow.PatchStringSliceField(a.workflowPath, "active_states", active); err != nil {
+		slog.Warn("could not patch active_states in WORKFLOW.md", "error", err)
+	}
+	if err := workflow.PatchStringSliceField(a.workflowPath, "terminal_states", terminal); err != nil {
+		slog.Warn("could not patch terminal_states in WORKFLOW.md", "error", err)
+	}
+	if err := workflow.PatchStringField(a.workflowPath, "completion_state", completion); err != nil {
+		slog.Warn("could not patch completion_state in WORKFLOW.md", "error", err)
+	}
+	a.notify()
+	return nil
+}
+
+func (a *orchestratorAdapter) AddSSHHost(host, description string) error {
+	a.orch.AddSSHHostCfg(host, description)
+	return nil
+}
+
+func (a *orchestratorAdapter) RemoveSSHHost(host string) error {
+	a.orch.RemoveSSHHostCfg(host)
+	return nil
+}
+
+func (a *orchestratorAdapter) SetDispatchStrategy(strategy string) error {
+	a.orch.SetDispatchStrategyCfg(strategy)
+	return nil
 }
 
 func resolveAgentCommand(command string) string {
@@ -1004,36 +1126,36 @@ func resolveAgentCommand(command string) string {
 	return command
 }
 
-// linearProjectManager adapts *linear.Client to server.ProjectManager.
-// It translates linear.LinearProject → server.Project on the fly.
+// linearProjectManager adapts tracker.ProjectManager to server.ProjectManager,
+// converting domain.Project → server.Project and persisting filter changes to WORKFLOW.md.
 type linearProjectManager struct {
-	client       *linear.Client
+	pm           tracker.ProjectManager
 	workflowPath string
 }
 
-// FetchProjects implements server.ProjectManager by delegating to the Linear client.
+// FetchProjects implements server.ProjectManager.
 func (m *linearProjectManager) FetchProjects(ctx context.Context) ([]server.Project, error) {
-	lps, err := m.client.FetchProjects(ctx)
+	projects, err := m.pm.FetchProjects(ctx)
 	if err != nil {
 		return nil, err
 	}
-	projects := make([]server.Project, len(lps))
-	for i, lp := range lps {
-		projects[i] = server.Project{ID: lp.ID, Name: lp.Name, Slug: lp.Slug}
+	result := make([]server.Project, len(projects))
+	for i, p := range projects {
+		result[i] = server.Project{ID: p.ID, Name: p.Name, Slug: p.Slug}
 	}
-	return projects, nil
+	return result, nil
 }
 
 // SetProjectFilter implements server.ProjectManager and persists the filter to WORKFLOW.md.
 func (m *linearProjectManager) SetProjectFilter(slugs []string) {
-	m.client.SetProjectFilter(slugs)
+	m.pm.SetProjectFilter(slugs)
 	if m.workflowPath != "" {
 		updateWorkflowProjectSlug(m.workflowPath, slugs)
 	}
 }
 
 // GetProjectFilter implements server.ProjectManager.
-func (m *linearProjectManager) GetProjectFilter() []string { return m.client.GetProjectFilter() }
+func (m *linearProjectManager) GetProjectFilter() []string { return m.pm.GetProjectFilter() }
 
 // buildTracker constructs the correct tracker adapter from config.
 func buildTracker(cfg *config.Config) (tracker.Tracker, error) {
@@ -1116,7 +1238,7 @@ func runClear(args []string) {
 			fmt.Printf("  skip %s (not found)\n", path)
 			continue
 		}
-		if err := wm.RemoveWorkspace(id, ""); err != nil {
+		if err := wm.RemoveWorkspace(context.Background(), id, ""); err != nil {
 			fmt.Fprintf(os.Stderr, "symphony clear: remove %s: %v\n", path, err)
 		} else {
 			fmt.Printf("  removed %s\n", path)
@@ -1128,7 +1250,7 @@ func runClear(args []string) {
 type repoInfo struct {
 	RemoteURL     string // raw git remote URL
 	Owner         string // e.g. "vnovick"
-	Repo          string // e.g. "simphony"
+	Repo          string // e.g. "symphony"
 	CloneURL      string // SSH clone URL reconstructed for after_create hook
 	DefaultBranch string // "main" or "master"
 	ProjectName   string // repo name, used for workspace.root
@@ -1356,7 +1478,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	b.WriteString("  read_timeout_ms: 120000\n")
 	b.WriteString("  stall_timeout_ms: 300000\n")
 
-	b.WriteString("\nworkspace:\n  root: ~/.simphony/workspaces/" + info.ProjectName + "\n")
+	b.WriteString("\nworkspace:\n  root: ~/.symphony/workspaces/" + info.ProjectName + "\n")
 
 	cloneURL := info.CloneURL
 	if cloneURL == "" {
