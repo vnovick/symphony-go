@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import { useIssues, useClearIssueLogs } from '../../queries/issues';
@@ -6,9 +7,13 @@ import { useIssueLogs, useLogIdentifiers } from '../../queries/logs';
 import { orchDotClass } from '../../utils/format';
 import { Terminal } from '../../components/ui/Terminal/Terminal';
 import type { LogEntry, LogLevel } from '../../components/ui/Terminal/Terminal';
-import type { IssueLogEntry } from '../../types/symphony';
+import type { IssueLogEntry } from '../../types/schemas';
+import type { RunningRow, RetryRow } from '../../types/schemas';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const EMPTY_RUNNING: RunningRow[] = [];
+const EMPTY_RETRYING: RetryRow[] = [];
 
 const FILTER_CHIPS = ['text', 'action', 'subagent', 'warn', 'error'] as const;
 type FilterChip = (typeof FILTER_CHIPS)[number];
@@ -31,7 +36,12 @@ function entryToLogEntry(entry: IssueLogEntry, idx: number): LogEntry {
 export default function Logs() {
   const { data: issues = [] } = useIssues();
   const logIdentifiers = useLogIdentifiers();
-  const snapshot = useSymphonyStore((s) => s.snapshot);
+  const { running, retrying } = useSymphonyStore(
+    useShallow((s) => ({
+      running: s.snapshot?.running ?? EMPTY_RUNNING,
+      retrying: s.snapshot?.retrying ?? EMPTY_RETRYING,
+    })),
+  );
 
   // Build a lookup map from issues for orchestratorState enrichment
   const issueMap = useMemo(
@@ -56,7 +66,8 @@ export default function Logs() {
       });
   }, [logIdentifiers, issueMap]);
 
-  const [selectedId, setSelectedId] = useState<string>('');
+  const selectedId = useSymphonyStore((s) => s.activeIssueId) ?? '';
+  const setSelectedId = useSymphonyStore((s) => s.setActiveIssueId);
   const [activeChips, setActiveChips] = useState<Set<FilterChip>>(new Set(FILTER_CHIPS));
 
   useEffect(() => {
@@ -69,8 +80,8 @@ export default function Logs() {
   }, [sortedIssues]);
 
   const isLive = !!(
-    snapshot?.running.some((r) => r.identifier === selectedId) ||
-    snapshot?.retrying.some((r) => r.identifier === selectedId)
+    running.some((r) => r.identifier === selectedId) ||
+    retrying.some((r) => r.identifier === selectedId)
   );
   const { data: entries = [], isLoading: loading } = useIssueLogs(selectedId, isLive);
 
@@ -92,7 +103,7 @@ export default function Logs() {
 
   const activeCount = sortedIssues.filter((i) => i.orchestratorState !== 'idle').length;
   const selectedIssue = sortedIssues.find((i) => i.identifier === selectedId);
-  const runningRow = snapshot?.running.find((r) => r.identifier === selectedId);
+  const runningRow = running.find((r) => r.identifier === selectedId);
 
   const toggleChip = (chip: FilterChip) => {
     setActiveChips((prev) => {

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
 import { useSymphonyStore } from '../store/symphonyStore';
 import { useToastStore } from '../store/toastStore';
-import type { StateSnapshot, TrackerIssue } from '../types/symphony';
+import type { StateSnapshot, TrackerIssue } from '../types/schemas';
 import { TrackerIssueSchema } from '../types/schemas';
 import { z } from 'zod';
 
@@ -43,7 +43,6 @@ export function useIssues() {
     queryKey: ISSUES_KEY,
     queryFn: fetchIssues,
     staleTime: 5_000,
-    refetchInterval: 10_000,
   });
 }
 
@@ -188,7 +187,8 @@ export function useCancelIssue() {
     },
     onError: makeRollbackHandler(queryClient),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+      // SSE + useSnapshotInvalidation handle both snapshot and issue list updates.
+      // refreshSnapshot ensures immediate consistency if SSE is lagging.
       void useSymphonyStore.getState().refreshSnapshot();
     },
   });
@@ -257,14 +257,12 @@ export function useResumeIssue() {
     },
     onError: makeRollbackHandler(queryClient),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
       void useSymphonyStore.getState().refreshSnapshot();
     },
   });
 }
 
 export function useTerminateIssue() {
-  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
       const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/terminate`, {
@@ -273,7 +271,6 @@ export function useTerminateIssue() {
       if (!res.ok) throw new Error(`terminateIssue failed: ${String(res.status)}`);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
       void useSymphonyStore.getState().refreshSnapshot();
     },
     onError: (err: unknown) => {

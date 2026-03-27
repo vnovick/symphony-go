@@ -123,7 +123,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		"fetched", len(issues),
 		"running", len(state.Running),
 		"slots", slots,
-		"max_concurrent", o.cfg.Agent.MaxConcurrentAgents,
+		"max_concurrent", state.MaxConcurrentAgents,
 	)
 
 	dispatched := 0
@@ -131,7 +131,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		if AvailableSlots(state) <= 0 {
 			slog.Debug("orchestrator: no slots available, stopping dispatch",
 				"running", len(state.Running),
-				"max_concurrent", o.cfg.Agent.MaxConcurrentAgents,
+				"max_concurrent", state.MaxConcurrentAgents,
 			)
 			break
 		}
@@ -403,56 +403,7 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 			// being immediately re-dispatched or left with a stale working label.
 			// Skip if we don't have the issue UUID (legacy disk entry).
 			if ev.IssueID != "" {
-				o.cfgMu.RLock()
-				// Copy the slices so the spawned goroutine does not alias the live
-				// cfg arrays — a concurrent HTTP write could replace those slices
-				// while the goroutine is still reading them (GO-R10-1).
-				backlogStates := append([]string{}, o.cfg.Tracker.BacklogStates...)
-				activeStates := append([]string{}, o.cfg.Tracker.ActiveStates...)
-				o.cfgMu.RUnlock()
-				var targetState string
-				if len(backlogStates) > 0 {
-					targetState = backlogStates[0]
-				} else if len(activeStates) > 0 {
-					// No backlog configured — revert to the first active state so the
-					// working-state label (e.g. "in-progress") is removed.
-					targetState = activeStates[0]
-				}
-				if targetState != "" {
-					// Hold the issue in DiscardingIdentifiers until the label update
-					// completes. The TUI's background TriggerPoll fires every ~30s and
-					// would re-dispatch the issue if it still has its "In Progress" label
-					// during the async window. DiscardingIdentifiers blocks IsEligible.
-					state.DiscardingIdentifiers[ev.Identifier] = struct{}{}
-					issueID := ev.IssueID
-					identifier := ev.Identifier
-					go func() {
-						// Use a fresh background context so this goroutine can finish
-						// its tracker update and send EventDiscardComplete even when
-						// Run() has already exited. Deriving from the run context
-						// collapses the 15-second window to zero on shutdown, leaving
-						// the identifier permanently stuck in DiscardingIdentifiers.
-						updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
-						if err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState); err != nil {
-							slog.Warn("orchestrator: failed to transition discarded issue",
-								"identifier", identifier, "target_state", targetState, "error", err)
-						} else {
-							slog.Info("orchestrator: discarded issue transitioned",
-								"identifier", identifier, "state", targetState)
-						}
-						updateCancel()
-						// The send gets its own window. The events channel holds 64 entries and
-						// the event loop processes them continuously; 30s is ample even under load.
-						sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer sendCancel()
-						select {
-						case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier}:
-						case <-sendCtx.Done():
-							slog.Warn("orchestrator: discard complete event lost, identifier may be stuck",
-								"identifier", identifier)
-						}
-					}()
-				}
+				state = o.asyncDiscardAndTransition(state, ev.IssueID, ev.Identifier)
 			}
 			if o.OnStateChange != nil {
 				o.OnStateChange()
@@ -561,42 +512,7 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 
 			// Move the issue to backlog so the working-state label is cleared and
 			// the issue is not immediately re-dispatched on the next poll cycle.
-			// Uses the same pattern as EventTerminatePaused: block dispatch with
-			// DiscardingIdentifiers until the async tracker update completes.
-			o.cfgMu.RLock()
-			backlogStates := append([]string{}, o.cfg.Tracker.BacklogStates...)
-			activeStates := append([]string{}, o.cfg.Tracker.ActiveStates...)
-			o.cfgMu.RUnlock()
-			var targetState string
-			if len(backlogStates) > 0 {
-				targetState = backlogStates[0]
-			} else if len(activeStates) > 0 {
-				targetState = activeStates[0]
-			}
-			if targetState != "" && ev.IssueID != "" {
-				state.DiscardingIdentifiers[issue.Identifier] = struct{}{}
-				issueID := ev.IssueID
-				identifier := issue.Identifier
-				go func() {
-					updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
-					if err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState); err != nil {
-						slog.Warn("orchestrator: failed to transition terminated issue",
-							"identifier", identifier, "target_state", targetState, "error", err)
-					} else {
-						slog.Info("orchestrator: terminated issue transitioned",
-							"identifier", identifier, "state", targetState)
-					}
-					updateCancel()
-					sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer sendCancel()
-					select {
-					case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier}:
-					case <-sendCtx.Done():
-						slog.Warn("orchestrator: discard complete event lost, identifier may be stuck",
-							"identifier", identifier)
-					}
-				}()
-			}
+			state = o.asyncDiscardAndTransition(state, ev.IssueID, issue.Identifier)
 			return state
 		}
 
@@ -679,6 +595,53 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 			}
 		}
 	}
+	return state
+}
+
+// asyncDiscardAndTransition snapshots backlog/active states under cfgMu,
+// computes the target state, marks the identifier in DiscardingIdentifiers,
+// and spawns a goroutine to update the tracker and send EventDiscardComplete.
+// Returns the (potentially mutated) state. No-op when issueID is empty or no
+// target state can be determined.
+func (o *Orchestrator) asyncDiscardAndTransition(state State, issueID, identifier string) State {
+	if issueID == "" {
+		return state
+	}
+	o.cfgMu.RLock()
+	backlogStates := append([]string{}, o.cfg.Tracker.BacklogStates...)
+	activeStates := append([]string{}, o.cfg.Tracker.ActiveStates...)
+	o.cfgMu.RUnlock()
+
+	var targetState string
+	if len(backlogStates) > 0 {
+		targetState = backlogStates[0]
+	} else if len(activeStates) > 0 {
+		targetState = activeStates[0]
+	}
+	if targetState == "" {
+		return state
+	}
+
+	state.DiscardingIdentifiers[identifier] = struct{}{}
+	go func() {
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState); err != nil {
+			slog.Warn("orchestrator: failed to transition discarded issue",
+				"identifier", identifier, "target_state", targetState, "error", err)
+		} else {
+			slog.Info("orchestrator: discarded issue transitioned",
+				"identifier", identifier, "state", targetState)
+		}
+		updateCancel()
+		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer sendCancel()
+		select {
+		case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier}:
+		case <-sendCtx.Done():
+			slog.Warn("orchestrator: discard complete event lost, identifier may be stuck",
+				"identifier", identifier)
+		}
+	}()
 	return state
 }
 

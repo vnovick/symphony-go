@@ -1,26 +1,34 @@
 import { useState, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useSymphonyStore } from '../../store/symphonyStore';
+import type { RunningRow } from '../../types/schemas';
+
+const EMPTY_RUNNING: RunningRow[] = [];
 
 export default function StatusStrip() {
-  const snapshot = useSymphonyStore((s) => s.snapshot);
+  const { runningSessions, runningCount, paused, retrying, maxAgents, agentMode } = useSymphonyStore(
+    useShallow((s) => ({
+      runningSessions: s.snapshot?.running ?? EMPTY_RUNNING,
+      runningCount: s.snapshot?.running.length ?? 0,
+      paused: s.snapshot?.paused.length ?? 0,
+      retrying: s.snapshot?.retrying.length ?? 0,
+      maxAgents: s.snapshot?.maxConcurrentAgents ?? 0,
+      agentMode: s.snapshot?.agentMode ?? '',
+    })),
+  );
   const refreshSnapshot = useSymphonyStore((s) => s.refreshSnapshot);
   const [adjusting, setAdjusting] = useState(false);
 
-  const running = snapshot?.running.length ?? 0;
-  const paused = snapshot?.paused.length ?? 0;
-  const retrying = snapshot?.retrying.length ?? 0;
-  const maxAgents = snapshot?.maxConcurrentAgents ?? 0;
-  const agentMode = snapshot?.agentMode ?? '';
+  const running = runningCount;
 
   // Derive runner mode from active sessions' backend field
   const runnerMode = useMemo(() => {
-    const sessions = snapshot?.running ?? [];
-    if (sessions.length === 0) return null;
-    const hasCodex = sessions.some((r) => r.backend && /codex/i.test(r.backend));
-    const hasClaude = sessions.some((r) => !r.backend || !/codex/i.test(r.backend));
+    if (runningSessions.length === 0) return null;
+    const hasCodex = runningSessions.some((r) => r.backend && /codex/i.test(r.backend));
+    const hasClaude = runningSessions.some((r) => !r.backend || !/codex/i.test(r.backend));
     if (hasCodex && hasClaude) return 'mixed';
     return hasCodex ? 'codex' : 'claude';
-  }, [snapshot?.running]);
+  }, [runningSessions]);
 
   const adjustWorkers = async (delta: number) => {
     if (adjusting) return;

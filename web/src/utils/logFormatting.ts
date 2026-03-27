@@ -1,4 +1,4 @@
-import type { IssueLogEntry } from '../types/symphony';
+import type { IssueLogEntry } from '../types/schemas';
 
 export interface TermLine {
   prefix: string;

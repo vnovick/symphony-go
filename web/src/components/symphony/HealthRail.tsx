@@ -19,26 +19,24 @@ export function HealthRail() {
     >
       {/* API headroom */}
       <div
-        className="rounded-[var(--radius-md)] p-3"
-        style={{ border: '1px solid var(--line)', background: 'var(--panel)' }}
+        className="rounded-[var(--radius-md)] p-3 border border-theme-line bg-theme-panel"
       >
         <RateLimitBar compact />
       </div>
 
       {/* Worker saturation */}
       <div
-        className="rounded-[var(--radius-md)] p-3 space-y-2"
-        style={{ border: '1px solid var(--line)', background: 'var(--panel)' }}
+        className="rounded-[var(--radius-md)] p-3 space-y-2 border border-theme-line bg-theme-panel"
       >
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium uppercase tracking-wide" style={{ color: 'var(--muted)' }}>
+          <span className="text-xs font-medium uppercase tracking-wide text-theme-muted">
             Capacity
           </span>
-          <span className="font-mono text-xs font-semibold" style={{ color: 'var(--text)' }}>
+          <span className="font-mono text-xs font-semibold text-theme-text">
             {running} / {maxAgents > 0 ? maxAgents : '∞'}
           </span>
         </div>
-        <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
+        <div className="h-1.5 rounded-full overflow-hidden bg-theme-bg-soft">
           <div
             className="h-full rounded-full transition-all duration-500"
             style={{
@@ -55,10 +53,10 @@ export function HealthRail() {
           className="rounded-[var(--radius-md)] p-3 flex items-center justify-between"
           style={{ border: '1px solid var(--warning-soft)', background: 'var(--warning-soft)' }}
         >
-          <span className="text-xs font-medium" style={{ color: 'var(--warning)' }}>
+          <span className="text-xs font-medium text-theme-warning">
             Retry pressure
           </span>
-          <span className="font-mono text-sm font-bold" style={{ color: 'var(--warning)' }}>
+          <span className="font-mono text-sm font-bold text-theme-warning">
             {retrying}
           </span>
         </div>
@@ -70,10 +68,10 @@ export function HealthRail() {
           className="rounded-[var(--radius-md)] p-3 flex items-center justify-between"
           style={{ border: '1px solid var(--danger-soft)', background: 'var(--danger-soft)' }}
         >
-          <span className="text-xs font-medium" style={{ color: 'var(--danger)' }}>
+          <span className="text-xs font-medium text-theme-danger">
             {paused} blocked
           </span>
-          <span className="text-xs" style={{ color: 'var(--danger)' }}>⏸</span>
+          <span className="text-xs text-theme-danger">⏸</span>
         </div>
       )}
     </div>

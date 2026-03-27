@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { StateSnapshot } from '../types/symphony';
+import type { StateSnapshot } from '../types/schemas';
 import { StateSnapshotSchema } from '../types/schemas';
 
 const MAX_LOG_LINES = 500;
@@ -23,6 +23,8 @@ interface SymphonyState {
   logs: string[];
   sseConnected: boolean;
   selectedIdentifier: string | null;
+  /** Cross-page active issue — persists across Timeline/Logs/Dashboard navigation */
+  activeIssueId: string | null;
   tokenSamples: TokenSample[];
 }
 
@@ -32,6 +34,7 @@ interface SymphonyActions {
   clearLogs: () => void;
   setSseConnected: (connected: boolean) => void;
   setSelectedIdentifier: (id: string | null) => void;
+  setActiveIssueId: (id: string | null) => void;
   patchSnapshot: (patch: Partial<StateSnapshot>) => void;
   refreshSnapshot: () => Promise<void>;
 }
@@ -43,6 +46,7 @@ export const useSymphonyStore = create<SymphonyStore>((set) => ({
   logs: [],
   sseConnected: false,
   selectedIdentifier: null,
+  activeIssueId: null,
   tokenSamples: [],
 
   setSnapshot: (snapshot) => {
@@ -69,6 +73,9 @@ export const useSymphonyStore = create<SymphonyStore>((set) => ({
   },
   setSelectedIdentifier: (selectedIdentifier) => {
     set({ selectedIdentifier });
+  },
+  setActiveIssueId: (activeIssueId) => {
+    set({ activeIssueId });
   },
 
   patchSnapshot: (patch) =>

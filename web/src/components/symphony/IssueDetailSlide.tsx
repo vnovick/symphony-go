@@ -60,8 +60,7 @@ export default function IssueDetailSlide() {
     >
       {/* Sub-header: badges + title */}
       <div
-        className="flex-shrink-0 border-b px-5 py-3 space-y-1"
-        style={{ borderColor: 'var(--line)' }}
+        className="flex-shrink-0 border-b px-5 py-3 space-y-1 border-theme-line"
       >
         <div className="flex items-center gap-2 flex-wrap">
           <Badge color={stateBadgeColor(issue.state)} size="sm">{issue.state}</Badge>
@@ -69,7 +68,7 @@ export default function IssueDetailSlide() {
             {issue.orchestratorState}
           </Badge>
         </div>
-        <p className="text-xl font-semibold leading-tight" style={{ color: 'var(--text)' }}>
+        <p className="text-xl font-semibold leading-tight text-theme-text">
           {issue.title}
         </p>
       </div>
@@ -81,8 +80,7 @@ export default function IssueDetailSlide() {
             href={issue.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-sm hover:underline"
-            style={{ color: 'var(--accent)' }}
+            className="text-sm hover:underline text-theme-accent"
           >
             View in tracker →
           </a>
@@ -93,8 +91,7 @@ export default function IssueDetailSlide() {
           <div className="flex flex-wrap items-center gap-2">
             {issue.priority != null && (
               <span
-                className="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium"
-                style={{ background: 'var(--warning-soft)', color: 'var(--warning)' }}
+                className="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-theme-warning-soft text-theme-warning"
               >
                 P{issue.priority}
               </span>
@@ -102,8 +99,7 @@ export default function IssueDetailSlide() {
             {issue.labels?.map((label) => (
               <span
                 key={label}
-                className="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium"
-                style={{ background: 'var(--bg-soft)', color: 'var(--text-secondary)' }}
+                className="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium bg-theme-bg-soft text-theme-text-secondary"
               >
                 {label}
               </span>
@@ -116,18 +112,16 @@ export default function IssueDetailSlide() {
           <div>
             <h4
               className="mb-1 text-xs font-medium uppercase tracking-wider"
-              style={{ color: 'var(--muted)' }}
             >
               Agent Profile
             </h4>
             {isProfileLocked ? (
               <div className="flex items-center gap-2">
-                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                <span className="text-xs text-theme-text-secondary">
                   {issue.agentProfile ?? EMPTY_PROFILE_LABEL}
                 </span>
                 <span
-                  className="rounded px-1.5 py-0.5 text-[10px]"
-                  style={{ background: 'var(--warning-soft)', color: 'var(--warning)' }}
+                  className="rounded px-1.5 py-0.5 text-[10px] bg-theme-warning-soft text-theme-warning"
                 >
                   locked while In Progress
                 </span>
@@ -155,21 +149,18 @@ export default function IssueDetailSlide() {
           <div>
             <h4
               className="mb-1 text-xs font-medium uppercase tracking-wider"
-              style={{ color: 'var(--muted)' }}
             >
               Branch
             </h4>
             <div className="flex items-center gap-2">
               <code
-                className="rounded px-2 py-1 font-mono text-xs"
-                style={{ background: 'var(--bg-soft)', color: 'var(--text)' }}
+                className="rounded px-2 py-1 font-mono text-xs bg-theme-bg-soft text-theme-text"
               >
                 {issue.branchName}
               </code>
               <button
                 onClick={() => { void navigator.clipboard.writeText(issue.branchName ?? '').catch(() => {}); }}
                 className="text-xs"
-                style={{ color: 'var(--muted)' }}
                 title="Copy branch name"
               >
                 Copy
@@ -183,7 +174,6 @@ export default function IssueDetailSlide() {
           <div>
             <h4
               className="mb-1 text-xs font-medium uppercase tracking-wider"
-              style={{ color: 'var(--muted)' }}
             >
               Blocked by
             </h4>
@@ -191,8 +181,7 @@ export default function IssueDetailSlide() {
               {issue.blockedBy.map((id) => (
                 <span
                   key={id}
-                  className="inline-flex items-center rounded px-2 py-0.5 font-mono text-xs"
-                  style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+                  className="inline-flex items-center rounded px-2 py-0.5 font-mono text-xs bg-theme-danger-soft text-theme-danger"
                 >
                   {id}
                 </span>
@@ -205,7 +194,6 @@ export default function IssueDetailSlide() {
         <div>
           <h4
             className="mb-2 text-xs font-medium uppercase tracking-wider"
-            style={{ color: 'var(--muted)' }}
           >
             Description
           </h4>
@@ -214,7 +202,7 @@ export default function IssueDetailSlide() {
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{issue.description}</ReactMarkdown>
             </div>
           ) : (
-            <p className="text-sm italic" style={{ color: 'var(--muted)' }}>No description</p>
+            <p className="text-sm italic text-theme-muted">No description</p>
           )}
         </div>
 
@@ -223,7 +211,6 @@ export default function IssueDetailSlide() {
           <div>
             <h4
               className="mb-2 text-xs font-medium uppercase tracking-wider"
-              style={{ color: 'var(--muted)' }}
             >
               Comments ({issue.comments.length})
             </h4>
@@ -231,8 +218,7 @@ export default function IssueDetailSlide() {
               {issue.comments.map((c, i) => (
                 <div
                   key={`${c.author}-${c.createdAt ?? String(i)}`}
-                  className="rounded-lg border p-3 space-y-2"
-                  style={{ borderColor: 'var(--line)', background: 'var(--bg-soft)' }}
+                  className="rounded-lg border p-3 space-y-2 border-theme-line bg-theme-bg-soft"
                 >
                   <div className="flex items-center gap-2">
                     <span
@@ -241,11 +227,11 @@ export default function IssueDetailSlide() {
                     >
                       {(c.author || '?').charAt(0).toUpperCase()}
                     </span>
-                    <span className="text-sm font-medium" style={{ color: 'var(--text)' }}>
+                    <span className="text-sm font-medium text-theme-text">
                       {c.author || 'Unknown'}
                     </span>
                     {c.createdAt && (
-                      <span className="ml-auto text-xs" style={{ color: 'var(--muted)' }}>
+                      <span className="ml-auto text-xs text-theme-muted">
                         {new Date(c.createdAt).toLocaleDateString(undefined, {
                           month: 'short',
                           day: 'numeric',
@@ -270,8 +256,7 @@ export default function IssueDetailSlide() {
         issue.orchestratorState === 'paused' ||
         isInReview) && (
         <div
-          className="flex-shrink-0 flex items-center justify-between gap-3 border-t px-5 py-4"
-          style={{ borderColor: 'var(--line)' }}
+          className="flex-shrink-0 flex items-center justify-between gap-3 border-t px-5 py-4 border-theme-line"
         >
           {/* AI Review button (in-review state) */}
           {isInReview && (
@@ -292,16 +277,14 @@ export default function IssueDetailSlide() {
                 <button
                   onClick={() => { resumeIssueMutation.mutate(issue.identifier); close(); }}
                   disabled={resumeIssueMutation.isPending}
-                  className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-                  style={{ background: 'var(--success)' }}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 bg-theme-success"
                 >
                   {resumeIssueMutation.isPending ? 'Resuming…' : '▶ Resume Agent'}
                 </button>
                 <button
                   onClick={() => { terminateIssueMutation.mutate(issue.identifier); }}
                   disabled={terminateIssueMutation.isPending}
-                  className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-                  style={{ background: 'var(--danger)' }}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 bg-theme-danger"
                 >
                   {terminateIssueMutation.isPending ? 'Discarding…' : '✕ Discard'}
                 </button>
@@ -314,16 +297,14 @@ export default function IssueDetailSlide() {
                 <button
                   onClick={() => { cancelIssueMutation.mutate(issue.identifier); }}
                   disabled={cancelIssueMutation.isPending || terminateIssueMutation.isPending}
-                  className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-                  style={{ background: 'var(--warning)' }}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 bg-theme-warning"
                 >
                   {cancelIssueMutation.isPending ? 'Pausing…' : '⏸ Pause Agent'}
                 </button>
                 <button
                   onClick={() => { terminateIssueMutation.mutate(issue.identifier); }}
                   disabled={cancelIssueMutation.isPending || terminateIssueMutation.isPending}
-                  className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-                  style={{ background: 'var(--danger)' }}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 bg-theme-danger"
                 >
                   {terminateIssueMutation.isPending ? 'Cancelling…' : '✕ Cancel Agent'}
                 </button>
@@ -335,8 +316,7 @@ export default function IssueDetailSlide() {
               <button
                 onClick={() => { cancelIssueMutation.mutate(issue.identifier); }}
                 disabled={cancelIssueMutation.isPending}
-                className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
-                style={{ background: 'var(--warning)' }}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 bg-theme-warning"
               >
                 {cancelIssueMutation.isPending ? 'Cancelling…' : '✕ Cancel Retry'}
               </button>

@@ -137,6 +137,51 @@ body {
 }
 
 @theme {
+  /* ─── Design-system surface / text / signal colours ──────────────────── */
+  /* Maps CSS custom properties so Tailwind generates utility classes:      */
+  /*   text-theme-text, bg-theme-panel, border-theme-line, etc.             */
+  --color-theme-bg:             var(--bg);
+  --color-theme-bg-soft:        var(--bg-soft);
+  --color-theme-bg-elevated:    var(--bg-elevated);
+  --color-theme-panel:          var(--panel);
+  --color-theme-panel-strong:   var(--panel-strong);
+  --color-theme-panel-dark:     var(--panel-dark);
+
+  --color-theme-text:           var(--text);
+  --color-theme-text-secondary: var(--text-secondary);
+  --color-theme-muted:          var(--muted);
+
+  --color-theme-line:           var(--line);
+  --color-theme-line-strong:    var(--line-strong);
+
+  --color-theme-accent:         var(--accent);
+  --color-theme-accent-soft:    var(--accent-soft);
+  --color-theme-accent-strong:  var(--accent-strong);
+  --color-theme-teal:           var(--teal);
+  --color-theme-teal-soft:      var(--teal-soft);
+  --color-theme-purple:         var(--purple);
+  --color-theme-purple-soft:    var(--purple-soft);
+
+  --color-theme-success:        var(--success);
+  --color-theme-success-soft:   var(--success-soft);
+  --color-theme-success-strong: var(--success-strong);
+  --color-theme-warning:        var(--warning);
+  --color-theme-warning-soft:   var(--warning-soft);
+  --color-theme-danger:         var(--danger);
+  --color-theme-danger-soft:    var(--danger-soft);
+
+  /* Radii */
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   14px;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-theme-sm:   var(--shadow-sm);
+  --shadow-theme-md:   var(--shadow-md);
+  --shadow-theme-lg:   var(--shadow-lg);
+  --shadow-theme-glow: var(--shadow-glow);
+
   --font-*: initial;
   --font-outfit: Outfit, sans-serif;
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;

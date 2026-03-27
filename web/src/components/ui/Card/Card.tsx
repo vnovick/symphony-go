@@ -41,8 +41,7 @@ function CardRoot({ children, variant = 'default', padding = 'md', className, on
 function Header({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div
-      className={['pb-3 mb-3 border-b', className ?? ''].join(' ')}
-      style={{ borderColor: 'var(--line)' }}
+      className={['pb-3 mb-3 border-b border-theme-line', className ?? ''].join(' ')}
     >
       {children}
     </div>
@@ -56,8 +55,7 @@ function Body({ children, className }: { children: ReactNode; className?: string
 function Footer({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div
-      className={['pt-3 mt-3 border-t', className ?? ''].join(' ')}
-      style={{ borderColor: 'var(--line)' }}
+      className={['pt-3 mt-3 border-t border-theme-line', className ?? ''].join(' ')}
     >
       {children}
     </div>

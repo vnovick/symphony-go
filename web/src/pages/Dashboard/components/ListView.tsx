@@ -1,0 +1,164 @@
+import { useState, useMemo } from 'react';
+import Badge from '../../../components/ui/badge/Badge';
+import type { TrackerIssue } from '../../../types/schemas';
+import { useCancelIssue, useResumeIssue } from '../../../queries/issues';
+import { orchDotClass, stateBadgeColor, EMPTY_PROFILE_LABEL } from '../../../utils/format';
+
+type SortKey = 'identifier' | 'title' | 'state';
+type SortDir = 'asc' | 'desc';
+
+function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
+  return (
+    <span className="ml-1" style={{ color: active ? 'var(--accent)' : 'var(--muted)' }}>
+      {active ? (dir === 'asc' ? '↑' : '↓') : '↕'}
+    </span>
+  );
+}
+
+interface ListViewProps {
+  issues: TrackerIssue[];
+  onSelect: (id: string) => void;
+  availableProfiles: string[];
+  onProfileChange: (identifier: string, profile: string) => void;
+}
+
+export function ListView({ issues, onSelect, availableProfiles, onProfileChange }: ListViewProps) {
+  const [sortKey, setSortKey] = useState<SortKey>('identifier');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const cancelIssueMutation = useCancelIssue();
+  const resumeIssueMutation = useResumeIssue();
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  };
+
+  const getVal = (issue: TrackerIssue, key: SortKey): string => {
+    if (key === 'identifier') return issue.identifier;
+    if (key === 'title') return issue.title.toLowerCase();
+    return issue.state.toLowerCase();
+  };
+
+  const sorted = useMemo(
+    () =>
+      [...issues].sort((a, b) => {
+        const cmp = getVal(a, sortKey).localeCompare(getVal(b, sortKey));
+        return sortDir === 'asc' ? cmp : -cmp;
+      }),
+    [issues, sortKey, sortDir],
+  );
+
+  const thStyle: React.CSSProperties = { color: 'var(--text-secondary)' };
+  const thClass = 'px-4 py-3 text-left text-xs font-medium uppercase tracking-wider select-none cursor-pointer';
+
+  return (
+    <div
+      className="overflow-hidden rounded-[var(--radius-md)] border border-theme-line bg-theme-panel"
+    >
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-sm">
+          <thead className="bg-theme-bg-soft">
+            <tr>
+              <th className={thClass} style={thStyle} onClick={() => { handleSort('identifier'); }}>
+                Identifier <SortIcon active={sortKey === 'identifier'} dir={sortDir} />
+              </th>
+              <th className={thClass} style={thStyle} onClick={() => { handleSort('title'); }}>
+                Title <SortIcon active={sortKey === 'title'} dir={sortDir} />
+              </th>
+              <th className={thClass} style={thStyle} onClick={() => { handleSort('state'); }}>
+                State <SortIcon active={sortKey === 'state'} dir={sortDir} />
+              </th>
+              <th className={thClass} style={thStyle}>Agent</th>
+              <th className={thClass} style={thStyle}>Actions</th>
+            </tr>
+          </thead>
+          <tbody className="border-t border-theme-line">
+            {sorted.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-4 py-10 text-center text-sm text-theme-muted">
+                  No issues match the current filters
+                </td>
+              </tr>
+            )}
+            {sorted.map((issue) => (
+              <tr
+                key={issue.identifier}
+                className="cursor-pointer transition-colors hover:bg-[var(--bg-soft)] border-t border-theme-line"
+                onClick={() => { onSelect(issue.identifier); }}
+              >
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {issue.url ? (
+                    <a
+                      href={issue.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-mono text-sm font-medium hover:underline text-theme-accent"
+                      
+                      onClick={(e) => { e.stopPropagation(); }}
+                    >
+                      {issue.identifier}
+                    </a>
+                  ) : (
+                    <span className="font-mono text-sm font-medium text-theme-text">
+                      {issue.identifier}
+                    </span>
+                  )}
+                </td>
+                <td className="max-w-xs truncate px-4 py-3 text-theme-text-secondary">
+                  {issue.title}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  <Badge size="sm" color={stateBadgeColor(issue.state)}>
+                    {issue.state}
+                  </Badge>
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => { e.stopPropagation(); }}>
+                  {availableProfiles.length > 0 ? (
+                    <select
+                      value={issue.agentProfile ?? ''}
+                      onChange={(e) => { onProfileChange(issue.identifier, e.target.value); }}
+                      className="rounded px-1.5 py-0.5 text-xs focus:outline-none border border-theme-line bg-theme-bg-elevated text-theme-text-secondary"
+                    >
+                      <option value="">{EMPTY_PROFILE_LABEL}</option>
+                      {availableProfiles.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-xs text-theme-muted">
+                      <span className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`} />
+                      {issue.orchestratorState}
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => { e.stopPropagation(); }}>
+                  {issue.orchestratorState === 'running' && (
+                    <button
+                      onClick={() => { cancelIssueMutation.mutate(issue.identifier); }}
+                      className="rounded px-2 py-1 text-xs transition-colors"
+                      style={{ border: '1px solid var(--danger-soft)', color: 'var(--danger)', background: 'transparent' }}
+                    >
+                      ⏸ Pause
+                    </button>
+                  )}
+                  {issue.orchestratorState === 'paused' && (
+                    <button
+                      onClick={() => { resumeIssueMutation.mutate(issue.identifier); }}
+                      className="rounded px-2 py-1 text-xs transition-colors"
+                      style={{ border: '1px solid var(--success-soft)', color: 'var(--success)', background: 'transparent' }}
+                    >
+                      ▶ Resume
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}

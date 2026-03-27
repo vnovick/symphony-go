@@ -1,10 +1,11 @@
 import { BrowserRouter as Router, Routes, Route, Outlet } from 'react-router';
-import { lazy, Suspense, useEffect, useRef } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSymphonySSE } from './hooks/useSymphonySSE';
 import { useLogStream } from './hooks/useLogStream';
 import { useSymphonyStore } from './store/symphonyStore';
 import { ISSUES_KEY } from './queries/issues';
+import { logIdentifiersKey } from './queries/logs';
 import IssueDetailSlide from './components/symphony/IssueDetailSlide';
 import Toast from './components/common/Toast';
 import { NavLink } from './components/layout/NavLink';
@@ -17,6 +18,16 @@ const Timeline = lazy(() => import('./pages/Timeline'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
 
+function PageLoader() {
+  return (
+    <div className="flex h-64 items-center justify-center">
+      <div
+        className="h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent"
+      />
+    </div>
+  );
+}
+
 const NAV_ITEMS = [
   { to: '/',        icon: '◫', label: 'Dashboard' },
   { to: '/timeline',icon: '◷', label: 'Timeline'  },
@@ -24,39 +35,66 @@ const NAV_ITEMS = [
   { to: '/settings',icon: '⚙', label: 'Settings'  },
 ] as const;
 
+function SidebarContent() {
+  return (
+    <>
+      {/* Logo mark */}
+      <div
+        className="w-10 h-10 rounded-[var(--radius-md)] mb-2 flex items-center justify-center text-white font-bold text-base"
+        style={{ background: 'var(--gradient-accent)', boxShadow: 'var(--shadow-glow)' }}
+        aria-label="Symphony"
+      >
+        S
+      </div>
+
+      {/* Nav links */}
+      <nav className="flex flex-col gap-1 flex-1">
+        {NAV_ITEMS.map((item) => (
+          <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />
+        ))}
+      </nav>
+
+      {/* Theme toggle pinned to bottom */}
+      <ThemeToggle />
+    </>
+  );
+}
+
 function AppShell() {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
   return (
     <div className="min-h-screen flex">
+      {/* Desktop sidebar — hidden on mobile */}
       <aside
-        className="fixed left-0 top-0 bottom-0 w-16 flex flex-col items-center py-4 gap-2 border-r z-40"
-        style={{
-          background: 'var(--bg-soft)',
-          borderColor: 'var(--line)',
-        }}
+        className="hidden md:flex fixed left-0 top-0 bottom-0 w-16 flex-col items-center py-4 gap-2 border-r z-40 bg-theme-bg-soft border-theme-line"
       >
-        {/* Logo mark */}
-        <div
-          className="w-10 h-10 rounded-[var(--radius-md)] mb-2 flex items-center justify-center text-white font-bold text-base"
-          style={{ background: 'var(--gradient-accent)', boxShadow: 'var(--shadow-glow)' }}
-          aria-label="Symphony"
-        >
-          S
-        </div>
-
-        {/* Nav links */}
-        <nav className="flex flex-col gap-1 flex-1">
-          {NAV_ITEMS.map((item) => (
-            <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />
-          ))}
-        </nav>
-
-        {/* Theme toggle pinned to bottom */}
-        <ThemeToggle />
+        <SidebarContent />
       </aside>
 
-      <main className="ml-16 flex-1 min-w-0 flex flex-col">
-        <AppHeader />
-        <div className="flex-1 p-4 md:p-6">
+      {/* Mobile nav drawer — slides from left */}
+      <div
+        className={`md:hidden fixed inset-0 z-50 transition-opacity duration-200 ${
+          mobileNavOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        }`}
+      >
+        <div
+          className="absolute inset-0"
+          style={{ background: 'rgba(0,0,0,0.5)' }}
+          onClick={() => { setMobileNavOpen(false); }}
+        />
+        <aside
+          className={`absolute left-0 top-0 bottom-0 w-16 flex flex-col items-center py-4 gap-2 border-r bg-theme-bg-soft border-theme-line transition-transform duration-200 ${
+            mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+        >
+          <SidebarContent />
+        </aside>
+      </div>
+
+      <main className="md:ml-16 flex-1 min-w-0 flex flex-col">
+        <AppHeader onMenuClick={() => { setMobileNavOpen(true); }} />
+        <div className="flex-1 p-3 md:p-6">
           <Outlet />
         </div>
       </main>
@@ -85,6 +123,7 @@ function useSnapshotInvalidation() {
     if (fingerprint === null) return; // no snapshot yet
     if (prevRef.current !== null && prevRef.current !== fingerprint) {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+      void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
     }
     prevRef.current = fingerprint;
   }, [fingerprint, queryClient]);
@@ -107,7 +146,7 @@ function AppWithSSE() {
           <Route
             index
             element={
-              <Suspense fallback={null}>
+              <Suspense fallback={<PageLoader />}>
                 <Dashboard />
               </Suspense>
             }
@@ -115,7 +154,7 @@ function AppWithSSE() {
           <Route
             path="/timeline"
             element={
-              <Suspense fallback={null}>
+              <Suspense fallback={<PageLoader />}>
                 <Timeline />
               </Suspense>
             }
@@ -123,7 +162,7 @@ function AppWithSSE() {
           <Route
             path="/logs"
             element={
-              <Suspense fallback={null}>
+              <Suspense fallback={<PageLoader />}>
                 <Logs />
               </Suspense>
             }
@@ -131,7 +170,7 @@ function AppWithSSE() {
           <Route
             path="/settings"
             element={
-              <Suspense fallback={null}>
+              <Suspense fallback={<PageLoader />}>
                 <Settings />
               </Suspense>
             }
@@ -140,7 +179,7 @@ function AppWithSSE() {
         <Route
           path="*"
           element={
-            <Suspense fallback={null}>
+            <Suspense fallback={<PageLoader />}>
               <NotFound />
             </Suspense>
           }

@@ -11,8 +11,8 @@ interface SlidePanelProps {
 }
 
 const PANEL_CLASS: Record<Direction, string> = {
-  right: 'inset-y-0 right-0 w-[75vw] slide-panel-right',
-  left: 'inset-y-0 left-0 w-[75vw]',
+  right: 'inset-y-0 right-0 w-full md:w-[75vw] slide-panel-right',
+  left: 'inset-y-0 left-0 w-full md:w-[75vw]',
   bottom: 'inset-x-0 bottom-0 h-auto max-h-[90vh]',
 };
 
@@ -45,8 +45,7 @@ export function SlidePanel({ open, onClose, title, children, direction = 'right'
       {/* Overlay */}
       <div
         data-testid="slide-panel-overlay"
-        className="absolute inset-0"
-        style={{ background: 'rgba(0,0,0,0.5)' }}
+        className="absolute inset-0 bg-black/50"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -56,21 +55,18 @@ export function SlidePanel({ open, onClose, title, children, direction = 'right'
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`absolute flex flex-col overflow-hidden ${PANEL_CLASS[direction]}`}
-        style={{ background: 'var(--panel)', borderLeft: '1px solid var(--line)' }}
+        className={`absolute flex flex-col overflow-hidden ${PANEL_CLASS[direction]} bg-theme-panel border-l border-theme-line`}
       >
         <div
-          className="flex items-center justify-between px-4 py-3 border-b"
-          style={{ borderColor: 'var(--line)' }}
+          className="flex items-center justify-between px-4 py-3 border-b border-theme-line"
         >
-          <h2 id={titleId} className="font-semibold" style={{ color: 'var(--text)' }}>
+          <h2 id={titleId} className="font-semibold text-theme-text">
             {title}
           </h2>
           <button
             onClick={onClose}
             aria-label="Close panel"
-            className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors"
-            style={{ color: 'var(--text-secondary)' }}
+            className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-theme-text-secondary"
           >
             ✕
           </button>

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,10 +19,17 @@ import (
 
 const maxSubLogLines = 5000
 
+// newMaxScanner returns a bufio.Scanner with a 1 MiB buffer, suitable for
+// reading JSONL lines that may exceed the default 64 KiB limit.
+func newMaxScanner(r io.Reader) *bufio.Scanner {
+	s := bufio.NewScanner(r)
+	s.Buffer(make([]byte, 1<<20), 1<<20)
+	return s
+}
+
 // SublogFetcher retrieves parsed session log entries for one issue.
 // The dir argument is the per-issue log directory on whichever host holds the files.
-// Implementations: LocalSublogFetcher (disk), SSHSublogFetcher (remote tar-over-SSH),
-// DockerSublogFetcher (planned — docker cp / exec cat).
+// Implementations: LocalSublogFetcher (disk), SSHSublogFetcher (remote tar-over-SSH).
 type SublogFetcher interface {
 	FetchSubLogs(ctx context.Context, dir string) ([]domain.IssueLogEntry, error)
 }
@@ -30,47 +38,17 @@ type SublogFetcher interface {
 type LocalSublogFetcher struct{}
 
 func (LocalSublogFetcher) FetchSubLogs(_ context.Context, dir string) ([]domain.IssueLogEntry, error) {
-	return ParseSessionLogsMulti(dir)
+	return parseSessionLogsMulti(dir)
 }
 
 // SSHSublogFetcher fetches session logs from a remote host over SSH.
 type SSHSublogFetcher struct{ Host string }
 
 func (s SSHSublogFetcher) FetchSubLogs(_ context.Context, dir string) ([]domain.IssueLogEntry, error) {
-	return SSHFetchLogs(s.Host, dir)
+	return sshFetchLogs(s.Host, dir)
 }
 
-// ParseSessionLogs reads all *.jsonl files in dir, parses each line as a
-// Claude Code stream-json event, and returns the converted IssueLogEntry slice.
-// Returns nil (not an error) when dir does not exist or contains no files.
-func ParseSessionLogs(dir string) ([]domain.IssueLogEntry, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("logtailer: read dir %s: %w", dir, err)
-	}
-
-	var all []domain.IssueLogEntry
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		lines, err := readJSONLFile(path)
-		if err != nil {
-			continue // skip unreadable files
-		}
-		all = append(all, lines...)
-	}
-	if len(all) > maxSubLogLines {
-		all = all[len(all)-maxSubLogLines:]
-	}
-	return all, nil
-}
-
-// SSHFetchLogs fetches and parses session logs from a remote host using
+// sshFetchLogs fetches and parses session logs from a remote host using
 // short-lived ssh exec calls. Returns nil when the remote directory is absent.
 // Files named "codex-session.jsonl" are parsed with ParseCodexLine; all other
 // .jsonl files are parsed with ParseLine (Claude Code stream-json format).
@@ -78,7 +56,7 @@ func ParseSessionLogs(dir string) ([]domain.IssueLogEntry, error) {
 // Session IDs are derived from filenames so each log entry is stamped with the
 // session that produced it — matching the behaviour of the local ParseSessionLogs
 // path and enabling per-run log isolation in the Timeline view.
-func SSHFetchLogs(host, dir string) ([]domain.IssueLogEntry, error) {
+func sshFetchLogs(host, dir string) ([]domain.IssueLogEntry, error) {
 	claudeEntries := sshFetchClaude(host, dir)
 	codexEntries := sshFetchWithParserMulti(host, dir,
 		`cat %s/codex-session.jsonl 2>/dev/null || true`,
@@ -116,9 +94,11 @@ func sshFetchClaude(host, dir string) []domain.IssueLogEntry {
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		slog.Warn("logtailer: ssh stdout pipe failed", "host", host, "error", err)
 		return nil
 	}
 	if err := cmd.Start(); err != nil {
+		slog.Warn("logtailer: ssh start failed", "host", host, "error", err)
 		return nil
 	}
 	defer func() { _ = cmd.Wait() }()
@@ -131,13 +111,16 @@ func sshFetchClaude(host, dir string) []domain.IssueLogEntry {
 			break
 		}
 		if err != nil {
-			break // truncated archive or SSH error — return what we have
+			slog.Warn("logtailer: tar read error, returning partial results", "host", host, "error", err)
+			break
 		}
 		sessionID := strings.TrimSuffix(filepath.Base(hdr.Name), ".jsonl")
-		scanner := bufio.NewScanner(tr)
-		scanner.Buffer(make([]byte, 1<<20), 1<<20)
+		scanner := newMaxScanner(tr)
 		for scanner.Scan() {
 			entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), ParseLine, sessionID)...)
+		}
+		if scanner.Err() != nil {
+			slog.Warn("logtailer: scanner error in tar entry", "host", host, "file", hdr.Name, "error", scanner.Err())
 		}
 	}
 	return entries
@@ -160,39 +143,19 @@ func sshFetchWithParserMulti(host, dir, scriptFmt string, parseFn func([]byte) (
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
+		slog.Warn("logtailer: ssh command failed", "host", host, "error", err)
 		return nil
 	}
 
 	var entries []domain.IssueLogEntry
-	scanner := bufio.NewScanner(&out)
-	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	scanner := newMaxScanner(&out)
 	for scanner.Scan() {
 		entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), parseFn, "")...)
 	}
+	if scanner.Err() != nil {
+		slog.Warn("logtailer: scanner error in ssh output", "host", host, "error", scanner.Err())
+	}
 	return entries
-}
-
-// readJSONLFile reads a single .jsonl file and converts each line.
-// The session ID is derived from the filename (without .jsonl extension).
-func readJSONLFile(path string) ([]domain.IssueLogEntry, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-
-	sessionID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
-
-	var entries []domain.IssueLogEntry
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1<<20), 1<<20)
-	for scanner.Scan() {
-		entry, ok := streamLineToEntry(scanner.Bytes(), sessionID)
-		if ok {
-			entries = append(entries, entry)
-		}
-	}
-	return entries, scanner.Err()
 }
 
 // streamLineToEntry converts one stream-json line to an IssueLogEntry.
@@ -262,12 +225,13 @@ func streamLineToEntry(line []byte, sessionID string) (domain.IssueLogEntry, boo
 	}
 }
 
-// ParseSessionLogsMulti is like ParseSessionLogs but returns all entries from
-// a stream event that produces multiple entries (e.g., a turn with both text
-// blocks and tool calls). This is the full-fidelity version used by the API.
+// parseSessionLogsMulti reads all *.jsonl files in dir, parses each line, and
+// returns all entries from a stream event (e.g., a turn with both text blocks
+// and tool calls). This is the full-fidelity version used by the API.
 // Files named "codex-session.jsonl" are parsed with ParseCodexLine; all other
 // .jsonl files are parsed with ParseLine (Claude Code stream-json format).
-func ParseSessionLogsMulti(dir string) ([]domain.IssueLogEntry, error) {
+// Returns nil (not an error) when dir does not exist or contains no files.
+func parseSessionLogsMulti(dir string) ([]domain.IssueLogEntry, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -311,8 +275,7 @@ func readJSONLFileMultiWith(path string, parseFn func([]byte) (StreamEvent, erro
 	sessionID := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 
 	var entries []domain.IssueLogEntry
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	scanner := newMaxScanner(f)
 	for scanner.Scan() {
 		entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), parseFn, sessionID)...)
 	}

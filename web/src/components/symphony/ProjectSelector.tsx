@@ -1,4 +1,7 @@
+import { useShallow } from 'zustand/react/shallow';
 import { useSymphonyStore } from '../../store/symphonyStore';
+
+const EMPTY_PROJECT_FILTER: string[] = [];
 
 const LinearIcon = () => (
   <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden="true">
@@ -16,9 +19,12 @@ const GitHubIcon = () => (
 );
 
 export function ProjectSelector() {
-  const snapshot = useSymphonyStore((s) => s.snapshot);
-  const trackerKind = snapshot?.trackerKind as 'linear' | 'github' | undefined;
-  const activeProjectFilter = snapshot?.activeProjectFilter ?? [];
+  const { trackerKind, activeProjectFilter } = useSymphonyStore(
+    useShallow((s) => ({
+      trackerKind: s.snapshot?.trackerKind as 'linear' | 'github' | undefined,
+      activeProjectFilter: s.snapshot?.activeProjectFilter ?? EMPTY_PROJECT_FILTER,
+    })),
+  );
 
   if (!trackerKind) return null;
 
@@ -28,13 +34,11 @@ export function ProjectSelector() {
     <div className="flex flex-col gap-2">
       <div
         data-testid="project-selector"
-        className="flex items-center gap-3 rounded-[var(--radius-md)] px-4 py-2.5"
-        style={{ background: 'var(--panel)', border: '1px solid var(--line)' }}
+        className="flex items-center gap-3 rounded-[var(--radius-md)] px-4 py-2.5 bg-theme-panel border border-theme-line"
       >
         {/* SOURCE label */}
         <span
           className="text-[10px] font-semibold uppercase tracking-widest flex-shrink-0"
-          style={{ color: 'var(--muted)' }}
         >
           Source
         </span>
@@ -54,8 +58,7 @@ export function ProjectSelector() {
             {activeProjectFilter.map((project) => (
               <span
                 key={project}
-                className="rounded-full px-2.5 py-0.5 text-xs font-medium"
-                style={{ background: 'var(--accent-soft)', color: 'var(--accent-strong)' }}
+                className="rounded-full px-2.5 py-0.5 text-xs font-medium bg-theme-accent-soft text-theme-accent-strong"
               >
                 {project}
               </span>
@@ -74,7 +77,7 @@ export function ProjectSelector() {
           <span>
             No GitHub projects are selected — all repositories will be tracked. To filter to specific
             repos, add them under{' '}
-            <strong style={{ color: 'var(--text)' }}>Settings → Project Filter</strong>.
+            <strong className="text-theme-text">Settings → Project Filter</strong>.
           </span>
         </div>
       )}

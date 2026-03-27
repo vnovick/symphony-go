@@ -16,15 +16,14 @@ export function CapacityCard() {
 
   return (
     <div
-      className="rounded-lg border p-4"
-      style={{ borderColor: 'var(--line)', background: 'var(--panel)' }}
+      className="rounded-lg border p-4 border-theme-line bg-theme-panel"
     >
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-medium" style={{ color: 'var(--text)' }}>
+          <p className="text-sm font-medium text-theme-text">
             Max concurrent agents
           </p>
-          <p className="mt-0.5 text-xs" style={{ color: 'var(--muted)' }}>
+          <p className="mt-0.5 text-xs text-theme-muted">
             Maximum number of agents that can run at the same time across all hosts.
           </p>
         </div>
@@ -52,8 +51,8 @@ export function CapacityCard() {
             −
           </button>
           <span
-            className="font-mono text-base font-semibold tabular-nums"
-            style={{ color: 'var(--text)', minWidth: 24, textAlign: 'center' }}
+            className="font-mono text-base font-semibold tabular-nums text-theme-text"
+            style={{ minWidth: 24, textAlign: 'center' }}
           >
             {maxConcurrentAgents}
           </span>

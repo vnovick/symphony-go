@@ -2,7 +2,10 @@ import { useMemo } from 'react';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import type { SSHHostInfo } from '../../types/schemas';
 
+import type { RunningRow } from '../../types/schemas';
+
 const EMPTY_SSH_HOSTS: SSHHostInfo[] = [];
+const EMPTY_RUNNING: RunningRow[] = [];
 
 interface HostEntry {
   id: string;
@@ -34,12 +37,10 @@ function HostTile({ host }: { host: HostEntry }) {
 
   return (
     <div
-      className="rounded-xl border overflow-hidden"
-      style={{ background: 'var(--bg-elevated)', borderColor: 'var(--line)' }}
+      className="rounded-xl border overflow-hidden bg-theme-bg-elevated border-theme-line"
     >
       <div
-        className="flex items-center gap-2.5 px-3.5 py-3 border-b"
-        style={{ borderColor: 'var(--line)' }}
+        className="flex items-center gap-2.5 px-3.5 py-3 border-b border-theme-line"
       >
         <span
           className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0${host.disabled ? '' : ' animate-pulse'}`}
@@ -71,15 +72,15 @@ function HostTile({ host }: { host: HostEntry }) {
 
       <div className="px-3.5 py-3">
         <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+          <span className="text-[11px] text-theme-text-secondary">
             Active agents
           </span>
-          <span className="font-mono text-[12px] font-semibold" style={{ color: 'var(--text)' }}>
+          <span className="font-mono text-[12px] font-semibold text-theme-text">
             {counter}
           </span>
         </div>
         {showMax && (
-          <div className="h-1 rounded-full overflow-hidden" style={{ background: 'var(--bg-soft)' }}>
+          <div className="h-1 rounded-full overflow-hidden bg-theme-bg-soft">
             <div
               className="h-full rounded-full transition-all"
               style={{
@@ -90,12 +91,12 @@ function HostTile({ host }: { host: HostEntry }) {
           </div>
         )}
         {host.kind === 'ssh' && (
-          <p className="mt-1.5 text-[10px] font-mono truncate" style={{ color: 'var(--muted)' }}>
+          <p className="mt-1.5 text-[10px] font-mono truncate text-theme-muted">
             {host.name}
           </p>
         )}
         {host.disabled && (
-          <p className="mt-1.5 text-[10px] leading-snug" style={{ color: 'var(--muted)' }}>
+          <p className="mt-1.5 text-[10px] leading-snug text-theme-muted">
             Agents route to SSH hosts
           </p>
         )}
@@ -105,7 +106,7 @@ function HostTile({ host }: { host: HostEntry }) {
 }
 
 export function HostPool() {
-  const running = useSymphonyStore((s) => s.snapshot?.running ?? []);
+  const running = useSymphonyStore((s) => s.snapshot?.running ?? EMPTY_RUNNING);
   const sshHosts = useSymphonyStore((s) => s.snapshot?.sshHosts ?? EMPTY_SSH_HOSTS);
   const maxConcurrentAgents = useSymphonyStore((s) => s.snapshot?.maxConcurrentAgents ?? 0);
 
@@ -134,7 +135,6 @@ export function HostPool() {
     <div>
       <span
         className="text-[11px] font-semibold uppercase tracking-[0.06em] mb-2 block"
-        style={{ color: 'var(--muted)' }}
       >
         Host Pool
       </span>

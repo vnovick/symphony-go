@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useSymphonyStore } from '../store/symphonyStore';
 import { StateSnapshotSchema } from '../types/schemas';
-import type { StateSnapshot } from '../types/symphony';
+import type { StateSnapshot } from '../types/schemas';
 import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS } from '../utils/timings';
 
 /**

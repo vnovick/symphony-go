@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { toTermLine, entryStyle } from '../logFormatting';
-import type { IssueLogEntry } from '../../types/symphony';
+import type { IssueLogEntry } from '../../types/schemas';
 
 function entry(event: string, message = 'msg', tool?: string, level = 'INFO'): IssueLogEntry {
   return { level, event, message, tool, time: '12:00:00' };

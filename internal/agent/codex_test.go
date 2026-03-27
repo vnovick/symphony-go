@@ -618,7 +618,7 @@ func TestMultiRunnerWarnsOnUnsupportedBackend(t *testing.T) {
 	})
 	result, err := multi.RunTurn(
 		context.Background(), slog.Default(), nil,
-		nil, "hi", dir, "@@symphony-backend=gemini "+fakeClaude, "",
+		nil, "hi", dir, "@@symphony-backend=unsupported "+fakeClaude, "",
 		"",
 		30000, 60000,
 	)

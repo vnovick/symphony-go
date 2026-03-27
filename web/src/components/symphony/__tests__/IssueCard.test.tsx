@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IssueCard from '../IssueCard';
-import type { TrackerIssue } from '../../../types/symphony';
+import type { TrackerIssue } from '../../../types/schemas';
 
 const baseIssue: TrackerIssue = {
   identifier: 'ABC-1',

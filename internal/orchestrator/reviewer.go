@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/vnovick/symphony-go/internal/agent"
@@ -98,6 +99,7 @@ func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue
 	reviewerReadTimeoutMs := o.cfg.Agent.ReadTimeoutMs
 	reviewerTurnTimeoutMs := o.cfg.Agent.TurnTimeoutMs
 	reviewerSSHHosts := append([]string{}, o.cfg.Agent.SSHHosts...)
+	dispatchStrategy := o.cfg.Agent.DispatchStrategy
 	o.cfgMu.RUnlock()
 
 	renderedPrompt, err := prompt.Render(reviewerPrompt, issue, nil)
@@ -106,9 +108,33 @@ func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue
 		return
 	}
 
+	// Apply the configured dispatch strategy for SSH host selection, matching
+	// the logic in event_loop.go:dispatch(). The reviewer goroutine cannot
+	// safely access o.sshHostIdx (owned by the event loop), so round-robin
+	// uses a random offset for fair distribution.
 	workerHost := ""
 	if len(reviewerSSHHosts) > 0 {
-		workerHost = reviewerSSHHosts[0]
+		if dispatchStrategy == "least-loaded" {
+			snap := o.Snapshot()
+			hostCount := make(map[string]int, len(reviewerSSHHosts))
+			for _, h := range reviewerSSHHosts {
+				hostCount[h] = 0
+			}
+			for _, entry := range snap.Running {
+				if _, ok := hostCount[entry.WorkerHost]; ok {
+					hostCount[entry.WorkerHost]++
+				}
+			}
+			minCount := int(^uint(0) >> 1)
+			for _, h := range reviewerSSHHosts {
+				if c := hostCount[h]; c < minCount {
+					minCount = c
+					workerHost = h
+				}
+			}
+		} else {
+			workerHost = reviewerSSHHosts[rand.IntN(len(reviewerSSHHosts))]
+		}
 	}
 
 	const maxReviewerAttempts = 2

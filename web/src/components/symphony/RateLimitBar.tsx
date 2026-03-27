@@ -29,15 +29,15 @@ function LimitRow({
   return (
     <div>
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+        <span className="text-xs text-theme-text-secondary">
           {label}
         </span>
-        <span className="text-xs" style={{ color: 'var(--muted)' }}>
+        <span className="text-xs text-theme-muted">
           {remaining.toLocaleString()}/{limit.toLocaleString()}
           {resetLabel && <span className="ml-1">· {resetLabel}</span>}
         </span>
       </div>
-      <div className="h-1.5 w-full rounded-full" style={{ background: 'var(--bg-elevated)' }}>
+      <div className="h-1.5 w-full rounded-full bg-theme-bg-elevated">
         <div
           className="h-1.5 rounded-full transition-all duration-500"
           style={{ width: `${String(Math.max(2, pct * 100))}%`, background: barColor(pct) }}
@@ -64,7 +64,6 @@ export default function RateLimitBar({ compact = false }: { compact?: boolean })
     <>
       <p
         className="mb-2.5 text-[10px] font-semibold uppercase tracking-widest"
-        style={{ color: 'var(--muted)' }}
       >
         {trackerLabel} API Headroom
       </p>
@@ -92,8 +91,7 @@ export default function RateLimitBar({ compact = false }: { compact?: boolean })
 
   return (
     <div
-      className="rounded-[var(--radius-md)] p-4"
-      style={{ border: '1px solid var(--line)', background: 'var(--panel)' }}
+      className="rounded-[var(--radius-md)] p-4 border border-theme-line bg-theme-panel"
     >
       {content}
     </div>

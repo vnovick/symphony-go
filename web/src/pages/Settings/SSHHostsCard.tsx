@@ -27,21 +27,18 @@ export function SSHHostsCard() {
   return (
     <>
       <div
-        className="rounded-xl border overflow-hidden"
-        style={{ background: 'var(--bg-elevated)', borderColor: 'var(--line)' }}
+        className="rounded-xl border overflow-hidden bg-theme-bg-elevated border-theme-line"
       >
         {/* Header */}
         <div
-          className="flex items-center justify-between px-[18px] py-3.5 border-b"
-          style={{ borderColor: 'var(--line)' }}
+          className="flex items-center justify-between px-[18px] py-3.5 border-b border-theme-line"
         >
           <div>
-            <span className="text-[15px] font-semibold" style={{ color: 'var(--text)' }}>
+            <span className="text-[15px] font-semibold text-theme-text">
               SSH Hosts
             </span>
             <span
               className="ml-2 text-[11px]"
-              style={{ color: 'var(--muted)' }}
             >
               {hosts.length === 0 ? 'running locally' : `${hosts.length} host${hosts.length === 1 ? '' : 's'}`}
             </span>
@@ -65,22 +62,22 @@ export function SSHHostsCard() {
 
         {/* Host list */}
         {hosts.length === 0 ? (
-          <div className="px-[18px] py-5 text-[13px]" style={{ color: 'var(--muted)' }}>
+          <div className="px-[18px] py-5 text-[13px] text-theme-muted">
             No SSH hosts configured — agents run locally on this machine.
           </div>
         ) : (
-          <ul className="divide-y" style={{ borderColor: 'var(--line)' }}>
+          <ul className="divide-y border-theme-line">
             {hosts.map((h) => (
               <li
                 key={h.host}
                 className="flex items-center justify-between px-[18px] py-3"
               >
                 <div className="min-w-0">
-                  <span className="font-mono text-[13px]" style={{ color: 'var(--text)' }}>
+                  <span className="font-mono text-[13px] text-theme-text">
                     {h.host}
                   </span>
                   {h.description && (
-                    <span className="ml-2 text-[12px]" style={{ color: 'var(--muted)' }}>
+                    <span className="ml-2 text-[12px] text-theme-muted">
                       {h.description}
                     </span>
                   )}
@@ -106,8 +103,8 @@ export function SSHHostsCard() {
 
         {/* Dispatch strategy — only shown when there are hosts */}
         {hosts.length > 0 && (
-          <div className="border-t px-[18px] py-4" style={{ borderColor: 'var(--line)' }}>
-            <p className="text-[12px] font-medium mb-2.5" style={{ color: 'var(--text-secondary)' }}>
+          <div className="border-t px-[18px] py-4 border-theme-line">
+            <p className="text-[12px] font-medium mb-2.5 text-theme-text-secondary">
               Dispatch strategy
             </p>
             <div className="flex gap-2">
@@ -121,10 +118,10 @@ export function SSHHostsCard() {
                     background: strategy === s.id ? 'rgba(99,102,241,0.06)' : 'transparent',
                   }}
                 >
-                  <div className="text-[12px] font-semibold" style={{ color: 'var(--text)' }}>
+                  <div className="text-[12px] font-semibold text-theme-text">
                     {s.label}
                   </div>
-                  <div className="text-[11px] mt-0.5 leading-[1.4]" style={{ color: 'var(--text-secondary)' }}>
+                  <div className="text-[11px] mt-0.5 leading-[1.4] text-theme-text-secondary">
                     {s.desc}
                   </div>
                 </button>

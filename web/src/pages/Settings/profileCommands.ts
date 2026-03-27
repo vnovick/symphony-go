@@ -1,4 +1,4 @@
-import type { ProfileDef } from '../../types/symphony';
+import type { ProfileDef } from '../../types/schemas';
 
 export type SupportedBackend = 'claude' | 'codex';
 

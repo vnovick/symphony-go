@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import { useCancelIssue } from '../../queries/issues';
+import { SessionAccordion } from './SessionAccordion';
 import type { RetryRow } from '../../types/schemas';
 
 const EMPTY_RETRYING: RetryRow[] = [];
@@ -19,9 +20,10 @@ export default function RetryQueueTable() {
   const setSelectedIdentifier = useSymphonyStore((s) => s.setSelectedIdentifier);
   const cancelMutation = useCancelIssue();
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const handleCancel = (e: React.MouseEvent, identifier: string) => {
-    e.stopPropagation(); // don't open the detail modal
+    e.stopPropagation();
     if (cancelling) return;
     setCancelling(identifier);
     cancelMutation.mutate(identifier, {
@@ -29,83 +31,95 @@ export default function RetryQueueTable() {
     });
   };
 
+  const toggle = useCallback((id: string) => {
+    setExpandedId((prev) => (prev === id ? null : id));
+  }, []);
+
   if (retrying.length === 0) return null;
 
   return (
-    <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--bg-elevated)]">
+    <div className="overflow-hidden rounded-[var(--radius-lg)] border border-theme-line bg-theme-bg-elevated">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-[var(--line)] px-[18px] py-[14px]">
+      <div className="flex items-center justify-between border-b border-theme-line px-4 py-3">
         <div>
-          <h2 className="flex items-center gap-2 text-sm font-semibold text-[var(--text)]">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-theme-text">
             Retry Queue
-            <span className="rounded-full bg-[var(--warning-soft)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--warning)]">
+            <span className="rounded-full px-1.5 py-0.5 text-[10px] font-bold bg-theme-warning-soft text-theme-warning">
               {retrying.length}
             </span>
           </h2>
-          <p className="mt-1 text-xs text-[var(--text-secondary)]">
+          <p className="mt-0.5 text-xs text-theme-text-secondary">
             Issues waiting to be re-dispatched after a failure
           </p>
         </div>
       </div>
 
-      {/* Table */}
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-[var(--line)]">
-            <th className="px-[18px] py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Issue</th>
-            <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Attempt</th>
-            <th className="px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Retries in</th>
-            <th className="px-[18px] py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">Last error</th>
-            <th className="px-[18px] py-2" />
-          </tr>
-        </thead>
-        <tbody>
-          {retrying.map((row) => (
-            <tr
-              key={row.identifier}
-              className="cursor-pointer border-b border-[var(--line)] last:border-b-0 hover:bg-[var(--bg-soft)] transition-colors"
-              onClick={() => { setSelectedIdentifier(row.identifier); }}
+      {/* Rows */}
+      {retrying.map((row) => (
+        <div key={row.identifier} className="border-b last:border-b-0 border-theme-line">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => { toggle(row.identifier); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(row.identifier); }}
+            className="flex flex-wrap items-center gap-2 px-4 py-3 cursor-pointer transition-colors hover:bg-[var(--bg-soft)]"
+          >
+            {/* Chevron */}
+            <span
+              className="text-[10px] text-theme-muted transition-transform duration-200"
+              style={{ transform: expandedId === row.identifier ? 'rotate(90deg)' : 'none' }}
             >
-              <td className="px-[18px] py-3">
-                <span className="font-mono text-xs font-semibold text-[var(--accent)]">
-                  {row.identifier}
-                </span>
-              </td>
-              <td className="px-3 py-3">
-                <span className="rounded bg-[var(--warning-soft)] px-1.5 py-0.5 font-mono text-[11px] font-medium text-[var(--warning)]">
-                  #{row.attempt}
-                </span>
-              </td>
-              <td className="px-3 py-3 font-mono text-xs text-[var(--text-secondary)]">
-                {fmtDueAt(row.dueAt)}
-              </td>
-              <td className="max-w-xs px-[18px] py-3 text-xs text-[var(--muted)]">
-                {row.error ? (
-                  <span className="line-clamp-1" title={row.error}>{row.error}</span>
-                ) : (
-                  <span className="italic">—</span>
-                )}
-              </td>
-              <td className="px-[18px] py-3 text-right">
-                <button
-                  onClick={(e) => { handleCancel(e, row.identifier); }}
-                  disabled={cancelling === row.identifier}
-                  className="text-[11px] font-medium transition-opacity"
-                  style={{
-                    color: 'var(--danger)',
-                    background: 'transparent',
-                    border: 'none',
-                    cursor: cancelling === row.identifier ? 'wait' : 'pointer',
-                    opacity: cancelling === row.identifier ? 0.5 : 1,
-                  }}
-                >
-                  {cancelling === row.identifier ? 'Cancelling…' : 'Cancel'}
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+              ▶
+            </span>
+
+            {/* Identifier */}
+            <span
+              role="button"
+              tabIndex={0}
+              className="font-mono text-xs font-semibold text-theme-accent cursor-pointer hover:underline"
+              onClick={(e) => { e.stopPropagation(); setSelectedIdentifier(row.identifier); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setSelectedIdentifier(row.identifier); } }}
+            >
+              {row.identifier}
+            </span>
+
+            {/* Attempt badge */}
+            <span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-medium bg-theme-warning-soft text-theme-warning">
+              #{row.attempt}
+            </span>
+
+            {/* Due at */}
+            <span className="font-mono text-[11px] text-theme-text-secondary">
+              {fmtDueAt(row.dueAt)}
+            </span>
+
+            {/* Error — truncated, hidden on mobile */}
+            {row.error && (
+              <span className="hidden sm:inline truncate text-xs text-theme-muted min-w-0 flex-1" title={row.error}>
+                {row.error}
+              </span>
+            )}
+
+            {/* Cancel button */}
+            <button
+              onClick={(e) => { handleCancel(e, row.identifier); }}
+              disabled={cancelling === row.identifier}
+              className="ml-auto text-[11px] font-medium text-theme-danger disabled:opacity-50"
+            >
+              {cancelling === row.identifier ? 'Cancelling…' : 'Cancel'}
+            </button>
+          </div>
+
+          {/* Expandable accordion */}
+          {expandedId === row.identifier && (
+            <SessionAccordion
+              identifier={row.identifier}
+              workerHost={undefined}
+              sessionId={undefined}
+            />
+          )}
+        </div>
+      ))}
     </div>
   );
 }

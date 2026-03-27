@@ -54,7 +54,7 @@ func (c *CodexRunner) RunTurn(
 	if workerHost != "" {
 		shellCmd := buildCodexShellCmd(command, sessionID, prompt, workspacePath)
 		if logDir != "" {
-			// Tee codex stdout to a file on the remote host so SSHFetchLogs can read it later.
+			// Tee codex stdout to a file on the remote host so sshFetchLogs can read it later.
 			shellCmd = shellCmd + " | tee " + shellQuote(filepath.Join(logDir, "codex-session.jsonl"))
 		}
 		if workspacePath != "" {
@@ -84,7 +84,7 @@ func (c *CodexRunner) RunTurn(
 		return TurnResult{Failed: true}, fmt.Errorf("codex: stdout pipe: %w", err)
 	}
 
-	// For local workers, tee stdout to codex-session.jsonl so SSHFetchLogs / ParseSessionLogsMulti
+	// For local workers, tee stdout to codex-session.jsonl so sshFetchLogs / parseSessionLogsMulti
 	// can read the session transcript after the run.
 	var logFile *os.File
 	if logDir != "" && workerHost == "" {

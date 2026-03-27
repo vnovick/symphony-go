@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { IssueLogEntry } from '../types/symphony';
+import type { IssueLogEntry } from '../types/schemas';
 import { IssueLogEntrySchema } from '../types/schemas';
 import { z } from 'zod';
 
@@ -120,7 +120,6 @@ export function useLogIdentifiers() {
     queryKey: logIdentifiersKey(),
     queryFn: fetchLogIdentifiers,
     staleTime: 10_000,
-    refetchInterval: 30_000,
   });
   return data;
 }

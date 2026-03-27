@@ -3,11 +3,12 @@ package prdetector
 import (
 	"context"
 	"encoding/json"
+	"cmp"
 	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/vnovick/symphony-go/internal/domain"
@@ -230,21 +231,23 @@ func collectPRURLs(issue domain.Issue) []string {
 }
 
 func sortCommentsByTime(comments []domain.Comment) {
-	sort.SliceStable(comments, func(i, j int) bool {
-		a, b := comments[i].CreatedAt, comments[j].CreatedAt
-		if a == nil {
-			return false // nil sorts last
+	slices.SortStableFunc(comments, func(a, b domain.Comment) int {
+		if a.CreatedAt == nil && b.CreatedAt == nil {
+			return 0
 		}
-		if b == nil {
-			return true
+		if a.CreatedAt == nil {
+			return 1 // nil sorts last
 		}
-		return a.Before(*b)
+		if b.CreatedAt == nil {
+			return -1
+		}
+		return a.CreatedAt.Compare(*b.CreatedAt)
 	})
 }
 
 func sortEntriesByPos(entries []*prEntry) {
-	sort.SliceStable(entries, func(i, j int) bool {
-		return entries[i].pos < entries[j].pos
+	slices.SortStableFunc(entries, func(a, b *prEntry) int {
+		return cmp.Compare(a.pos, b.pos)
 	})
 }
 

@@ -1,13 +1,9 @@
+import { useRef } from 'react';
 import { useDraggable, useDroppable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import IssueCard from './IssueCard';
-import type { TrackerIssue } from '../../types/symphony';
+import type { TrackerIssue } from '../../types/schemas';
 import type { ProfileDef } from '../../types/schemas';
-
-// Lanes use bg-soft per prototype .lane spec
-function stateTintVar(_state: string): string {
-  return 'var(--bg-soft)';
-}
 
 // Descriptive subtitle for well-known state names
 const COLUMN_SUBTITLES: Record<string, string> = {
@@ -32,6 +28,8 @@ function columnSubtitle(state: string): string | undefined {
 
 function DraggableCard({
   issue,
+  isBeingDragged,
+  shouldCollapse,
   onSelect,
   availableProfiles,
   profileDefs,
@@ -40,6 +38,10 @@ function DraggableCard({
   onDispatch,
 }: {
   issue: TrackerIssue;
+  /** True when THIS card is being dragged */
+  isBeingDragged: boolean;
+  /** True when the dragged card has left the source column (collapse the placeholder) */
+  shouldCollapse: boolean;
   onSelect: (id: string) => void;
   availableProfiles?: string[];
   profileDefs?: Record<string, ProfileDef>;
@@ -47,20 +49,53 @@ function DraggableCard({
   onProfileChange?: (identifier: string, profile: string) => void;
   onDispatch?: (identifier: string) => void;
 }) {
+  const cardRef = useRef<HTMLDivElement>(null);
+  const measuredHeight = useRef<number>(0);
+
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: issue.identifier,
     data: { issue },
   });
 
-  const style = transform
-    ? { transform: CSS.Translate.toString(transform), zIndex: isDragging ? 999 : undefined }
+  const style = transform && !isDragging
+    ? { transform: CSS.Translate.toString(transform) }
     : undefined;
 
+  // Measure card height before drag starts so placeholder matches exactly
+  if (!isDragging && cardRef.current) {
+    measuredHeight.current = cardRef.current.offsetHeight;
+  }
+
+  if (isDragging) {
+    const h = measuredHeight.current || 72;
+    return (
+      <div
+        ref={setNodeRef}
+        {...attributes}
+        {...listeners}
+        className={`rounded-lg border-2 border-dashed border-theme-line-strong transition-all duration-300 ease-in-out overflow-hidden ${
+          shouldCollapse
+            ? 'max-h-0 opacity-0 my-0 border-0'
+            : 'opacity-100'
+        }`}
+        style={shouldCollapse ? undefined : { height: h }}
+      />
+    );
+  }
+
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+    <div
+      ref={(node) => {
+        setNodeRef(node);
+        (cardRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
+      }}
+      style={style}
+      {...attributes}
+      {...listeners}
+    >
       <IssueCard
         issue={issue}
-        isDragging={isDragging}
+        isDragging={isBeingDragged}
         onSelect={onSelect}
         availableProfiles={availableProfiles}
         profileDefs={profileDefs}
@@ -74,68 +109,96 @@ function DraggableCard({
 
 interface ColumnProps {
   state: string;
+  /** Display label — defaults to `state` if not provided */
+  label?: string;
   issues: TrackerIssue[];
   isOver: boolean;
+  /** Identifier of the card being dragged from this column (undefined if none) */
+  draggingId?: string;
+  /** True when the dragged card has moved to a different column */
+  isCardOutside?: boolean;
   onSelect: (id: string) => void;
   availableProfiles?: string[];
   profileDefs?: Record<string, ProfileDef>;
   runningBackendByIdentifier?: Record<string, string>;
   onProfileChange?: (identifier: string, profile: string) => void;
   onDispatch?: (identifier: string) => void;
+  /** Show (?) info button next to column header */
+  onInfoClick?: () => void;
 }
 
 export default function BoardColumn({
   state,
+  label,
   issues,
   isOver,
+  draggingId,
+  isCardOutside,
   onSelect,
   availableProfiles,
   profileDefs,
   runningBackendByIdentifier,
   onProfileChange,
   onDispatch,
+  onInfoClick,
 }: ColumnProps) {
   const { setNodeRef } = useDroppable({ id: state });
-  const subtitle = columnSubtitle(state);
+  const subtitle = columnSubtitle(label ?? state);
 
   return (
     <div
       ref={setNodeRef}
-      className="flex max-h-[85vh] flex-col overflow-hidden rounded-[var(--radius-md)] transition-all"
-      style={{
-        border: isOver ? '1px solid var(--accent)' : '1px solid var(--line)',
-        background: stateTintVar(state),
-      }}
+      className="relative flex w-[250px] min-w-[250px] flex-shrink-0 flex-col overflow-hidden rounded-[var(--radius-md)] max-h-[85vh] border border-theme-line bg-theme-bg-soft"
     >
-      {/* Column header — .lane-header spec */}
+      {/* Dark overlay when dropping */}
+      <div
+        className={`pointer-events-none absolute inset-0 z-10 rounded-[var(--radius-md)] transition-opacity duration-150 ${
+          isOver ? 'opacity-100' : 'opacity-0'
+        }`}
+        style={{ background: 'rgba(0,0,0,0.25)' }}
+      />
+
+      {/* Column header */}
       <div className="flex flex-shrink-0 items-start justify-between gap-3 px-3 py-3">
         <div className="min-w-0">
-          <h3
-            className="m-0 truncate uppercase"
-            style={{ fontSize: 12, fontWeight: 600, letterSpacing: '0.03em', color: 'var(--text)' }}
-          >
-            {state}
-          </h3>
+          <span className="flex items-center gap-1.5">
+            <h3 className="m-0 truncate text-xs font-semibold uppercase tracking-wide text-theme-text">
+              {label ?? state}
+            </h3>
+            {onInfoClick && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onInfoClick(); }}
+                className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[10px] text-theme-muted hover:text-theme-text transition-colors"
+                title={`About ${label ?? state}`}
+                aria-label={`Info about ${label ?? state}`}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+              </button>
+            )}
+          </span>
           {subtitle && (
-            <p className="mt-1 leading-snug" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+            <p className="mt-1 text-[11px] leading-snug text-theme-text-secondary">
               {subtitle}
             </p>
           )}
         </div>
-        <span
-          className="flex min-w-[28px] flex-shrink-0 items-center justify-center rounded-[var(--radius-full)] px-2.5 py-1"
-          style={{ background: 'var(--bg-elevated)', fontSize: 12, fontWeight: 600, color: 'var(--text)' }}
-        >
+        <span className="flex min-w-[28px] flex-shrink-0 items-center justify-center rounded-full px-2.5 py-1 text-xs font-semibold bg-theme-bg-elevated text-theme-text">
           {issues.length}
         </span>
       </div>
 
-      {/* Issue cards — .lane-list spec: gap 8px, margin-top 10px */}
+      {/* Issue cards */}
       <div className="flex-1 space-y-2 overflow-y-auto px-3 pb-3">
         {issues.map((issue) => (
           <DraggableCard
             key={issue.identifier}
             issue={issue}
+            isBeingDragged={draggingId === issue.identifier}
+            shouldCollapse={draggingId === issue.identifier && (isCardOutside ?? false)}
             onSelect={onSelect}
             availableProfiles={availableProfiles}
             profileDefs={profileDefs}

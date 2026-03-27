@@ -819,14 +819,7 @@ func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.Tracker
 }
 
 func (a *orchestratorAdapter) CancelIssue(identifier string) bool {
-	issue := a.orch.GetRunningIssue(identifier)
-	if issue == nil {
-		return false
-	}
-	if !a.orch.CancelIssue(identifier) {
-		return false
-	}
-	return true
+	return a.orch.CancelIssue(identifier)
 }
 
 func (a *orchestratorAdapter) ResumeIssue(identifier string) bool {

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import BoardColumn from '../BoardColumn';
-import type { TrackerIssue } from '../../../types/symphony';
+import type { TrackerIssue } from '../../../types/schemas';
 
 vi.mock('@dnd-kit/core', () => ({
   useDraggable: () => ({
@@ -78,49 +78,31 @@ describe('BoardColumn', () => {
     expect(screen.getAllByTestId('issue-card')).toHaveLength(3);
   });
 
-  it('applies highlighted styles when isOver is true', () => {
+  it('shows overlay when isOver is true', () => {
     const { container } = render(
       <BoardColumn state="In Progress" issues={[]} isOver={true} onSelect={vi.fn()} />,
     );
-    const el = container.firstChild as HTMLElement;
-    expect(el.style.border).toContain('var(--accent)');
+    const overlay = container.querySelector('.pointer-events-none') as HTMLElement;
+    expect(overlay).toBeInTheDocument();
+    expect(overlay.className).toContain('opacity-100');
   });
 
-  it('applies default styles when isOver is false', () => {
+  it('hides overlay when isOver is false', () => {
     const { container } = render(
       <BoardColumn state="In Progress" issues={[]} isOver={false} onSelect={vi.fn()} />,
     );
-    const el = container.firstChild as HTMLElement;
-    expect(el.style.border).toContain('var(--line)');
+    const overlay = container.querySelector('.pointer-events-none') as HTMLElement;
+    expect(overlay.className).toContain('opacity-0');
   });
 
-  // All columns use bg-soft per the prototype lane spec — no per-state tinting
-  it('applies bg-soft background for done states', () => {
-    const { container } = render(
-      <BoardColumn state="Done" issues={[]} isOver={false} onSelect={vi.fn()} />,
-    );
-    expect(container.firstChild).toHaveStyle({ background: 'var(--bg-soft)' });
-  });
-
-  it('applies bg-soft background for in-progress states', () => {
-    const { container } = render(
-      <BoardColumn state="In Progress" issues={[]} isOver={false} onSelect={vi.fn()} />,
-    );
-    expect(container.firstChild).toHaveStyle({ background: 'var(--bg-soft)' });
-  });
-
-  it('applies bg-soft background for blocked states', () => {
-    const { container } = render(
-      <BoardColumn state="Blocked" issues={[]} isOver={false} onSelect={vi.fn()} />,
-    );
-    expect(container.firstChild).toHaveStyle({ background: 'var(--bg-soft)' });
-  });
-
-  it('applies bg-soft background for unknown states', () => {
-    const { container } = render(
-      <BoardColumn state="Backlog" issues={[]} isOver={false} onSelect={vi.fn()} />,
-    );
-    expect(container.firstChild).toHaveStyle({ background: 'var(--bg-soft)' });
+  // All columns use bg-theme-bg-soft per the prototype lane spec
+  it('applies bg-soft class for all states', () => {
+    for (const state of ['Done', 'In Progress', 'Blocked', 'Backlog']) {
+      const { container } = render(
+        <BoardColumn state={state} issues={[]} isOver={false} onSelect={vi.fn()} />,
+      );
+      expect((container.firstChild as HTMLElement).className).toContain('bg-theme-bg-soft');
+    }
   });
 
   it('calls onSelect with the issue identifier when a card is clicked', async () => {

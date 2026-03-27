@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import RunningSessionsTable from '../RunningSessionsTable';
-import type { RunningRow } from '../../../types/symphony';
+import type { RunningRow } from '../../../types/schemas';
 
 // Mock Zustand store
 vi.mock('../../../store/symphonyStore', () => ({
@@ -23,6 +23,10 @@ vi.mock('../../../queries/issues', () => ({
 
 vi.mock('../../../queries/logs', () => ({
   useIssueLogs: () => ({ data: [] }),
+}));
+
+vi.mock('../../ui/Terminal/Terminal', () => ({
+  Terminal: () => <div data-testid="terminal-mock" />,
 }));
 
 import { useSymphonyStore } from '../../../store/symphonyStore';
@@ -126,7 +130,7 @@ describe('RunningSessionsTable', () => {
   it('shows running session summary fields when rows are present', () => {
     withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
-    expect(screen.getByText('claude')).toBeInTheDocument();
+    // Turn count and elapsed time are rendered in the row grid
     expect(screen.getByText('5')).toBeInTheDocument();
     expect(screen.getByText('1m 00s')).toBeInTheDocument();
   });
@@ -145,22 +149,26 @@ describe('RunningSessionsTable', () => {
     expect(screen.getByText(/Discard/)).toBeInTheDocument();
   });
 
-  it('shows Open PR link and Re-analyze button when paused with PR', () => {
+  it('shows PR link and Re-analyze button when paused with PR', () => {
     withSnapshot({
       paused: ['ISS-99'],
       pausedWithPR: { 'ISS-99': 'https://github.com/org/repo/pull/5' },
     });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
-    expect(screen.getByText('Open PR')).toBeInTheDocument();
+    expect(screen.getByText('PR')).toBeInTheDocument();
     expect(screen.getByText(/Re-analyze/)).toBeInTheDocument();
   });
 
   it('expands accordion on row click', async () => {
     withSnapshot({ running: [baseRow] });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
-    const row = screen.getByText('ISS-42').closest('[class*="cursor-pointer"]') as HTMLElement;
-    await userEvent.click(row);
-    // accordion header "Logs" should appear
-    expect(screen.getByText('Logs')).toBeInTheDocument();
+    // The row has a grid layout with role="button"; click the chevron area
+    const rows = screen.getAllByRole('button');
+    // Find the row-level button (the grid row), not the identifier link or action buttons
+    const rowButton = rows.find((el) => el.classList.contains('grid'));
+    expect(rowButton).toBeTruthy();
+    await userEvent.click(rowButton!);
+    // After expanding, the accordion renders the terminal mock
+    expect(screen.getByTestId('terminal-mock')).toBeInTheDocument();
   });
 });

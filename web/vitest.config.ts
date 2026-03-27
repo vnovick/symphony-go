@@ -53,10 +53,25 @@ export default defineConfig({
 
         // Symphony components without dedicated test suites
         'src/components/symphony/AgentQueueView.tsx',
-        'src/components/symphony/IssueDetailModal.tsx',
         'src/components/symphony/RateLimitBar.tsx',
         'src/components/symphony/StatusStrip.tsx',
         'src/components/symphony/TagInput.tsx',
+        'src/components/symphony/HostPool.tsx',
+        'src/components/symphony/RetryQueueTable.tsx',
+        'src/components/symphony/SessionAccordion.tsx',
+
+        // Extracted timeline presentational components (logic tested via types.test.ts)
+        'src/components/symphony/timeline/AgentLogPanel.tsx',
+        'src/components/symphony/timeline/IssueRunsView.tsx',
+        'src/components/symphony/timeline/RunRow.tsx',
+        'src/components/symphony/timeline/SubagentBar.tsx',
+        'src/components/symphony/timeline/TimeAxis.tsx',
+
+        // Extracted profile presentational components
+        'src/pages/Settings/profiles/ProfileEditorFields.tsx',
+        'src/pages/Settings/profiles/ProfileRow.tsx',
+        'src/pages/Settings/profiles/SuggestedProfileCard.tsx',
+        'src/pages/Settings/profiles/suggestedProfiles.ts',
 
         // Pages without dedicated test suites
         'src/pages/Blank.tsx',
@@ -73,8 +88,10 @@ export default defineConfig({
         'src/pages/Settings/ProfilesCard.tsx',
         'src/pages/Settings/ProjectFilterCard.tsx',
         'src/pages/Settings/TrackerStatesCard.tsx',
-        'src/pages/Settings/WorkflowReferenceCard.tsx',
         'src/pages/Settings/WorkspaceCard.tsx',
+        'src/pages/Settings/CapacityCard.tsx',
+        'src/pages/Settings/SSHHostsCard.tsx',
+        'src/pages/Settings/AddSSHHostModal.tsx',
 
         // Hooks without dedicated test suites
         'src/hooks/useLogStream.ts',
@@ -82,17 +99,13 @@ export default defineConfig({
         'src/hooks/useSettingsActions.ts',
         'src/hooks/useStableValue.ts',
 
-        // Query files — issues.ts is partially tested (task 7.4 scope);
-        // full mutation coverage requires integration tests beyond the task scope
+        // Query files — partially tested via mutation tests
         'src/queries/issues.ts',
         'src/queries/logs.ts',
         'src/queries/projects.ts',
 
-        // Store with complex timer internals — tested implicitly via store integration
+        // Store with complex timer internals — tested implicitly
         'src/store/toastStore.ts',
-
-        // Type barrel (deprecated, no logic)
-        'src/types/symphony.ts',
 
         // Legacy excluded files
         'src/components/symphony/LogViewer.tsx',

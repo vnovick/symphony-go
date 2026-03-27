@@ -86,7 +86,7 @@ func backendFromCommand(command string) (backend, cleaned string) {
 		return "", command
 	}
 	switch filepath.Base(first) {
-	case "claude", "codex", "gemini":
+	case "claude", "codex":
 		return filepath.Base(first), command
 	default:
 		return "", command

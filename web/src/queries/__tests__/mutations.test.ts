@@ -7,7 +7,7 @@ import {
   useCancelIssue,
   ISSUES_KEY,
 } from '../issues';
-import type { TrackerIssue } from '../../types/symphony';
+import type { TrackerIssue } from '../../types/schemas';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import { useToastStore } from '../../store/toastStore';
 

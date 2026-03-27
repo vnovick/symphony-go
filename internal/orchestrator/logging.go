@@ -96,7 +96,9 @@ func formatBufLine(level, msg string, args []any) string {
 	b, err := json.Marshal(e)
 	if err != nil {
 		// Fallback: return a minimal JSON object so the parser always gets valid JSON.
-		return `{"level":"` + level + `","msg":"` + msg + `","time":"` + e.Time + `"}`
+		// Use json.Marshal for the message to properly escape quotes and backslashes.
+		escapedMsg, _ := json.Marshal(msg)
+		return `{"level":"` + level + `","msg":` + string(escapedMsg) + `,"time":"` + e.Time + `"}`
 	}
 	return string(b)
 }

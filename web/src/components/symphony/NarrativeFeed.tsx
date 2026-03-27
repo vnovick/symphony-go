@@ -29,23 +29,21 @@ export function NarrativeFeed() {
   return (
     <div
       data-testid="narrative-feed"
-      className="rounded-[var(--radius-md)] overflow-hidden"
-      style={{ border: '1px solid var(--line)', background: 'var(--panel)' }}
+      className="rounded-[var(--radius-md)] overflow-hidden border border-theme-line bg-theme-panel"
     >
       <div
-        className="flex items-center justify-between px-4 py-2.5 border-b"
-        style={{ borderColor: 'var(--line)' }}
+        className="flex items-center justify-between px-4 py-2.5 border-b border-theme-line"
       >
-        <h3 className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+        <h3 className="text-sm font-semibold text-theme-text">
           Recent Events
         </h3>
-        <span className="text-xs font-mono" style={{ color: 'var(--muted)' }}>
+        <span className="text-xs font-mono text-theme-muted">
           last {MAX_FEED_LINES}
         </span>
       </div>
 
       {entries.length === 0 ? (
-        <div className="px-4 py-6 text-center text-sm" style={{ color: 'var(--muted)' }}>
+        <div className="px-4 py-6 text-center text-sm text-theme-muted">
           No events yet
         </div>
       ) : (

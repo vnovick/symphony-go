@@ -132,7 +132,7 @@ func TestBuildCodexShellCmdEmptySessionID(t *testing.T) {
 // --- sshFetchClaude session stamping via tar ---
 //
 // sshFetchClaude streams a tar archive over SSH and derives session IDs from tar
-// header filenames — the same source as the local readJSONLFile path. These tests
+// header filenames — the same source as the local readJSONLFileMultiWith path. These tests
 // verify the two primitives the tar loop relies on: streamLineToEntry propagating
 // the session ID it receives, and the filename→sessionID extraction formula.
 
@@ -153,7 +153,7 @@ func TestStreamLineToEntryEmptySessionID(t *testing.T) {
 }
 
 func TestSSHSessionIDFromTarHeader(t *testing.T) {
-	// The tar header name → session ID formula must match the local readJSONLFile formula.
+	// The tar header name → session ID formula must match the local readJSONLFileMultiWith formula.
 	cases := []struct{ name, want string }{
 		{"abc123.jsonl", "abc123"},
 		{"./abc123.jsonl", "abc123"},   // tar may include "./" prefix

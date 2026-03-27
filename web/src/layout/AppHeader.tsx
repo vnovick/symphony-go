@@ -1,22 +1,27 @@
 import { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useSymphonyStore } from '../store/symphonyStore';
+import { MobileMenuButton } from '../components/ui/MobileMenuButton';
 
-const AppHeader: React.FC = () => {
+const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
   const sseConnected = useSymphonyStore((s) => s.sseConnected);
-  const snapshot = useSymphonyStore((s) => s.snapshot);
+  const { running, paused, retrying, maxAgents, agentMode, hasSnapshot } = useSymphonyStore(
+    useShallow((s) => ({
+      running: s.snapshot?.running.length ?? 0,
+      paused: s.snapshot?.paused.length ?? 0,
+      retrying: s.snapshot?.retrying.length ?? 0,
+      maxAgents: s.snapshot?.maxConcurrentAgents ?? 0,
+      agentMode: s.snapshot?.agentMode ?? '',
+      hasSnapshot: s.snapshot !== null,
+    })),
+  );
   const [timedOut, setTimedOut] = useState(false);
-
-  const running = snapshot?.running.length ?? 0;
-  const paused = snapshot?.paused.length ?? 0;
-  const retrying = snapshot?.retrying.length ?? 0;
-  const maxAgents = snapshot?.maxConcurrentAgents ?? 0;
-  const agentMode = snapshot?.agentMode ?? '';
   const orchestratorState = running > 0 ? 'running' : 'idle';
   const pct = maxAgents > 0 ? Math.round((running / maxAgents) * 100) : 0;
 
   // After 6 s without a snapshot, flip from "Connecting" to "Disconnected"
   useEffect(() => {
-    if (snapshot ?? sseConnected) {
+    if (hasSnapshot || sseConnected) {
       setTimedOut(false);
       return;
     }
@@ -26,11 +31,11 @@ const AppHeader: React.FC = () => {
     return () => {
       clearTimeout(t);
     };
-  }, [snapshot, sseConnected]);
+  }, [hasSnapshot, sseConnected]);
 
   const liveLabel = sseConnected
     ? 'Live'
-    : snapshot
+    : hasSnapshot
       ? 'Reconnecting\u2026'
       : timedOut
         ? 'Disconnected'
@@ -38,49 +43,44 @@ const AppHeader: React.FC = () => {
 
   return (
     <header
-      className="sticky top-0 z-30 flex items-center gap-4 px-4 py-2 border-b text-sm"
-      style={{
-        background: 'var(--bg-soft)',
-        borderColor: 'var(--line)',
-      }}
+      className="sticky top-0 z-30 flex items-center gap-3 px-4 py-2 border-b text-sm bg-theme-bg-soft border-theme-line"
     >
+      {/* Mobile menu button */}
+      {onMenuClick && <MobileMenuButton onClick={onMenuClick} />}
+
       {/* Live pulse */}
       <span className="flex items-center gap-2">
         <span className="relative flex h-2.5 w-2.5">
           {running > 0 && (
             <span
-              className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75"
-              style={{ background: 'var(--success)' }}
+              className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 bg-theme-success"
             />
           )}
           <span
-            className="relative inline-flex h-2.5 w-2.5 rounded-full"
-            style={{ background: sseConnected ? 'var(--success)' : 'var(--danger)' }}
+            className={`relative inline-flex h-2.5 w-2.5 rounded-full ${sseConnected ? 'bg-theme-success' : 'bg-theme-danger'}`}
           />
         </span>
-        <span style={{ color: 'var(--text-secondary)' }}>{liveLabel}</span>
+        <span className="text-theme-text-secondary">{liveLabel}</span>
       </span>
 
       {/* Orchestrator state */}
       <span
-        className="font-mono text-xs px-2 py-0.5 rounded"
-        style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+        className="font-mono text-xs px-2 py-0.5 rounded bg-theme-bg-elevated text-theme-text-secondary"
       >
         {orchestratorState}
       </span>
 
       {/* Running count */}
       {running > 0 && (
-        <span className="flex items-center gap-1.5" style={{ color: 'var(--success)' }}>
+        <span className="flex items-center gap-1.5 text-theme-success">
           <strong>{running}</strong>
-          <span style={{ color: 'var(--text-secondary)' }}>running</span>
+          <span className="text-theme-text-secondary">running</span>
         </span>
       )}
 
       {paused > 0 && (
         <span
-          className="text-xs px-2 py-0.5 rounded-full"
-          style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+          className="text-xs px-2 py-0.5 rounded-full bg-theme-danger-soft text-theme-danger"
         >
           {paused} paused
         </span>
@@ -88,8 +88,7 @@ const AppHeader: React.FC = () => {
 
       {retrying > 0 && (
         <span
-          className="text-xs px-2 py-0.5 rounded-full"
-          style={{ background: 'var(--warning-soft)', color: 'var(--warning)' }}
+          className="text-xs px-2 py-0.5 rounded-full bg-theme-warning-soft text-theme-warning"
         >
           ↻ {retrying} retrying
         </span>
@@ -104,15 +103,14 @@ const AppHeader: React.FC = () => {
         </span>
       )}
 
-      {/* Capacity bar */}
+      {/* Capacity bar — hidden on mobile */}
       {maxAgents > 0 && (
-        <span className="flex items-center gap-2 ml-2">
-          <span style={{ color: 'var(--muted)' }} className="text-xs">
+        <span className="hidden md:flex items-center gap-2 ml-2">
+          <span className="text-xs text-theme-muted">
             capacity
           </span>
           <span
-            className="h-1.5 w-20 overflow-hidden rounded-full"
-            style={{ background: 'var(--bg-elevated)' }}
+            className="h-1.5 w-20 overflow-hidden rounded-full bg-theme-bg-elevated"
           >
             <span
               className="h-full rounded-full transition-all block"
@@ -128,8 +126,7 @@ const AppHeader: React.FC = () => {
             />
           </span>
           <span
-            className="font-mono text-xs"
-            style={{ color: 'var(--text-secondary)' }}
+            className="font-mono text-xs text-theme-text-secondary"
           >
             {running}/{maxAgents}
           </span>

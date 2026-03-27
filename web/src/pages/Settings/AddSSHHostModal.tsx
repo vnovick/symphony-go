@@ -1,5 +1,22 @@
-import { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { Modal } from '../../components/ui/modal';
+
+// ─── Zod schema — mirrors Go backend validation in config/validate.go ────────
+
+export const sshHostSchema = z.object({
+  host: z
+    .string()
+    .min(1, 'Host address is required.')
+    .regex(/^\S+$/, 'Must not contain spaces.')
+    .refine((h) => !h.startsWith('-'), 'Must not start with a dash.'),
+  description: z.string(),
+});
+
+export type SSHHostFormValues = z.infer<typeof sshHostSchema>;
+
+// ─── Component ───────────────────────────────────────────────────────────────
 
 interface AddSSHHostModalProps {
   isOpen: boolean;
@@ -7,66 +24,52 @@ interface AddSSHHostModalProps {
   onAdd: (host: string, description: string) => Promise<boolean>;
 }
 
-export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps) {
-  const [host, setHost] = useState('');
-  const [description, setDescription] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [hostType, setHostType] = useState<'ssh' | 'docker'>('ssh');
+const inputCls =
+  'w-full rounded-md border border-theme-line bg-theme-bg-soft text-theme-text text-[13px] px-2.5 py-2 outline-none';
+const labelCls = 'block text-xs font-medium mb-1 text-theme-text-secondary';
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!host.trim()) return;
-    setSaving(true);
-    const ok = await onAdd(host.trim(), description.trim());
-    setSaving(false);
+export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps) {
+  const {
+    register,
+    handleSubmit,
+    watch,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm<SSHHostFormValues>({
+    resolver: zodResolver(sshHostSchema),
+    defaultValues: { host: '', description: '' },
+  });
+
+  const hostValue = watch('host');
+
+  const onSubmit = handleSubmit(async (values) => {
+    const ok = await onAdd(values.host.trim(), values.description.trim());
     if (ok) {
-      setHost('');
-      setDescription('');
+      reset();
       onClose();
     }
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '8px 10px',
-    borderRadius: 6,
-    border: '1px solid var(--line)',
-    background: 'var(--bg-soft)',
-    color: 'var(--text)',
-    fontSize: 13,
-    outline: 'none',
-  };
-
-  const labelStyle: React.CSSProperties = {
-    display: 'block',
-    fontSize: 12,
-    fontWeight: 500,
-    marginBottom: 4,
-    color: 'var(--text-secondary)',
-  };
+  });
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} showCloseButton className="max-w-md p-6">
-      <h2 className="text-base font-semibold mb-4" style={{ color: 'var(--text)' }}>
+      <h2 className="text-base font-semibold mb-4 text-theme-text">
         Add Worker Host
       </h2>
 
       {/* Host type selector */}
       <div className="flex gap-2 mb-5">
-        <button
-          type="button"
-          onClick={() => { setHostType('ssh'); }}
-          className="flex-1 py-2.5 px-3 rounded-lg border-2 text-left transition-all"
+        <div
+          className="flex-1 py-2.5 px-3 rounded-lg border-2 text-left"
           style={{
-            borderColor: hostType === 'ssh' ? 'var(--accent)' : 'var(--line)',
-            background: hostType === 'ssh' ? 'rgba(99,102,241,0.06)' : 'transparent',
+            borderColor: 'var(--accent)',
+            background: 'rgba(99,102,241,0.06)',
           }}
         >
-          <div className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>SSH</div>
-          <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-[13px] font-semibold text-theme-text">SSH</div>
+          <div className="text-[11px] mt-0.5 text-theme-text-secondary">
             Remote host via SSH
           </div>
-        </button>
+        </div>
         <button
           type="button"
           disabled
@@ -75,7 +78,7 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
           title="Coming in a future release"
         >
           <div className="flex items-center gap-1.5">
-            <span className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>Docker</span>
+            <span className="text-[13px] font-semibold text-theme-text">Docker</span>
             <span
               className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
               style={{ background: 'rgba(99,102,241,0.12)', color: '#818cf8' }}
@@ -83,41 +86,43 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
               Soon
             </span>
           </div>
-          <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+          <div className="text-[11px] mt-0.5 text-theme-text-secondary">
             Ephemeral containers
           </div>
         </button>
       </div>
 
-      <form onSubmit={(e) => { void handleSubmit(e); }} className="space-y-4">
+      <form onSubmit={(e) => { void onSubmit(e); }} className="space-y-4">
         <div>
-          <label style={labelStyle}>
-            Host address <span style={{ color: 'var(--danger)' }}>*</span>
+          <label className={labelCls}>
+            Host address <span className="text-theme-danger">*</span>
           </label>
           <input
-            style={inputStyle}
+            className={inputCls}
             type="text"
-            value={host}
-            onChange={(e) => { setHost(e.target.value); }}
             placeholder="build-server.example.com or 192.168.1.10:22"
             autoFocus
-            required
+            {...register('host')}
           />
-          <p className="mt-1 text-[11px]" style={{ color: 'var(--muted)' }}>
-            Use <code style={{ background: 'var(--bg-soft)', padding: '0 3px', borderRadius: 3 }}>host</code> or{' '}
-            <code style={{ background: 'var(--bg-soft)', padding: '0 3px', borderRadius: 3 }}>host:port</code>.
+          {errors.host && (
+            <p role="alert" className="mt-1 text-xs text-theme-danger">
+              {errors.host.message}
+            </p>
+          )}
+          <p className="mt-1 text-[11px] text-theme-muted">
+            Use <code className="bg-theme-bg-soft px-0.5 rounded">host</code> or{' '}
+            <code className="bg-theme-bg-soft px-0.5 rounded">host:port</code>.
             Defaults to port 22.
           </p>
         </div>
 
         <div>
-          <label style={labelStyle}>Description (optional)</label>
+          <label className={labelCls}>Description (optional)</label>
           <input
-            style={inputStyle}
+            className={inputCls}
             type="text"
-            value={description}
-            onChange={(e) => { setDescription(e.target.value); }}
             placeholder="e.g. Build server — 32 cores, 64 GB RAM"
+            {...register('description')}
           />
         </div>
 
@@ -140,7 +145,7 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
             className="rounded px-2.5 py-1.5 text-[11px] font-mono select-all"
             style={{ background: 'rgba(0,0,0,0.15)', color: '#fbbf24' }}
           >
-            {`ssh-keyscan -H ${host.trim() || '<host>'} >> ~/.ssh/known_hosts`}
+            {`ssh-keyscan -H ${hostValue.trim() || '<host>'} >> ~/.ssh/known_hosts`}
           </pre>
         </div>
 
@@ -148,34 +153,16 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
           <button
             type="button"
             onClick={onClose}
-            style={{
-              padding: '7px 16px',
-              borderRadius: 6,
-              fontSize: 13,
-              cursor: 'pointer',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--line)',
-            }}
+            className="rounded-md border border-theme-line px-4 py-1.5 text-[13px] text-theme-text-secondary"
           >
             Cancel
           </button>
           <button
             type="submit"
-            disabled={saving || !host.trim()}
-            style={{
-              padding: '7px 16px',
-              borderRadius: 6,
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: saving || !host.trim() ? 'not-allowed' : 'pointer',
-              background: 'var(--accent)',
-              color: '#fff',
-              border: 'none',
-              opacity: saving || !host.trim() ? 0.6 : 1,
-            }}
+            disabled={isSubmitting}
+            className="rounded-md px-4 py-1.5 text-[13px] font-semibold text-white bg-theme-accent disabled:opacity-60"
           >
-            {saving ? 'Adding…' : 'Add host'}
+            {isSubmitting ? 'Adding…' : 'Add host'}
           </button>
         </div>
       </form>
