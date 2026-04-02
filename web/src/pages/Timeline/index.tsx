@@ -47,13 +47,18 @@ export default function Timeline() {
       .map(([identifier, runs]) => {
         const hasLive = runs.some((r) => r.status === 'live');
         const hasFailed = runs.some((r) => r.status === 'failed');
+        const hasInputRequired = runs.some((r) => r.status === 'input_required');
         const latestStatus: NormalisedSession['status'] = hasLive
           ? 'live'
-          : hasFailed
-            ? 'failed'
-            : runs.every((r) => r.status === 'succeeded')
-              ? 'succeeded'
-              : 'cancelled';
+          : hasInputRequired
+            ? 'input_required'
+            : hasFailed
+              ? 'failed'
+              : runs.every((r) => r.status === 'succeeded')
+                ? 'succeeded'
+                : runs.some((r) => r.status === 'stalled')
+                  ? 'stalled'
+                  : 'cancelled';
         const latestStartedAt = runs[runs.length - 1].startedAt;
         return { identifier, runs, latestStatus, latestStartedAt };
       })

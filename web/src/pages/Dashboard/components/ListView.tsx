@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import Badge from '../../../components/ui/badge/Badge';
-import type { TrackerIssue } from '../../../types/schemas';
+import type { TrackerIssue, ProfileDef } from '../../../types/schemas';
 import { useCancelIssue, useResumeIssue } from '../../../queries/issues';
 import { orchDotClass, stateBadgeColor, EMPTY_PROFILE_LABEL } from '../../../utils/format';
 
@@ -15,14 +15,35 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
   );
 }
 
+function resolveBackend(
+  profile: string | undefined,
+  profileDefs: Record<string, ProfileDef> | undefined,
+  runningBackend: string | undefined,
+  defaultBackend: string | undefined,
+): 'claude' | 'codex' {
+  if (runningBackend) return /codex/i.test(runningBackend) ? 'codex' : 'claude';
+  if (profile && profileDefs?.[profile]) {
+    const def = profileDefs[profile];
+    const hint = def.backend || def.command || '';
+    if (hint) return /codex/i.test(hint) ? 'codex' : 'claude';
+  }
+  const fallback = defaultBackend || '';
+  return /codex/i.test(fallback) ? 'codex' : 'claude';
+}
+
 interface ListViewProps {
   issues: TrackerIssue[];
   onSelect: (id: string) => void;
   availableProfiles: string[];
+  profileDefs?: Record<string, ProfileDef>;
+  runningBackendByIdentifier?: Record<string, string>;
+  defaultBackend?: string;
+  backlogStates?: string[];
   onProfileChange: (identifier: string, profile: string) => void;
 }
 
-export function ListView({ issues, onSelect, availableProfiles, onProfileChange }: ListViewProps) {
+export function ListView({ issues, onSelect, availableProfiles, profileDefs, runningBackendByIdentifier, defaultBackend, backlogStates, onProfileChange }: ListViewProps) {
+  const backlogSet = useMemo(() => new Set(backlogStates ?? []), [backlogStates]);
   const [sortKey, setSortKey] = useState<SortKey>('identifier');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const cancelIssueMutation = useCancelIssue();
@@ -71,6 +92,7 @@ export function ListView({ issues, onSelect, availableProfiles, onProfileChange 
               <th className={thClass} style={thStyle} onClick={() => { handleSort('state'); }}>
                 State <SortIcon active={sortKey === 'state'} dir={sortDir} />
               </th>
+              <th className={thClass} style={thStyle}>Backend</th>
               <th className={thClass} style={thStyle}>Agent</th>
               <th className={thClass} style={thStyle}>Actions</th>
             </tr>
@@ -78,7 +100,7 @@ export function ListView({ issues, onSelect, availableProfiles, onProfileChange 
           <tbody className="border-t border-theme-line">
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-sm text-theme-muted">
+                <td colSpan={6} className="px-4 py-10 text-center text-sm text-theme-muted">
                   No issues match the current filters
                 </td>
               </tr>
@@ -115,24 +137,49 @@ export function ListView({ issues, onSelect, availableProfiles, onProfileChange 
                     {issue.state}
                   </Badge>
                 </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {(() => {
+                    const b = resolveBackend(issue.agentProfile, profileDefs, runningBackendByIdentifier?.[issue.identifier], defaultBackend);
+                    return (
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        b === 'codex'
+                          ? 'bg-emerald-500/15 text-emerald-400'
+                          : 'bg-orange-500/15 text-orange-400'
+                      }`}>
+                        {b === 'codex' ? 'Codex' : 'Claude'}
+                      </span>
+                    );
+                  })()}
+                </td>
                 <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => { e.stopPropagation(); }}>
-                  {availableProfiles.length > 0 ? (
-                    <select
-                      value={issue.agentProfile ?? ''}
-                      onChange={(e) => { onProfileChange(issue.identifier, e.target.value); }}
-                      className="rounded px-1.5 py-0.5 text-xs focus:outline-none border border-theme-line bg-theme-bg-elevated text-theme-text-secondary"
-                    >
-                      <option value="">{EMPTY_PROFILE_LABEL}</option>
-                      {availableProfiles.map((p) => (
-                        <option key={p} value={p}>{p}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-xs text-theme-muted">
-                      <span className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`} />
-                      {issue.orchestratorState}
-                    </span>
-                  )}
+                  {(() => {
+                    const isEditable = backlogSet.has(issue.state) && availableProfiles.length > 0;
+                    if (isEditable) {
+                      return (
+                        <select
+                          value={issue.agentProfile ?? ''}
+                          onChange={(e) => { onProfileChange(issue.identifier, e.target.value); }}
+                          className="rounded px-1.5 py-0.5 text-xs focus:outline-none border border-theme-line bg-theme-bg-elevated text-theme-text-secondary"
+                        >
+                          <option value="">{EMPTY_PROFILE_LABEL}</option>
+                          {availableProfiles.map((p) => (
+                            <option key={p} value={p}>{p}</option>
+                          ))}
+                        </select>
+                      );
+                    }
+                    return (
+                      <span className="inline-flex items-center gap-1 text-xs text-theme-muted">
+                        <span className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`} />
+                        {issue.orchestratorState || 'idle'}
+                        {issue.agentProfile && (
+                          <span className="ml-1 rounded border border-theme-line px-1 py-0.5 text-[10px]">
+                            {issue.agentProfile}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => { e.stopPropagation(); }}>
                   {issue.orchestratorState === 'running' && (

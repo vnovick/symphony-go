@@ -6,30 +6,13 @@ import { useIssues, useClearIssueLogs } from '../../queries/issues';
 import { useIssueLogs, useLogIdentifiers } from '../../queries/logs';
 import { orchDotClass } from '../../utils/format';
 import { Terminal } from '../../components/ui/Terminal/Terminal';
-import type { LogEntry, LogLevel } from '../../components/ui/Terminal/Terminal';
-import type { IssueLogEntry } from '../../types/schemas';
-import type { RunningRow, RetryRow } from '../../types/schemas';
+import { EMPTY_RUNNING, EMPTY_RETRYING } from '../../utils/constants';
+import { issueLogToTerminal } from '../../utils/logFormatting';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const EMPTY_RUNNING: RunningRow[] = [];
-const EMPTY_RETRYING: RetryRow[] = [];
-
 const FILTER_CHIPS = ['text', 'action', 'subagent', 'warn', 'error'] as const;
 type FilterChip = (typeof FILTER_CHIPS)[number];
-
-function entryToLevel(entry: IssueLogEntry): LogLevel {
-  if (entry.event === 'action') return 'action';
-  if (entry.event === 'subagent') return 'subagent';
-  if (entry.event === 'warn') return 'warn';
-  if (entry.event === 'error' || entry.level === 'ERROR') return 'error';
-  return 'info';
-}
-
-function entryToLogEntry(entry: IssueLogEntry, idx: number): LogEntry {
-  const text = entry.tool ? `${entry.tool}  ${entry.message}` : entry.message;
-  return { ts: idx, level: entryToLevel(entry), message: text };
-}
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -125,7 +108,7 @@ export default function Logs() {
     [entries, activeChips],
   );
 
-  const logEntries = useMemo(() => filteredEntries.map(entryToLogEntry), [filteredEntries]);
+  const logEntries = useMemo(() => filteredEntries.map(issueLogToTerminal), [filteredEntries]);
 
   return (
     <>

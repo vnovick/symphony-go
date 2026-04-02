@@ -3,7 +3,6 @@ package agent
 import (
 	"archive/tar"
 	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -44,24 +43,21 @@ func (LocalSublogFetcher) FetchSubLogs(_ context.Context, dir string) ([]domain.
 // SSHSublogFetcher fetches session logs from a remote host over SSH.
 type SSHSublogFetcher struct{ Host string }
 
-func (s SSHSublogFetcher) FetchSubLogs(_ context.Context, dir string) ([]domain.IssueLogEntry, error) {
-	return sshFetchLogs(s.Host, dir)
+func (s SSHSublogFetcher) FetchSubLogs(ctx context.Context, dir string) ([]domain.IssueLogEntry, error) {
+	return sshFetchLogs(ctx, s.Host, dir)
 }
 
 // sshFetchLogs fetches and parses session logs from a remote host using
 // short-lived ssh exec calls. Returns nil when the remote directory is absent.
-// Files named "codex-session.jsonl" are parsed with ParseCodexLine; all other
+// Files named "codex-*.jsonl" are parsed with ParseCodexLine; all other
 // .jsonl files are parsed with ParseLine (Claude Code stream-json format).
 //
 // Session IDs are derived from filenames so each log entry is stamped with the
 // session that produced it — matching the behaviour of the local ParseSessionLogs
 // path and enabling per-run log isolation in the Timeline view.
-func sshFetchLogs(host, dir string) ([]domain.IssueLogEntry, error) {
-	claudeEntries := sshFetchClaude(host, dir)
-	codexEntries := sshFetchWithParserMulti(host, dir,
-		`cat %s/codex-session.jsonl 2>/dev/null || true`,
-		ParseCodexLine,
-	)
+func sshFetchLogs(ctx context.Context, host, dir string) ([]domain.IssueLogEntry, error) {
+	claudeEntries := sshFetchClaude(ctx, host, dir)
+	codexEntries := sshFetchCodex(ctx, host, dir)
 
 	all := append(claudeEntries, codexEntries...)
 	if len(all) > maxSubLogLines {
@@ -70,19 +66,26 @@ func sshFetchLogs(host, dir string) ([]domain.IssueLogEntry, error) {
 	return all, nil
 }
 
+// isCodexLogFile returns true for filenames matching "codex-*.jsonl"
+// (including the legacy "codex-session.jsonl").
+func isCodexLogFile(name string) bool {
+	return strings.HasPrefix(name, "codex-") && strings.HasSuffix(name, ".jsonl")
+}
+
 // sshFetchClaude fetches all Claude .jsonl session files from dir on host in a
 // single SSH connection. The remote produces a tar archive; the Go client reads
 // it with archive/tar so session IDs come from tar header filenames — the same
 // source as the local readJSONLFile path. No sentinel string parsing required.
 //
 // Remote requirement: tar must be available on the SSH host (standard on Linux/macOS).
-func sshFetchClaude(host, dir string) []domain.IssueLogEntry {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func sshFetchClaude(ctx context.Context, host, dir string) []domain.IssueLogEntry {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Collect matching files into a variable first so we can skip the tar call
 	// entirely when none exist (tar with zero arguments is an error on some platforms).
-	script := `files=$(find ` + shellQuote(dir) + ` -maxdepth 1 -name '*.jsonl' ! -name 'codex-session.jsonl' 2>/dev/null | sort); ` +
+	// Exclude all codex-*.jsonl files (handled by sshFetchCodex).
+	script := `files=$(find ` + shellQuote(dir) + ` -maxdepth 1 -name '*.jsonl' ! -name 'codex-*.jsonl' 2>/dev/null | sort); ` +
 		`[ -n "$files" ] && tar -cf - -C ` + shellQuote(dir) + ` $(basename -a $files) 2>/dev/null || true`
 
 	cmd := exec.CommandContext(ctx, "ssh",
@@ -126,13 +129,15 @@ func sshFetchClaude(host, dir string) []domain.IssueLogEntry {
 	return entries
 }
 
-// sshFetchWithParserMulti runs a shell script on host and converts each output line
-// using parseFn (which may produce multiple entries per line).
-func sshFetchWithParserMulti(host, dir, scriptFmt string, parseFn func([]byte) (StreamEvent, error)) []domain.IssueLogEntry {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// sshFetchCodex fetches all codex-*.jsonl session files from dir on host using
+// tar-over-SSH — the same approach as sshFetchClaude but with ParseCodexLine.
+func sshFetchCodex(ctx context.Context, host, dir string) []domain.IssueLogEntry {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	script := fmt.Sprintf(scriptFmt, shellQuote(dir))
+	script := `files=$(find ` + shellQuote(dir) + ` -maxdepth 1 -name 'codex-*.jsonl' 2>/dev/null | sort); ` +
+		`[ -n "$files" ] && tar -cf - -C ` + shellQuote(dir) + ` $(basename -a $files) 2>/dev/null || true`
+
 	cmd := exec.CommandContext(ctx, "ssh",
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "BatchMode=yes",
@@ -140,20 +145,36 @@ func sshFetchWithParserMulti(host, dir, scriptFmt string, parseFn func([]byte) (
 		host,
 		"bash", "-c", script,
 	)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		slog.Warn("logtailer: ssh command failed", "host", host, "error", err)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		slog.Warn("logtailer: ssh stdout pipe failed (codex)", "host", host, "error", err)
 		return nil
 	}
+	if err := cmd.Start(); err != nil {
+		slog.Warn("logtailer: ssh start failed (codex)", "host", host, "error", err)
+		return nil
+	}
+	defer func() { _ = cmd.Wait() }()
 
 	var entries []domain.IssueLogEntry
-	scanner := newMaxScanner(&out)
-	for scanner.Scan() {
-		entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), parseFn, "")...)
-	}
-	if scanner.Err() != nil {
-		slog.Warn("logtailer: scanner error in ssh output", "host", host, "error", scanner.Err())
+	tr := tar.NewReader(stdout)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			slog.Warn("logtailer: tar read error (codex), returning partial results", "host", host, "error", err)
+			break
+		}
+		sessionID := strings.TrimSuffix(filepath.Base(hdr.Name), ".jsonl")
+		scanner := newMaxScanner(tr)
+		for scanner.Scan() {
+			entries = append(entries, streamLineToEntriesWith(scanner.Bytes(), ParseCodexLine, sessionID)...)
+		}
+		if scanner.Err() != nil {
+			slog.Warn("logtailer: scanner error in tar entry (codex)", "host", host, "file", hdr.Name, "error", scanner.Err())
+		}
 	}
 	return entries
 }
@@ -162,73 +183,17 @@ func sshFetchWithParserMulti(host, dir, scriptFmt string, parseFn func([]byte) (
 // sessionID is stamped on every returned entry.
 // Returns (entry, false) when the line should be skipped.
 func streamLineToEntry(line []byte, sessionID string) (domain.IssueLogEntry, bool) {
-	ev, err := ParseLine(line)
-	if err != nil {
+	entries := streamLineToEntriesWith(line, ParseLine, sessionID)
+	if len(entries) == 0 {
 		return domain.IssueLogEntry{}, false
 	}
-
-	switch ev.Type {
-	case EventAssistant:
-		if ev.InProgress {
-			return domain.IssueLogEntry{}, false
-		}
-		var entries []domain.IssueLogEntry
-		// Emit one entry per text block.
-		for _, text := range ev.TextBlocks {
-			if strings.TrimSpace(text) == "" {
-				continue
-			}
-			entries = append(entries, domain.IssueLogEntry{
-				Level:     "INFO",
-				Event:     "text",
-				Message:   text,
-				SessionID: sessionID,
-			})
-		}
-		// Emit one action entry per tool call.
-		for _, tc := range ev.ToolCalls {
-			name := tc.Name
-			desc := toolDescription(name, tc.Input)
-			msg := name
-			if desc != "" {
-				msg = name + " — " + desc
-			}
-			entries = append(entries, domain.IssueLogEntry{
-				Level:     "INFO",
-				Event:     "action",
-				Message:   msg,
-				Tool:      name,
-				SessionID: sessionID,
-			})
-		}
-		if len(entries) == 0 {
-			return domain.IssueLogEntry{}, false
-		}
-		return entries[0], true // caller only takes one; multiple handled below
-
-	case EventResult:
-		if ev.IsError {
-			return domain.IssueLogEntry{
-				Level:     "ERROR",
-				Event:     "error",
-				Message:   ev.ResultText,
-				SessionID: sessionID,
-			}, true
-		}
-		return domain.IssueLogEntry{}, false
-
-	case EventSystem:
-		return domain.IssueLogEntry{}, false // skip session-start metadata
-
-	default:
-		return domain.IssueLogEntry{}, false
-	}
+	return entries[0], true
 }
 
 // parseSessionLogsMulti reads all *.jsonl files in dir, parses each line, and
 // returns all entries from a stream event (e.g., a turn with both text blocks
 // and tool calls). This is the full-fidelity version used by the API.
-// Files named "codex-session.jsonl" are parsed with ParseCodexLine; all other
+// Files matching "codex-*.jsonl" are parsed with ParseCodexLine; all other
 // .jsonl files are parsed with ParseLine (Claude Code stream-json format).
 // Returns nil (not an error) when dir does not exist or contains no files.
 func parseSessionLogsMulti(dir string) ([]domain.IssueLogEntry, error) {
@@ -247,7 +212,7 @@ func parseSessionLogsMulti(dir string) ([]domain.IssueLogEntry, error) {
 		}
 		path := filepath.Join(dir, e.Name())
 		parseFn := ParseLine
-		if e.Name() == "codex-session.jsonl" {
+		if isCodexLogFile(e.Name()) {
 			parseFn = ParseCodexLine
 		}
 		lines, err := readJSONLFileMultiWith(path, parseFn)

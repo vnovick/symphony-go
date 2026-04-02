@@ -129,3 +129,54 @@ func isInputRequiredMsg(msg string) bool {
 		strings.Contains(lower, "user input") ||
 		strings.Contains(lower, "confirmation required")
 }
+
+// contentQuestionPatterns are phrases that indicate an agent's successful output
+// is soliciting user input. Checked against the last ~2000 chars of output.
+var contentQuestionPatterns = []string{
+	"questions for you",
+	"please answer",
+	"how would you like to proceed",
+	"how do you want to proceed",
+	"what would you like",
+	"which option do you prefer",
+	"please let me know",
+	"awaiting your input",
+	"awaiting your response",
+	"your input is needed",
+	"please provide",
+	"please confirm",
+	"do you want me to",
+	"should i proceed",
+	"shall i proceed",
+	"which approach",
+	"which is higher priority",
+	"please select",
+	"let me know how you'd like",
+	"let me know how you would like",
+	"what are your thoughts",
+	"i need your guidance",
+	"waiting for your decision",
+}
+
+// IsContentInputRequired returns true when a successful agent output contains
+// patterns indicating the agent is soliciting user input (e.g. "Questions for you",
+// "How would you like to proceed"). Unlike isInputRequiredMsg which checks error
+// messages for CLI-level blocks, this checks successful output for content-level
+// questions that require a human response.
+func IsContentInputRequired(text string) bool {
+	if len(text) == 0 {
+		return false
+	}
+	// Only scan the tail of the output — questions typically appear at the end.
+	const tailSize = 2000
+	if len(text) > tailSize {
+		text = text[len(text)-tailSize:]
+	}
+	lower := strings.ToLower(text)
+	for _, pattern := range contentQuestionPatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}

@@ -19,6 +19,7 @@ type BufLogEntry struct {
 	Task        string `json:"task,omitempty"`
 	URL         string `json:"url,omitempty"`
 	Summary     string `json:"summary,omitempty"`
+	Detail      string `json:"detail,omitempty"`
 	SessionID   string `json:"session_id,omitempty"`
 }
 

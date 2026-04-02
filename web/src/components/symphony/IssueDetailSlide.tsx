@@ -1,7 +1,15 @@
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect } from 'react';
+
+const LazyMarkdown = React.lazy(() =>
+  Promise.all([import('react-markdown'), import('remark-gfm')]).then(
+    ([{ default: ReactMarkdown }, { default: remarkGfm }]) => ({
+      default: (props: { children: string }) => (
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.children}</ReactMarkdown>
+      ),
+    }),
+  ),
+);
 import { useSymphonyStore } from '../../store/symphonyStore';
 import Badge from '../ui/badge/Badge';
 import { SlidePanel } from '../ui/SlidePanel/SlidePanel';
@@ -11,8 +19,9 @@ import {
   useCancelIssue,
   useResumeIssue,
   useTerminateIssue,
-  useTriggerAIReview,
   useSetIssueProfile,
+  useProvideInput,
+  useDismissInput,
   ISSUES_KEY,
 } from '../../queries/issues';
 import { stateBadgeColor, EMPTY_PROFILE_LABEL, EMPTY_PROFILES, proseClass } from '../../utils/format';
@@ -32,8 +41,10 @@ export default function IssueDetailSlide() {
   const cancelIssueMutation = useCancelIssue();
   const terminateIssueMutation = useTerminateIssue();
   const resumeIssueMutation = useResumeIssue();
-  const triggerAIReviewMutation = useTriggerAIReview();
   const setIssueProfileMutation = useSetIssueProfile();
+  const provideInputMutation = useProvideInput();
+  const dismissInputMutation = useDismissInput();
+  const [replyText, setReplyText] = useState('');
 
   const close = useCallback(() => {
     setSelectedIdentifier(null);
@@ -199,7 +210,9 @@ export default function IssueDetailSlide() {
           </h4>
           {issue.description ? (
             <div className={proseClass}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{issue.description}</ReactMarkdown>
+              <Suspense fallback={<div className="animate-pulse">Loading...</div>}>
+                <LazyMarkdown>{issue.description}</LazyMarkdown>
+              </Suspense>
             </div>
           ) : (
             <p className="text-sm italic text-theme-muted">No description</p>
@@ -241,10 +254,60 @@ export default function IssueDetailSlide() {
                     )}
                   </div>
                   <div className={proseClass}>
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{c.body}</ReactMarkdown>
+                    <Suspense fallback={<div className="animate-pulse">Loading...</div>}>
+                      <LazyMarkdown>{c.body}</LazyMarkdown>
+                    </Suspense>
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Input Required — reply UI */}
+        {issue.orchestratorState === 'input_required' && (
+          <div className="rounded-lg border p-4 space-y-3 border-orange-500/30 bg-orange-500/5">
+            <div className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
+              <h4 className="text-sm font-semibold text-orange-400">
+                Agent needs your input
+              </h4>
+            </div>
+            {issue.error && (
+              <div className={proseClass}>
+                <Suspense fallback={<div className="animate-pulse">Loading...</div>}>
+                  <LazyMarkdown>{issue.error}</LazyMarkdown>
+                </Suspense>
+              </div>
+            )}
+            <textarea
+              value={replyText}
+              onChange={(e) => { setReplyText(e.target.value); }}
+              placeholder="Type your reply… (will be posted as a comment to the tracker)"
+              rows={4}
+              className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-orange-400 border-theme-line bg-theme-bg-elevated text-theme-text placeholder:text-theme-muted"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  if (!replyText.trim()) return;
+                  provideInputMutation.mutate(
+                    { identifier: issue.identifier, message: replyText.trim() },
+                    { onSuccess: () => { setReplyText(''); } },
+                  );
+                }}
+                disabled={provideInputMutation.isPending || !replyText.trim()}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50 bg-orange-500"
+              >
+                {provideInputMutation.isPending ? 'Sending…' : 'Reply & Resume Agent'}
+              </button>
+              <button
+                onClick={() => { dismissInputMutation.mutate(issue.identifier); }}
+                disabled={dismissInputMutation.isPending}
+                className="rounded-lg px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-50 text-theme-text-secondary bg-theme-bg-soft"
+              >
+                {dismissInputMutation.isPending ? 'Dismissing…' : 'Dismiss'}
+              </button>
             </div>
           </div>
         )}
@@ -254,21 +317,12 @@ export default function IssueDetailSlide() {
       {(issue.orchestratorState === 'running' ||
         issue.orchestratorState === 'retrying' ||
         issue.orchestratorState === 'paused' ||
+        issue.orchestratorState === 'input_required' ||
         isInReview) && (
         <div
           className="flex-shrink-0 flex items-center justify-between gap-3 border-t px-5 py-4 border-theme-line"
         >
-          {/* AI Review button (in-review state) */}
-          {isInReview && (
-            <button
-              onClick={() => { triggerAIReviewMutation.mutate(issue.identifier); }}
-              disabled={triggerAIReviewMutation.isPending}
-              className="rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
-              style={{ background: 'var(--purple)' }}
-            >
-              {triggerAIReviewMutation.isPending ? 'Dispatching…' : '✦ AI Review'}
-            </button>
-          )}
+          {/* AI Review button removed — feature not yet ready for production */}
 
           <div className="ml-auto flex items-center gap-2">
             {/* Paused state */}

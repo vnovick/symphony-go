@@ -2,9 +2,7 @@ import { useState, useCallback } from 'react';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import { useCancelIssue } from '../../queries/issues';
 import { SessionAccordion } from './SessionAccordion';
-import type { RetryRow } from '../../types/schemas';
-
-const EMPTY_RETRYING: RetryRow[] = [];
+import { EMPTY_RETRYING } from '../../utils/constants';
 
 function fmtDueAt(dueAt: string): string {
   const diff = new Date(dueAt).getTime() - Date.now();

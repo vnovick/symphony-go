@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Outlet } from 'react-router';
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSymphonySSE } from './hooks/useSymphonySSE';
 import { useLogStream } from './hooks/useLogStream';
@@ -8,9 +8,12 @@ import { ISSUES_KEY } from './queries/issues';
 import { logIdentifiersKey } from './queries/logs';
 import IssueDetailSlide from './components/symphony/IssueDetailSlide';
 import Toast from './components/common/Toast';
+import { PageErrorBoundary } from './components/common/PageErrorBoundary';
 import { NavLink } from './components/layout/NavLink';
 import { ThemeToggle } from './components/ui/ThemeToggle/ThemeToggle';
 import AppHeader from './layout/AppHeader';
+import { useFocusTrap } from './hooks/useFocusTrap';
+import { useMultiTabWarning } from './hooks/useMultiTabWarning';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
@@ -62,6 +65,22 @@ function SidebarContent() {
 
 function AppShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const drawerRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(drawerRef, mobileNavOpen);
+
+  const closeMobileNav = useCallback(() => { setMobileNavOpen(false); }, []);
+
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeMobileNav();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => { document.removeEventListener('keydown', handleKeyDown); };
+  }, [mobileNavOpen, closeMobileNav]);
 
   return (
     <div className="min-h-screen flex">
@@ -74,6 +93,10 @@ function AppShell() {
 
       {/* Mobile nav drawer — slides from left */}
       <div
+        ref={drawerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Navigation"
         className={`md:hidden fixed inset-0 z-50 transition-opacity duration-200 ${
           mobileNavOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
         }`}
@@ -81,7 +104,11 @@ function AppShell() {
         <div
           className="absolute inset-0"
           style={{ background: 'rgba(0,0,0,0.5)' }}
-          onClick={() => { setMobileNavOpen(false); }}
+          aria-label="Close navigation"
+          role="button"
+          tabIndex={0}
+          onClick={closeMobileNav}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') closeMobileNav(); }}
         />
         <aside
           className={`absolute left-0 top-0 bottom-0 w-16 flex flex-col items-center py-4 gap-2 border-r bg-theme-bg-soft border-theme-line transition-transform duration-200 ${
@@ -133,6 +160,7 @@ function AppWithSSE() {
   useSymphonySSE();
   useLogStream();
   useSnapshotInvalidation();
+  useMultiTabWarning();
 
   const refreshSnapshot = useSymphonyStore((s) => s.refreshSnapshot);
   useEffect(() => {
@@ -147,7 +175,9 @@ function AppWithSSE() {
             index
             element={
               <Suspense fallback={<PageLoader />}>
-                <Dashboard />
+                <PageErrorBoundary>
+                  <Dashboard />
+                </PageErrorBoundary>
               </Suspense>
             }
           />
@@ -155,7 +185,9 @@ function AppWithSSE() {
             path="/timeline"
             element={
               <Suspense fallback={<PageLoader />}>
-                <Timeline />
+                <PageErrorBoundary>
+                  <Timeline />
+                </PageErrorBoundary>
               </Suspense>
             }
           />
@@ -163,7 +195,9 @@ function AppWithSSE() {
             path="/logs"
             element={
               <Suspense fallback={<PageLoader />}>
-                <Logs />
+                <PageErrorBoundary>
+                  <Logs />
+                </PageErrorBoundary>
               </Suspense>
             }
           />
@@ -171,7 +205,9 @@ function AppWithSSE() {
             path="/settings"
             element={
               <Suspense fallback={<PageLoader />}>
-                <Settings />
+                <PageErrorBoundary>
+                  <Settings />
+                </PageErrorBoundary>
               </Suspense>
             }
           />
@@ -180,7 +216,9 @@ function AppWithSSE() {
           path="*"
           element={
             <Suspense fallback={<PageLoader />}>
-              <NotFound />
+              <PageErrorBoundary>
+                <NotFound />
+              </PageErrorBoundary>
             </Suspense>
           }
         />

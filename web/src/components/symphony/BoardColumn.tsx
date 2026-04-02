@@ -34,6 +34,7 @@ function DraggableCard({
   availableProfiles,
   profileDefs,
   runningBackendByIdentifier,
+  defaultBackend,
   onProfileChange,
   onDispatch,
 }: {
@@ -46,6 +47,7 @@ function DraggableCard({
   availableProfiles?: string[];
   profileDefs?: Record<string, ProfileDef>;
   runningBackendByIdentifier?: Record<string, string>;
+  defaultBackend?: string;
   onProfileChange?: (identifier: string, profile: string) => void;
   onDispatch?: (identifier: string) => void;
 }) {
@@ -100,6 +102,7 @@ function DraggableCard({
         availableProfiles={availableProfiles}
         profileDefs={profileDefs}
         runningBackend={runningBackendByIdentifier?.[issue.identifier]}
+        defaultBackend={defaultBackend}
         onProfileChange={onProfileChange}
         onDispatch={onDispatch}
       />
@@ -121,6 +124,7 @@ interface ColumnProps {
   availableProfiles?: string[];
   profileDefs?: Record<string, ProfileDef>;
   runningBackendByIdentifier?: Record<string, string>;
+  defaultBackend?: string;
   onProfileChange?: (identifier: string, profile: string) => void;
   onDispatch?: (identifier: string) => void;
   /** Show (?) info button next to column header */
@@ -138,6 +142,7 @@ export default function BoardColumn({
   availableProfiles,
   profileDefs,
   runningBackendByIdentifier,
+  defaultBackend,
   onProfileChange,
   onDispatch,
   onInfoClick,
@@ -203,6 +208,7 @@ export default function BoardColumn({
             availableProfiles={availableProfiles}
             profileDefs={profileDefs}
             runningBackendByIdentifier={runningBackendByIdentifier}
+            defaultBackend={defaultBackend}
             onProfileChange={onProfileChange}
             onDispatch={onDispatch}
           />

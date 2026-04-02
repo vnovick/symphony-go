@@ -2,7 +2,6 @@ import { useShallow } from 'zustand/react/shallow';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import { useSettingsActions } from '../../hooks/useSettingsActions';
 import PageMeta from '../../components/common/PageMeta';
-import type { ProfileDef } from '../../types/schemas';
 import { ProfilesCard } from './ProfilesCard';
 import { TrackerStatesCard } from './TrackerStatesCard';
 import { WorkspaceCard } from './WorkspaceCard';
@@ -12,9 +11,7 @@ import { CapacityCard } from './CapacityCard';
 import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
 import { useClearAllLogs, useClearAllWorkspaces } from '../../queries/issues';
 import { useQueryClient } from '@tanstack/react-query';
-
-const EMPTY_PROFILE_DEFS: Record<string, ProfileDef> = {};
-const EMPTY_STATES: string[] = [];
+import { EMPTY_PROFILE_DEFS, EMPTY_STATES } from '../../utils/constants';
 
 export default function Settings() {
   const { activeStates, terminalStates, completionState, autoClearWorkspace } = useSymphonyStore(

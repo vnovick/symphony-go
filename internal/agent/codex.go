@@ -27,6 +27,15 @@ func ValidateCodexCLI() error {
 	return validateCLI("codex", "ensure 'codex' is installed and on PATH, or set OPENAI_API_KEY")
 }
 
+// ValidateCodexCLICommand is like ValidateCodexCLI but validates a specific
+// command path. Falls back to ValidateCodexCLI when command is empty or "codex".
+func ValidateCodexCLICommand(command string) error {
+	if command == "" || command == "codex" {
+		return ValidateCodexCLI()
+	}
+	return validateCLI(command, "ensure 'codex' is installed and on PATH, or set OPENAI_API_KEY")
+}
+
 // RunTurn runs a single codex turn as a subprocess.
 //
 // Fresh turn (sessionID == nil):
@@ -50,12 +59,16 @@ func (c *CodexRunner) RunTurn(
 	}
 	defer cancel()
 
+	// Generate a unique log filename per turn so multi-turn and multi-run logs
+	// don't overwrite each other — matching Claude Code's per-session file behavior.
+	logFileName := fmt.Sprintf("codex-%d.jsonl", time.Now().UnixMilli())
+
 	var cmd *exec.Cmd
 	if workerHost != "" {
 		shellCmd := buildCodexShellCmd(command, sessionID, prompt, workspacePath)
 		if logDir != "" {
 			// Tee codex stdout to a file on the remote host so sshFetchLogs can read it later.
-			shellCmd = shellCmd + " | tee " + shellQuote(filepath.Join(logDir, "codex-session.jsonl"))
+			shellCmd = shellCmd + " | tee " + shellQuote(filepath.Join(logDir, logFileName))
 		}
 		if workspacePath != "" {
 			shellCmd = "cd " + shellQuote(workspacePath) + " && " + shellCmd
@@ -75,6 +88,7 @@ func (c *CodexRunner) RunTurn(
 	} else {
 		cmd = exec.CommandContext(turnCtx, loginShell(), "-lc", buildCodexShellCmd(command, sessionID, prompt, workspacePath))
 	}
+	setProcessGroup(cmd)
 	if workspacePath != "" && workerHost == "" {
 		cmd.Dir = workspacePath
 	}
@@ -90,7 +104,7 @@ func (c *CodexRunner) RunTurn(
 	if logDir != "" && workerHost == "" {
 		if mkErr := os.MkdirAll(logDir, 0o755); mkErr != nil {
 			slog.Warn("codex: failed to create log dir", "dir", logDir, "error", mkErr)
-		} else if f, createErr := os.Create(filepath.Join(logDir, "codex-session.jsonl")); createErr != nil {
+		} else if f, createErr := os.Create(filepath.Join(logDir, logFileName)); createErr != nil {
 			slog.Warn("codex: failed to create session log", "error", createErr)
 		} else {
 			logFile = f
@@ -117,15 +131,25 @@ func (c *CodexRunner) RunTurn(
 		_ = logFile.Close()
 	}
 
-	if waitErr := cmd.Wait(); waitErr != nil && readErr == nil {
+	waitErr := cmd.Wait()
+	if waitErr != nil && readErr == nil {
 		result.Failed = true
 	}
 
-	if stderr := strings.TrimSpace(stderrBuf.String()); stderr != "" && result.Failed {
+	stderr := strings.TrimSpace(stderrBuf.String())
+	if result.Failed {
+		parts := make([]string, 0, 3)
 		if result.FailureText != "" {
-			result.FailureText = result.FailureText + " | stderr: " + stderr
-		} else {
-			result.FailureText = stderr
+			parts = append(parts, result.FailureText)
+		}
+		if stderr != "" {
+			parts = append(parts, "stderr: "+stderr)
+		}
+		if waitErr != nil && result.FailureText == "" && stderr == "" {
+			parts = append(parts, "exit: "+waitErr.Error())
+		}
+		if len(parts) > 0 {
+			result.FailureText = strings.Join(parts, " | ")
 		}
 	}
 

@@ -14,7 +14,7 @@ export interface NormalisedSession {
   elapsedMs: number;
   turnCount: number;
   tokens: number;
-  status: 'live' | 'succeeded' | 'failed' | 'cancelled';
+  status: 'live' | 'succeeded' | 'failed' | 'cancelled' | 'stalled' | 'input_required';
   sessionId?: string;
 }
 
@@ -86,8 +86,7 @@ export const SUBAGENT_COLORS = [
 
 // ─── Stable fallbacks ─────────────────────────────────────────────────────────
 
-export const EMPTY_RUNNING: RunningRow[] = [];
-export const EMPTY_HISTORY: HistoryRow[] = [];
+export { EMPTY_RUNNING, EMPTY_HISTORY } from '../../../utils/constants';
 
 // ─── Utility: filter logs by run ──────────────────────────────────────────────
 
@@ -132,6 +131,10 @@ export function dotStyle(status: NormalisedSession['status']): React.CSSProperti
       return { background: 'var(--accent)' };
     case 'failed':
       return { background: 'var(--danger)' };
+    case 'stalled':
+      return { background: 'var(--warning, #f59e0b)' };
+    case 'input_required':
+      return { background: 'var(--warning, #f59e0b)', boxShadow: '0 0 0 4px rgba(245,158,11,0.2)' };
     default:
       return { background: 'var(--muted)' };
   }

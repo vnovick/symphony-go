@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/vnovick/symphony-go/internal/agent"
+	"github.com/vnovick/symphony-go/internal/app"
 	"github.com/vnovick/symphony-go/internal/config"
 	"github.com/vnovick/symphony-go/internal/domain"
 	"github.com/vnovick/symphony-go/internal/logbuffer"
@@ -137,7 +139,13 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 			return nil
 		}
 		validatedBackends["codex"] = struct{}{}
-		if err := agent.ValidateCodexCLI(); err != nil {
+		resolvedCmd := cfg.Agent.Command
+		if profileName != "" {
+			if p, ok := cfg.Agent.Profiles[profileName]; ok && p.Command != "" {
+				resolvedCmd = p.Command
+			}
+		}
+		if err := agent.ValidateCodexCLICommand(resolvedCmd); err != nil {
 			if profileName != "" {
 				slog.Warn("codex CLI validation failed for profile", "profile", profileName, "error", err)
 				return nil // profile failures are non-fatal
@@ -202,6 +210,7 @@ func main() {
 	workflowPath := flag.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md")
 	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: ~/.symphony/logs/<kind>/<project>)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
+	shutdownGrace := flag.Duration("shutdown-grace", 30*time.Second, "grace period for active workers on SIGINT/SIGTERM before force exit")
 	flag.Parse()
 
 	logLevel := slog.LevelInfo
@@ -237,9 +246,12 @@ func main() {
 	slog.Info("symphony starting", "version", version, "commit", commit, "date", date)
 	slog.Info("logging to file", "path", rotatingFile.Filename)
 
-	// Top-level context cancelled on SIGINT/SIGTERM.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// Top-level context: cancelled on first SIGINT/SIGTERM to begin graceful drain.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	// Outer loop: restart when WORKFLOW.md changes.
 	for {
@@ -253,19 +265,48 @@ func main() {
 			os.Exit(1)
 		}
 
-		runCtx, cancel := context.WithCancel(ctx)
+		runCtx, runCancel := context.WithCancel(ctx)
 
 		// Watch WORKFLOW.md; cancel runCtx to trigger reload on change.
 		go func() {
-			if err := workflow.Watch(runCtx, *workflowPath, cancel); err != nil && runCtx.Err() == nil {
+			if err := workflow.Watch(runCtx, *workflowPath, runCancel); err != nil && runCtx.Err() == nil {
 				slog.Warn("workflow watcher stopped", "error", err)
 			}
 		}()
 
-		if err := run(runCtx, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel); err != nil && ctx.Err() == nil {
-			slog.Warn("run returned, restarting", "error", err)
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- run(runCtx, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel)
+		}()
+
+		// Wait for run to finish or a signal to arrive.
+		select {
+		case err := <-runDone:
+			runCancel()
+			if ctx.Err() != nil {
+				return // top-level shutdown already in progress
+			}
+			if err != nil {
+				slog.Warn("run returned, restarting", "error", err)
+			}
+		case sig := <-sigCh:
+			slog.Info("shutting down gracefully, waiting for active workers...", "signal", sig, "grace", shutdownGrace.String())
+			cancel()    // cancel top-level ctx → stops dispatching new work
+			runCancel() // also cancel runCtx
+
+			// Wait for run to finish within grace period, or force-exit on second signal / timeout.
+			graceTimer := time.NewTimer(*shutdownGrace)
+			defer graceTimer.Stop()
+			select {
+			case <-runDone:
+				slog.Info("all workers finished, exiting")
+			case <-graceTimer.C:
+				slog.Warn("grace period expired, forcing exit")
+			case sig2 := <-sigCh:
+				slog.Warn("received second signal, forcing exit", "signal", sig2)
+			}
+			return
 		}
-		cancel()
 
 		if ctx.Err() != nil {
 			return // top-level shutdown
@@ -287,6 +328,21 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	}
 
 	cfg.Agent.Command = resolveAgentCommand(cfg.Agent.Command)
+	for name, profile := range cfg.Agent.Profiles {
+		if profile.Command != "" {
+			// Extract the binary name (first token) and resolve it, keeping flags.
+			parts := strings.SplitN(profile.Command, " ", 2)
+			resolved := resolveAgentCommand(parts[0])
+			if resolved != parts[0] {
+				if len(parts) > 1 {
+					profile.Command = resolved + " " + parts[1]
+				} else {
+					profile.Command = resolved
+				}
+				cfg.Agent.Profiles[name] = profile
+			}
+		}
+	}
 
 	runner := agent.NewMultiRunner(
 		agent.NewClaudeRunner(),
@@ -332,6 +388,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		logDir := filepath.Dir(logFile)
 		orch.SetHistoryFile(filepath.Join(logDir, "history.json"))
 		orch.SetPausedFile(filepath.Join(logDir, "paused.json"))
+		orch.SetInputRequiredFile(filepath.Join(logDir, "input_required.json"))
 		orch.SetAgentLogDir(filepath.Join(logDir, "sessions"))
 	}
 	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
@@ -342,16 +399,37 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	orch.SetAppSessionID(appSessionID)
 
 	snap := buildSnapFunc(orch, tr, cfg, appSessionID)
+
+	// HTTP server — bind listener early so we know the actual port before
+	// starting the TUI (the TUI needs the correct dashboard URL for 'w' key).
+	var srvDone <-chan error
+	var srvListener net.Listener
+	var actualAddr string
+	if cfg.Server.Port != nil {
+		var err error
+		srvListener, actualAddr, err = listenWithFallback(cfg.Server.Host, *cfg.Server.Port, 10)
+		if err != nil {
+			return fmt.Errorf("server: %w", err)
+		}
+		slog.Info("HTTP server listening", "addr", actualAddr)
+		if host := cfg.Server.Host; host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "" {
+			slog.Warn("server: binding to non-loopback address — API has no authentication",
+				"host", host, "hint", "set SYMPHONY_API_TOKEN to enable bearer token auth")
+		}
+	}
+
 	// Redirect slog to file-only before the TUI takes the alt-screen.
 	// Without this, concurrent slog writes to stderr corrupt the bubbletea display.
 	// The TUI log pane reads directly from logBuf instead of stderr.
 	slog.SetDefault(slog.New(slog.NewTextHandler(fileWriter, &slog.HandlerOptions{Level: logLevel})))
 	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath)
+	if actualAddr != "" {
+		tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
+	}
 	go statusui.Run(ctx, snap, logBuf, tuiCfg, tuiCancel)
 
-	// HTTP server — only started when server.port is configured.
-	var srvDone <-chan error
-	if cfg.Server.Port != nil {
+	// Start serving on the already-bound listener.
+	if srvListener != nil {
 		fetchIssue := func(ctx context.Context, identifier string) (*server.TrackerIssue, error) {
 			issue, err := tr.FetchIssueByIdentifier(ctx, identifier)
 			if err != nil {
@@ -360,7 +438,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			if issue == nil {
 				return nil, nil
 			}
-			ti := enrichIssue(*issue, orch.Snapshot(), time.Now(), cfg)
+			ti := app.EnrichIssue(*issue, orch.Snapshot(), time.Now(), cfg)
 			return &ti, nil
 		}
 
@@ -383,15 +461,14 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			Client:         adapter,
 			FetchIssue:     fetchIssue,
 			ProjectManager: pm,
+			APIToken:       os.Getenv("SYMPHONY_API_TOKEN"),
 		})
 		adapter.notify = srv.Notify
 		if err := srv.Validate(); err != nil {
 			return fmt.Errorf("server configuration error: %w", err)
 		}
 		orch.OnStateChange = srv.Notify
-		addr := fmt.Sprintf("%s:%d", cfg.Server.Host, *cfg.Server.Port)
-		srvDone = serveHTTP(ctx, addr, srv)
-		slog.Info("HTTP server listening", "addr", addr)
+		srvDone = serveOnListener(ctx, srvListener, actualAddr, srv)
 	}
 
 	// Forward web dashboard refresh signals to the orchestrator for an immediate re-poll.
@@ -497,6 +574,11 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		if tpm, ok := tr.(tracker.ProjectManager); ok {
 			activeProjectFilter = tpm.GetProjectFilter()
 		}
+		// When no runtime filter is set but WORKFLOW.md has project_slug,
+		// surface it so the TUI picker shows it as checked.
+		if activeProjectFilter == nil && cfg.Tracker.ProjectSlug != "" {
+			activeProjectFilter = []string{cfg.Tracker.ProjectSlug}
+		}
 		profiles := orch.ProfilesCfg()
 		agentMode := orch.AgentModeCfg()
 		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
@@ -547,7 +629,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		}
 
 		pausedWithPR := orch.GetPausedOpenPRs()
-		return server.StateSnapshot{
+		snap := server.StateSnapshot{
 			GeneratedAt:         now,
 			Counts:              server.Counts{Running: len(running), Retrying: len(retrying), Paused: len(paused)},
 			Running:             running,
@@ -571,7 +653,21 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			CurrentAppSessionID: appSessionID,
 			SSHHosts:            sshHostInfos,
 			DispatchStrategy:    orch.DispatchStrategyCfg(),
+			DefaultBackend:      configuredBackend(cfg.Agent.Command, cfg.Agent.Backend),
+			InlineInput:         orch.InlineInputCfg(),
 		}
+		// Build input-required rows from the snapshot.
+		for _, entry := range s.InputRequiredIssues {
+			snap.InputRequired = append(snap.InputRequired, server.InputRequiredRow{
+				Identifier: entry.Identifier,
+				SessionID:  entry.SessionID,
+				Context:    entry.Context,
+				Backend:    entry.Backend,
+				Profile:    entry.ProfileName,
+				QueuedAt:   entry.QueuedAt.Format(time.RFC3339),
+			})
+		}
+		return snap
 	}
 }
 
@@ -699,73 +795,6 @@ func buildTUIConfig(
 	return tuiCfg, tuiCancel
 }
 
-// enrichIssue maps a domain.Issue to a server.TrackerIssue, overlaying live
-// orchestrator state (running, retrying, paused, idle) and ineligibility reasons.
-// now is the current wall-clock time used to compute ElapsedMs for running issues.
-// Extracted to eliminate duplication between the bulk (fetchIssues) and single
-// (fetchIssue) closures that both build the same mapping (GO-R11-9).
-func enrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg *config.Config) server.TrackerIssue {
-	ti := server.TrackerIssue{
-		Identifier: issue.Identifier,
-		Title:      issue.Title,
-		State:      issue.State,
-		Labels:     issue.Labels,
-		Priority:   issue.Priority,
-		BranchName: issue.BranchName,
-	}
-	if issue.Description != nil {
-		ti.Description = *issue.Description
-	}
-	if issue.URL != nil {
-		ti.URL = *issue.URL
-	}
-	// BlockedBy: collect non-nil identifiers from []domain.BlockerRef
-	for _, b := range issue.BlockedBy {
-		if b.Identifier != nil && *b.Identifier != "" {
-			ti.BlockedBy = append(ti.BlockedBy, *b.Identifier)
-		}
-	}
-	// Comments: map domain.Comment to server.CommentRow
-	for _, c := range issue.Comments {
-		row := server.CommentRow{Author: c.AuthorName, Body: c.Body}
-		if c.CreatedAt != nil {
-			row.CreatedAt = c.CreatedAt.Format(time.RFC3339)
-		}
-		ti.Comments = append(ti.Comments, row)
-	}
-	// Per-issue agent profile override.
-	if profileName, ok := snap.IssueProfiles[issue.Identifier]; ok && profileName != "" {
-		ti.AgentProfile = profileName
-	}
-	// Orchestrator state
-	if re, ok := snap.Running[issue.ID]; ok {
-		ti.OrchestratorState = "running"
-		ti.TurnCount = re.TurnCount
-		ti.Tokens = re.TotalTokens
-		ti.ElapsedMs = now.Sub(re.StartedAt).Milliseconds()
-		if re.LastMessage != "" {
-			ti.LastMessage = re.LastMessage
-		}
-	} else if re, ok := snap.RetryAttempts[issue.ID]; ok {
-		ti.OrchestratorState = "retrying"
-		if re.Error != nil {
-			ti.Error = *re.Error
-		}
-	} else if _, paused := snap.PausedIdentifiers[issue.Identifier]; paused {
-		ti.OrchestratorState = "paused"
-	} else {
-		ti.OrchestratorState = "idle"
-		// IneligibleReason: only for active-state idle issues.
-		// Calling IneligibleReason on terminal/inactive issues returns
-		// "not_active_state" which is noise — filter those out.
-		reason := orchestrator.IneligibleReason(issue, snap, cfg)
-		if reason != "" && reason != "not_active_state" && reason != "terminal_state" {
-			ti.IneligibleReason = reason
-		}
-	}
-	return ti
-}
-
 // profilesToEntries converts config.AgentProfile map to workflow.ProfileEntry map
 // for persistence to WORKFLOW.md.
 func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workflow.ProfileEntry {
@@ -793,18 +822,7 @@ type orchestratorAdapter struct {
 }
 
 func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.TrackerIssue, error) {
-	seen := map[string]bool{}
-	var allStates []string
-	base := append(append(append([]string{}, a.cfg.Tracker.BacklogStates...), a.cfg.Tracker.ActiveStates...), a.cfg.Tracker.TerminalStates...)
-	if a.cfg.Tracker.CompletionState != "" {
-		base = append(base, a.cfg.Tracker.CompletionState)
-	}
-	for _, s := range base {
-		if !seen[s] {
-			seen[s] = true
-			allStates = append(allStates, s)
-		}
-	}
+	allStates := deduplicateStates(a.cfg.Tracker.BacklogStates, a.cfg.Tracker.ActiveStates, a.cfg.Tracker.TerminalStates, a.cfg.Tracker.CompletionState)
 	issues, err := a.tr.FetchIssuesByStates(ctx, allStates)
 	if err != nil {
 		return nil, err
@@ -813,7 +831,7 @@ func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.Tracker
 	now := time.Now()
 	result := make([]server.TrackerIssue, len(issues))
 	for i, issue := range issues {
-		result[i] = enrichIssue(issue, snap, now, a.cfg)
+		result[i] = app.EnrichIssue(issue, snap, now, a.cfg)
 	}
 	return result, nil
 }
@@ -863,7 +881,10 @@ func (a *orchestratorAdapter) ClearIssueSubLogs(identifier string) error {
 	if logDir == "" {
 		return nil
 	}
-	issueDir := filepath.Join(logDir, identifier)
+	issueDir := filepath.Join(logDir, workspace.SanitizeKey(identifier))
+	if err := workspace.AssertContained(logDir, issueDir); err != nil {
+		return fmt.Errorf("clear sublogs: %w", err)
+	}
 	entries, err := os.ReadDir(issueDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -885,8 +906,13 @@ func (a *orchestratorAdapter) ClearSessionSublog(identifier, sessionID string) e
 	if logDir == "" {
 		return nil
 	}
-	// JSONL files are named {sessionID}.jsonl inside {logDir}/{identifier}/
-	p := filepath.Join(logDir, identifier, sessionID+".jsonl")
+	// Sanitize both path components to prevent directory traversal.
+	safeID := workspace.SanitizeKey(identifier)
+	safeSess := workspace.SanitizeKey(sessionID)
+	p := filepath.Join(logDir, safeID, safeSess+".jsonl")
+	if err := workspace.AssertContained(logDir, p); err != nil {
+		return fmt.Errorf("clear session sublog: %w", err)
+	}
 	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -903,7 +929,7 @@ func (a *orchestratorAdapter) FetchSubLogs(identifier string) ([]domain.IssueLog
 	if logDir == "" {
 		return nil, nil
 	}
-	issueLogDir := filepath.Join(logDir, identifier)
+	issueLogDir := filepath.Join(logDir, workspace.SanitizeKey(identifier))
 	return a.sublogFetcher(identifier).FetchSubLogs(context.Background(), issueLogDir)
 }
 
@@ -912,9 +938,12 @@ func (a *orchestratorAdapter) FetchSubLogs(identifier string) ([]domain.IssueLog
 // remote host is found.
 func (a *orchestratorAdapter) sublogFetcher(identifier string) agent.SublogFetcher {
 	// Check currently-running sessions first (most recent wins).
+	// Running is keyed by issue ID, not identifier — iterate values.
 	snap := a.orch.Snapshot()
-	if entry, ok := snap.Running[identifier]; ok && entry.WorkerHost != "" {
-		return agent.SSHSublogFetcher{Host: entry.WorkerHost}
+	for _, entry := range snap.Running {
+		if entry.Issue.Identifier == identifier && entry.WorkerHost != "" {
+			return agent.SSHSublogFetcher{Host: entry.WorkerHost}
+		}
 	}
 	// Fall back to run history.
 	for _, run := range a.orch.RunHistory() {
@@ -930,19 +959,8 @@ func (a *orchestratorAdapter) DispatchReviewer(identifier string) error {
 }
 
 func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, stateName string) error {
-	seen := map[string]bool{}
-	var allStates []string
 	active, terminal, completion := a.orch.TrackerStatesCfg()
-	base := append(append(append([]string{}, a.cfg.Tracker.BacklogStates...), active...), terminal...)
-	if completion != "" {
-		base = append(base, completion)
-	}
-	for _, s := range base {
-		if !seen[s] {
-			seen[s] = true
-			allStates = append(allStates, s)
-		}
-	}
+	allStates := deduplicateStates(a.cfg.Tracker.BacklogStates, active, terminal, completion)
 	issues, err := a.tr.FetchIssuesByStates(ctx, allStates)
 	if err != nil {
 		return fmt.Errorf("fetch issues: %w", err)
@@ -953,6 +971,24 @@ func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, 
 		}
 	}
 	return fmt.Errorf("issue %s not found", identifier)
+}
+
+// deduplicateStates concatenates backlog, active, terminal states and the
+// completion state (if non-empty), removing duplicates while preserving order.
+func deduplicateStates(backlog, active, terminal []string, completion string) []string {
+	base := append(append(append([]string{}, backlog...), active...), terminal...)
+	if completion != "" {
+		base = append(base, completion)
+	}
+	seen := make(map[string]bool, len(base))
+	out := make([]string, 0, len(base))
+	for _, s := range base {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (a *orchestratorAdapter) SetWorkers(n int) {
@@ -988,7 +1024,21 @@ func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef) 
 	if profiles == nil {
 		profiles = make(map[string]config.AgentProfile)
 	}
-	profiles[name] = config.AgentProfile{Command: def.Command, Prompt: def.Prompt, Backend: def.Backend}
+	// Resolve the command binary (e.g. alias → absolute path) so dispatch works
+	// in non-interactive shell contexts.
+	cmd := def.Command
+	if cmd != "" {
+		parts := strings.SplitN(cmd, " ", 2)
+		resolved := resolveAgentCommand(parts[0])
+		if resolved != parts[0] {
+			if len(parts) > 1 {
+				cmd = resolved + " " + parts[1]
+			} else {
+				cmd = resolved
+			}
+		}
+	}
+	profiles[name] = config.AgentProfile{Command: cmd, Prompt: def.Prompt, Backend: def.Backend}
 	a.orch.SetProfilesCfg(profiles)
 	if err := workflow.PatchProfilesBlock(a.workflowPath, profilesToEntries(profiles)); err != nil {
 		return err
@@ -1075,6 +1125,20 @@ func (a *orchestratorAdapter) RemoveSSHHost(host string) error {
 
 func (a *orchestratorAdapter) SetDispatchStrategy(strategy string) error {
 	a.orch.SetDispatchStrategyCfg(strategy)
+	return nil
+}
+
+func (a *orchestratorAdapter) ProvideInput(identifier, message string) bool {
+	return a.orch.ProvideInput(identifier, message)
+}
+
+func (a *orchestratorAdapter) DismissInput(identifier string) bool {
+	return a.orch.DismissInput(identifier)
+}
+
+func (a *orchestratorAdapter) SetInlineInput(enabled bool) error {
+	a.orch.SetInlineInputCfg(enabled)
+	a.notify()
 	return nil
 }
 
@@ -1434,6 +1498,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("  #                                  # Set to \"\" to disable auto-transition.\n")
 		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
 		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
+		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
 	} else {
 		b.WriteString("  project_slug: " + slug + "\n")
 		b.WriteString("  # GitHub uses labels to map states. Labels must exist in your repo.\n")
@@ -1454,6 +1519,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
 		b.WriteString("  #                               # Must be an array — not a bare string.\n")
 		b.WriteString("  backlog_states: [\"backlog\"]\n")
+		b.WriteString("  # failed_state: \"backlog\"        # Label for issues that exhaust all retries.\n")
 	}
 
 	b.WriteString("\npolling:\n  interval_ms: 60000\n")
@@ -1467,24 +1533,27 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	}
 	b.WriteString("  max_turns: 60\n")
 	b.WriteString("  max_concurrent_agents: 3\n")
+	b.WriteString("  max_retries: 5\n")
 	b.WriteString("  turn_timeout_ms: 3600000\n")
 	b.WriteString("  read_timeout_ms: 120000\n")
 	b.WriteString("  stall_timeout_ms: 300000\n")
-
-	b.WriteString("\nworkspace:\n  root: ~/.symphony/workspaces/" + info.ProjectName + "\n")
 
 	cloneURL := info.CloneURL
 	if cloneURL == "" {
 		cloneURL = "git@github.com:owner/" + info.ProjectName + ".git"
 	}
-	branch := info.DefaultBranch
+	b.WriteString("\nworkspace:\n")
+	b.WriteString("  root: ~/.symphony/workspaces/" + info.ProjectName + "\n")
+	b.WriteString("  worktree: true\n")
+	b.WriteString("  clone_url: " + cloneURL + "\n")
+	b.WriteString("  base_branch: " + info.DefaultBranch + "\n")
+
 	b.WriteString("\nhooks:\n")
-	b.WriteString("  after_create: |\n")
-	b.WriteString("    git clone " + cloneURL + " .\n")
-	b.WriteString("  before_run: |\n")
-	b.WriteString("    git fetch origin\n")
-	b.WriteString("    git checkout -B " + branch + " origin/" + branch + "\n")
-	b.WriteString("    git reset --hard origin/" + branch + "\n")
+	b.WriteString("  # after_create and before_run are no longer needed for clone/reset —\n")
+	b.WriteString("  # Symphony maintains a bare clone and creates worktrees automatically.\n")
+	b.WriteString("  # Add custom hooks here if your project needs extra setup:\n")
+	b.WriteString("  # after_create: |\n")
+	b.WriteString("  #   npm install\n")
 
 	b.WriteString("\nserver:\n  port: 8090\n")
 	b.WriteString("---\n\n")
@@ -1666,6 +1735,20 @@ func runInit(args []string) {
 		os.Exit(1)
 	}
 
+	// Validate that the selected runner CLI is available on PATH.
+	switch *runner {
+	case "claude":
+		if err := agent.ValidateClaudeCLI(); err != nil {
+			fmt.Fprintf(os.Stderr, "symphony init: %v\n", err)
+			os.Exit(1)
+		}
+	case "codex":
+		if err := agent.ValidateCodexCLI(); err != nil {
+			fmt.Fprintf(os.Stderr, "symphony init: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	if _, err := os.Stat(*output); err == nil && !*force {
 		fmt.Fprintf(os.Stderr, "symphony init: %s already exists (use --force to overwrite)\n", *output)
 		os.Exit(1)
@@ -1695,8 +1778,34 @@ func runInit(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("symphony init: wrote %s\n", *output)
+
+	// Create .symphony/.env if it doesn't exist.
+	envDir := ".symphony"
+	envPath := filepath.Join(envDir, ".env")
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		_ = os.MkdirAll(envDir, 0o755)
+		var envContent string
+		switch *trackerKind {
+		case "linear":
+			envContent = "# Symphony environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nLINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+		case "github":
+			envContent = "# Symphony environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nGITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+		}
+		if err := os.WriteFile(envPath, []byte(envContent), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "symphony init: write %s: %v\n", envPath, err)
+		} else {
+			fmt.Printf("symphony init: wrote %s\n", envPath)
+		}
+	}
+
+	// Ensure .symphony/.env is gitignored.
+	gitignorePath := filepath.Join(envDir, ".gitignore")
+	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
+		_ = os.WriteFile(gitignorePath, []byte(".env\n"), 0o644)
+	}
+
 	fmt.Printf("Next steps:\n")
-	fmt.Printf("  1. Edit %s — fill in api_key\n", *output)
+	fmt.Printf("  1. Edit %s — fill in your API key\n", envPath)
 	if *trackerKind == "linear" {
 		fmt.Printf("  2. Run: symphony -workflow %s\n", *output)
 		fmt.Printf("  3. Select a project via the TUI (press p) or the web dashboard\n")
@@ -1705,15 +1814,33 @@ func runInit(args []string) {
 	}
 }
 
-// serveHTTP starts an HTTP server and returns a channel that receives its exit error.
-func serveHTTP(ctx context.Context, addr string, handler http.Handler) <-chan error {
-	errCh := make(chan error, 1)
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		errCh <- fmt.Errorf("http listen %s: %w", addr, err)
-		return errCh
+// listenWithFallback tries to listen on the given host:port. If the port is
+// already in use, it tries up to maxPortRetries successive ports. Returns the
+// listener and the actual address it bound to.
+func listenWithFallback(host string, port, maxPortRetries int) (net.Listener, string, error) {
+	for i := 0; i <= maxPortRetries; i++ {
+		tryPort := port + i
+		addr := fmt.Sprintf("%s:%d", host, tryPort)
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			if i > 0 {
+				slog.Warn("server: configured port in use, using next available",
+					"configured_port", port, "actual_port", tryPort)
+			}
+			return ln, addr, nil
+		}
+		if !isAddrInUse(err) {
+			return nil, "", fmt.Errorf("http listen %s: %w", addr, err)
+		}
 	}
+	return nil, "", fmt.Errorf("ports %d–%d all in use — is another symphony instance running?",
+		port, port+maxPortRetries)
+}
+
+// serveOnListener starts an HTTP server on an already-bound listener and
+// returns a channel that receives its exit error.
+func serveOnListener(ctx context.Context, ln net.Listener, addr string, handler http.Handler) <-chan error {
+	errCh := make(chan error, 1)
 
 	srv := &http.Server{
 		Addr:        addr,
@@ -1742,4 +1869,16 @@ func serveHTTP(ctx context.Context, addr string, handler http.Handler) <-chan er
 	}()
 
 	return errCh
+}
+
+// isAddrInUse reports whether err indicates the address is already in use.
+func isAddrInUse(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		var sysErr *os.SyscallError
+		if errors.As(opErr.Err, &sysErr) {
+			return sysErr.Err == syscall.EADDRINUSE
+		}
+	}
+	return false
 }

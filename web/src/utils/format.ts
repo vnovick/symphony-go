@@ -3,10 +3,9 @@ export const EMPTY_PROFILE_LABEL = 'Default';
 
 /**
  * Stable empty array for available-profiles fallback.
- * Module-level constant prevents new reference on every render —
- * avoids Zustand useSyncExternalStore re-render loops.
+ * Re-exported from constants for backward compatibility.
  */
-export const EMPTY_PROFILES: string[] = [];
+export { EMPTY_PROFILES } from './constants';
 
 /** Format elapsed milliseconds as "Xs" or "Xm YYs". */
 export function fmtMs(ms: number): string {

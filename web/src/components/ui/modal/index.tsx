@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react';
+import { useFocusTrap } from '../../../hooks/useFocusTrap';
 
 interface ModalProps {
   isOpen: boolean;
@@ -18,6 +19,8 @@ export const Modal: React.FC<ModalProps> = ({
   isFullscreen = false,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(modalRef, isOpen);
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
@@ -63,6 +66,8 @@ export const Modal: React.FC<ModalProps> = ({
       )}
       <div
         ref={modalRef}
+        role="dialog"
+        aria-modal="true"
         className={`${contentClasses} ${className ?? ''} border border-theme-line bg-theme-bg-elevated`}
         style={{ boxShadow: 'var(--shadow-lg)' }}
         onClick={(e) => {
@@ -72,6 +77,7 @@ export const Modal: React.FC<ModalProps> = ({
         {showCloseButton && (
           <button
             onClick={onClose}
+            aria-label="Close"
             className="absolute top-3 right-3 z-999 flex h-8 w-8 items-center justify-center rounded-full transition-colors sm:top-4 sm:right-4 bg-theme-bg-soft text-theme-muted"
           >
             <svg

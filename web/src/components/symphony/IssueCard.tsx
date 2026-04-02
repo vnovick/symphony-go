@@ -9,6 +9,7 @@ interface CardProps {
   availableProfiles?: string[];
   profileDefs?: Record<string, ProfileDef>;
   runningBackend?: string;
+  defaultBackend?: string;
   onProfileChange?: (identifier: string, profile: string) => void;
   onDispatch?: (identifier: string) => void;
 }
@@ -17,9 +18,17 @@ function resolveBackend(
   profile: string | undefined,
   profileDefs: Record<string, ProfileDef> | undefined,
   runningBackend: string | undefined,
+  defaultBackend: string | undefined,
 ): 'claude' | 'codex' {
-  const src = runningBackend ?? (profile ? profileDefs?.[profile]?.backend : undefined) ?? profile ?? '';
-  return /codex/i.test(src) ? 'codex' : 'claude';
+  if (runningBackend) return /codex/i.test(runningBackend) ? 'codex' : 'claude';
+  if (profile && profileDefs?.[profile]) {
+    const def = profileDefs[profile];
+    // Explicit backend field takes priority, then infer from command name.
+    const hint = def.backend || def.command || '';
+    if (hint) return /codex/i.test(hint) ? 'codex' : 'claude';
+  }
+  const fallback = defaultBackend || '';
+  return /codex/i.test(fallback) ? 'codex' : 'claude';
 }
 
 // Status dot color per orchestrator state
@@ -28,6 +37,7 @@ function statusDotClass(state: string): string {
     case 'running': return 'bg-theme-success';
     case 'paused': return 'bg-theme-warning';
     case 'retrying': return 'bg-theme-danger';
+    case 'input_required': return 'bg-orange-400';
     default: return 'bg-theme-muted';
   }
 }
@@ -39,13 +49,19 @@ export default memo(function IssueCard({
   availableProfiles,
   profileDefs,
   runningBackend,
+  defaultBackend,
   onProfileChange,
   onDispatch,
 }: CardProps) {
-  const showProfileSelector = availableProfiles && availableProfiles.length > 0 && onProfileChange;
   const isRunning = issue.orchestratorState === 'running';
-  const backend = resolveBackend(issue.agentProfile, profileDefs, runningBackend);
-  const hasActivity = issue.orchestratorState !== 'idle';
+  const isInputRequired = issue.orchestratorState === 'input_required';
+  const isActive = isRunning || isInputRequired || issue.orchestratorState === 'paused' || issue.orchestratorState === 'retrying';
+  // Show dropdown only in backlog columns (signaled by onDispatch being present)
+  // or when the issue is idle and not in a terminal/completion state.
+  const isEditable = !!onDispatch && !isActive;
+  const showProfileSelector = isEditable && availableProfiles && availableProfiles.length > 0 && onProfileChange;
+  const backend = resolveBackend(issue.agentProfile, profileDefs, runningBackend, defaultBackend);
+  const hasActivity = isActive;
 
   return (
     <div
@@ -100,6 +116,13 @@ export default memo(function IssueCard({
             </div>
           )}
 
+          {/* Read-only profile badge for non-editable cards */}
+          {!isEditable && availableProfiles && availableProfiles.length > 0 && (
+            <span className="flex-shrink-0 rounded border border-theme-line px-1.5 py-0.5 text-[10px] font-medium text-theme-text-secondary">
+              {issue.agentProfile || EMPTY_PROFILE_LABEL}
+            </span>
+          )}
+
           {/* Dispatch button */}
           {onDispatch && (
             <button
@@ -130,7 +153,12 @@ export default memo(function IssueCard({
         </span>
 
         {/* State badge — only when active */}
-        {hasActivity && (
+        {isInputRequired && (
+          <span className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-orange-500/15 text-orange-400">
+            Needs Input
+          </span>
+        )}
+        {hasActivity && !isInputRequired && (
           <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${
             isRunning
               ? 'bg-theme-success-soft text-theme-success'

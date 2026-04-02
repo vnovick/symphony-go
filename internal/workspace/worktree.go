@@ -69,18 +69,43 @@ func worktreePath(root, identifier string) string {
 	return filepath.Join(root, "worktrees", identifier)
 }
 
+// resolveGitDir returns the git directory to use for worktree operations.
+// When cfg.Workspace.CloneURL is set, it ensures a bare clone exists at
+// <root>/.bare/ and fetches latest refs, returning the bare path. Otherwise
+// it returns root (the legacy behavior where root is itself a git repo).
+func (m *Manager) resolveGitDir(ctx context.Context, root, branchName string) (string, error) {
+	if m.cfg.Workspace.CloneURL != "" {
+		barePath, err := EnsureBareClone(ctx, root, m.cfg.Workspace.CloneURL)
+		if err != nil {
+			return "", fmt.Errorf("worktree: bare clone: %w", err)
+		}
+		if err := FetchBare(ctx, barePath); err != nil {
+			slog.Warn("worktree: bare fetch failed (best-effort)", "error", err)
+		}
+		return barePath, nil
+	}
+	// Legacy: fetch in the root repo directly.
+	fetchCmd := exec.CommandContext(ctx, "git", "-C", root, "fetch", "origin", branchName)
+	if err := fetchCmd.Run(); err != nil {
+		slog.Debug("worktree: fetch failed (best-effort)", "branch", branchName, "error", err)
+	}
+	return root, nil
+}
+
 // ensureWorktree creates a git worktree at worktreePath(root, identifier) checked
 // out on branchName. If the worktree directory already exists it is reused (retry
 // case). If the branch already exists in the base repo but has no worktree, the
 // branch is checked out without -b.
+//
+// When cfg.Workspace.CloneURL is set, a bare clone at <root>/.bare/ is used as
+// the git directory for all operations, avoiding lock contention with the user's
+// working copy.
 func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName string) (Workspace, error) {
 	root := m.cfg.Workspace.Root
 	wtPath := worktreePath(root, identifier)
 
 	// Reuse existing worktree (retry case).
 	if info, err := os.Stat(wtPath); err == nil && info.IsDir() {
-		// Still assert containment: a symlink placed at wtPath pointing outside root
-		// would bypass the check on the creation path.
 		if err := AssertContained(root, wtPath); err != nil {
 			return Workspace{}, err
 		}
@@ -93,17 +118,26 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName str
 		return Workspace{}, fmt.Errorf("worktree: create worktrees dir: %w", err)
 	}
 
-	// Best-effort fetch so that remote-only PR branches are available locally.
-	fetchCmd := exec.CommandContext(ctx, "git", "-C", root, "fetch", "origin", branchName)
-	if err := fetchCmd.Run(); err != nil {
-		slog.Debug("worktree: fetch failed (best-effort)", "branch", branchName, "error", err)
+	gitDir, err := m.resolveGitDir(ctx, root, branchName)
+	if err != nil {
+		return Workspace{}, err
 	}
 
-	// git -C <root> worktree add <wtPath> -b <branchName>
-	if err := runGitWorktreeAdd(ctx, root, wtPath, branchName, true); err != nil {
+	// For bare clones, specify the base branch as start point so worktrees
+	// are created from the latest fetched state of that branch.
+	startPoint := ""
+	if m.cfg.Workspace.CloneURL != "" {
+		startPoint = m.cfg.Workspace.BaseBranch
+		if startPoint == "" {
+			startPoint = "main"
+		}
+	}
+
+	// git -C <gitDir> worktree add <wtPath> -b <branchName> [startPoint]
+	if err := runGitWorktreeAdd(ctx, gitDir, wtPath, branchName, startPoint, true); err != nil {
 		// Branch already exists: retry without -b to check it out into a new worktree.
 		if strings.Contains(err.Error(), "already exists") {
-			if err2 := runGitWorktreeAdd(ctx, root, wtPath, branchName, false); err2 != nil {
+			if err2 := runGitWorktreeAdd(ctx, gitDir, wtPath, branchName, startPoint, false); err2 != nil {
 				return Workspace{}, fmt.Errorf("worktree: add (existing branch): %w", err2)
 			}
 		} else {
@@ -113,7 +147,7 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName str
 
 	// Safety: assert the resulting path is still under root.
 	if err := AssertContained(root, wtPath); err != nil {
-		_ = exec.Command("git", "-C", root, "worktree", "remove", "--force", wtPath).Run()
+		_ = exec.Command("git", "-C", gitDir, "worktree", "remove", "--force", wtPath).Run()
 		return Workspace{}, err
 	}
 
@@ -122,13 +156,21 @@ func (m *Manager) ensureWorktree(ctx context.Context, identifier, branchName str
 
 // runGitWorktreeAdd runs git worktree add. If createBranch is true it passes
 // -b <branchName>; otherwise checks out the existing branch directly.
+// startPoint, when non-empty, specifies the commit/ref to start from (e.g.
+// "origin/main") instead of HEAD — required for bare clones where HEAD may
+// point to an invalid ref.
 // LANG=C and LC_ALL=C are forced so that the English error text ("already exists")
 // is reliably produced on non-English systems and can be matched by ensureWorktree.
-func runGitWorktreeAdd(ctx context.Context, root, wtPath, branchName string, createBranch bool) error {
+func runGitWorktreeAdd(ctx context.Context, root, wtPath, branchName, startPoint string, createBranch bool) error {
 	var args []string
 	if createBranch {
+		// git worktree add <path> -b <branch> [<startpoint>]
 		args = []string{"-C", root, "worktree", "add", wtPath, "-b", branchName}
+		if startPoint != "" {
+			args = append(args, startPoint)
+		}
 	} else {
+		// git worktree add <path> <branch>  (no startpoint allowed for existing branches)
 		args = []string{"-C", root, "worktree", "add", wtPath, branchName}
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
@@ -146,8 +188,25 @@ func (m *Manager) removeWorktree(ctx context.Context, identifier, branchName str
 	root := m.cfg.Workspace.Root
 	wtPath := worktreePath(root, identifier)
 
-	// git -C <root> worktree remove --force <wtPath>
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "worktree", "remove", "--force", wtPath)
+	// Resolve git dir: bare clone → root (if it's a git repo) → plain directory removal.
+	gitDir := ""
+	if bp := BarePath(root); dirExists(bp) {
+		gitDir = bp
+	} else if dirExists(filepath.Join(root, ".git")) {
+		gitDir = root
+	}
+
+	// No git repo found — the workspace is a plain directory (legacy mode or stale).
+	// Just remove the directory if it exists.
+	if gitDir == "" {
+		if dirExists(wtPath) {
+			return os.RemoveAll(wtPath)
+		}
+		return nil
+	}
+
+	// git -C <gitDir> worktree remove --force <wtPath>
+	cmd := exec.CommandContext(ctx, "git", "-C", gitDir, "worktree", "remove", "--force", wtPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		output := strings.TrimSpace(string(out))
 		// These messages mean the worktree is already gone — treat as success.
@@ -158,11 +217,11 @@ func (m *Manager) removeWorktree(ctx context.Context, identifier, branchName str
 	}
 
 	// Prune stale metadata from .git/worktrees/
-	_ = exec.CommandContext(ctx, "git", "-C", root, "worktree", "prune").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", gitDir, "worktree", "prune").Run()
 
 	// Delete branch (best-effort, only when caller provides a name).
 	if branchName != "" {
-		_ = exec.CommandContext(ctx, "git", "-C", root, "branch", "-D", branchName).Run()
+		_ = exec.CommandContext(ctx, "git", "-C", gitDir, "branch", "-D", branchName).Run()
 	}
 
 	return nil

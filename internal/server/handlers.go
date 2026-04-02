@@ -437,13 +437,18 @@ func (s *Server) handleClearSessionSublog(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// skipLine returns true for internal lifecycle events that are noise in the timeline.
-func skipLine(line string) bool {
-	return strings.HasPrefix(line, "INFO claude: session started") ||
-		strings.HasPrefix(line, "INFO claude: turn done") ||
-		strings.HasPrefix(line, "INFO codex: session started") ||
-		strings.HasPrefix(line, "INFO codex: turn done") ||
-		strings.HasPrefix(line, "DEBUG ")
+// skipEntry returns true for internal lifecycle events that are noise in the timeline.
+// Operates on already-parsed BufLogEntry fields rather than string-prefix matching.
+func skipEntry(e bufLogEntry) bool {
+	if e.Level == "DEBUG" {
+		return true
+	}
+	switch e.Msg {
+	case "claude: session started", "claude: turn done",
+		"codex: session started", "codex: turn done":
+		return true
+	}
+	return false
 }
 
 // buildDetailJSON builds a compact JSON detail string for shell completions.
@@ -489,7 +494,7 @@ func parseLogLine(line string) (IssueLogEntry, bool) {
 		return IssueLogEntry{}, true
 	}
 
-	if skipLine(e.Level + " " + e.Msg) {
+	if skipEntry(e) {
 		return IssueLogEntry{}, true
 	}
 
@@ -542,6 +547,13 @@ func parseLogLine(line string) (IssueLogEntry, bool) {
 	case "worker: turn_summary":
 		entry.Event = "turn"
 		entry.Message = e.Summary
+	case "worker: turn failed":
+		entry.Event = "error"
+		if e.Detail != "" {
+			entry.Message = e.Detail
+		} else {
+			entry.Message = "turn failed"
+		}
 	default:
 		switch e.Level {
 		case "ERROR":
@@ -676,6 +688,50 @@ func (s *Server) handleSetIssueProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	s.client.SetIssueProfile(identifier, body.Profile) // empty string = reset to default
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "identifier": identifier, "profile": body.Profile})
+}
+
+func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	if body.Message == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "message is required")
+		return
+	}
+	if ok := s.client.ProvideInput(identifier, body.Message); !ok {
+		writeError(w, http.StatusNotFound, "not_found", "issue not in input-required state")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleDismissInput(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	if ok := s.client.DismissInput(identifier); !ok {
+		writeError(w, http.StatusNotFound, "not_found", "issue not in input-required state")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSetInlineInput(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	if err := s.client.SetInlineInput(body.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, "server_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleSetWorkers updates the max concurrent agents at runtime.

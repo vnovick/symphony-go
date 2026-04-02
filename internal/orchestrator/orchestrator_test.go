@@ -281,7 +281,7 @@ func (r *capturingRunner) LastPrompt() string {
 
 func TestDispatchReviewer_Success(t *testing.T) {
 	cfg := baseConfig()
-	cfg.Tracker.ActiveStates = append(cfg.Tracker.ActiveStates, "In Review")
+	cfg.Tracker.CompletionState = "In Review"
 	issue := makeIssue("id1", "ENG-1", "In Review", nil, nil)
 	mt := tracker.NewMemoryTracker(
 		[]domain.Issue{issue},

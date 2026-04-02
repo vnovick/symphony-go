@@ -8,6 +8,12 @@ import (
 	"github.com/vnovick/symphony-go/internal/config"
 )
 
+// Provider defines the workspace operations needed by the orchestrator.
+type Provider interface {
+	EnsureWorkspace(ctx context.Context, identifier, branchName string) (Workspace, error)
+	RemoveWorkspace(ctx context.Context, identifier, branchName string) error
+}
+
 // Workspace represents a resolved per-issue workspace directory.
 type Workspace struct {
 	Path       string
@@ -81,6 +87,9 @@ func (m *Manager) RemoveWorkspace(ctx context.Context, identifier, branchName st
 	}
 
 	if m.cfg.Hooks.BeforeRemove != "" {
+		// logFn is intentionally omitted: at cleanup time the per-issue log buffer
+		// entry may already be removed, so there is no reliable destination for
+		// hook output. Hook failures are still surfaced via slog.Warn below.
 		if err := RunHook(ctx, m.cfg.Hooks.BeforeRemove, hookPath, m.cfg.Hooks.TimeoutMs); err != nil {
 			// Hook failure is non-fatal: log and proceed with removal so a broken
 			// hook cannot permanently prevent workspace cleanup.

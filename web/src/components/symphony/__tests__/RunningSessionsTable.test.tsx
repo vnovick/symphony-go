@@ -15,7 +15,6 @@ vi.mock('../../../queries/issues', () => ({
   useCancelIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useTerminateIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useResumeIssue: () => ({ mutate: vi.fn(), isPending: false }),
-  useReanalyzeIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useSetIssueProfile: () => ({ mutate: vi.fn(), isPending: false }),
   useTriggerAIReview: () => ({ mutate: vi.fn(), isPending: false }),
   useIssues: () => ({ data: [] }),
@@ -149,14 +148,13 @@ describe('RunningSessionsTable', () => {
     expect(screen.getByText(/Discard/)).toBeInTheDocument();
   });
 
-  it('shows PR link and Re-analyze button when paused with PR', () => {
+  it('shows PR link when paused with PR', () => {
     withSnapshot({
       paused: ['ISS-99'],
       pausedWithPR: { 'ISS-99': 'https://github.com/org/repo/pull/5' },
     });
     render(<RunningSessionsTable />, { wrapper: makeWrapper() });
     expect(screen.getByText('PR')).toBeInTheDocument();
-    expect(screen.getByText(/Re-analyze/)).toBeInTheDocument();
   });
 
   it('expands accordion on row click', async () => {

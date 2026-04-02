@@ -20,37 +20,37 @@ func makeLogLine(e bufLogEntry) string {
 }
 
 // ---------------------------------------------------------------------------
-// skipLine — still operates on plain text (called with level+" "+msg)
+// skipEntry — operates on parsed BufLogEntry fields
 // ---------------------------------------------------------------------------
 
-func TestSkipLine_SessionStarted(t *testing.T) {
+func TestSkipEntry_SessionStarted(t *testing.T) {
 	for _, prefix := range []string{"claude", "codex"} {
-		assert.True(t, skipLine("INFO "+prefix+": session started session_id=s1"), prefix)
+		assert.True(t, skipEntry(bufLogEntry{Level: "INFO", Msg: prefix + ": session started"}), prefix)
 	}
 }
 
-func TestSkipLine_TurnDone(t *testing.T) {
+func TestSkipEntry_TurnDone(t *testing.T) {
 	for _, prefix := range []string{"claude", "codex"} {
-		assert.True(t, skipLine("INFO "+prefix+": turn done session_id=s1"), prefix)
+		assert.True(t, skipEntry(bufLogEntry{Level: "INFO", Msg: prefix + ": turn done"}), prefix)
 	}
 }
 
-func TestSkipLine_DebugLines(t *testing.T) {
-	assert.True(t, skipLine(`DEBUG claude: tool_input session_id=s1 tool=Bash input="{}"`))
-	assert.True(t, skipLine(`DEBUG codex: tool_input session_id=s1 tool=shell input="{}"`))
+func TestSkipEntry_DebugLines(t *testing.T) {
+	assert.True(t, skipEntry(bufLogEntry{Level: "DEBUG", Msg: "claude: tool_input"}))
+	assert.True(t, skipEntry(bufLogEntry{Level: "DEBUG", Msg: "codex: tool_input"}))
 }
 
-func TestSkipLine_PassesThroughNormalLines(t *testing.T) {
-	normal := []string{
-		`INFO claude: text session_id=s1 text="hello"`,
-		`INFO claude: action session_id=s1 tool=Bash description="ls"`,
-		`INFO codex: action session_id=s1 tool=shell description="make"`,
-		`INFO codex: subagent session_id=s1 tool=spawn_agent description="sub"`,
-		`WARN something went wrong`,
-		`ERROR fatal error`,
+func TestSkipEntry_PassesThroughNormalLines(t *testing.T) {
+	normal := []bufLogEntry{
+		{Level: "INFO", Msg: "claude: text"},
+		{Level: "INFO", Msg: "claude: action"},
+		{Level: "INFO", Msg: "codex: action"},
+		{Level: "INFO", Msg: "codex: subagent"},
+		{Level: "WARN", Msg: "something went wrong"},
+		{Level: "ERROR", Msg: "fatal error"},
 	}
-	for _, line := range normal {
-		assert.False(t, skipLine(line), "should not skip: %q", line)
+	for _, e := range normal {
+		assert.False(t, skipEntry(e), "should not skip: %q %q", e.Level, e.Msg)
 	}
 }
 

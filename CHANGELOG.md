@@ -85,6 +85,23 @@ would show subagents from all prior runs mixed together.
 | `web/src/types/schemas.ts` | `IssueLogEntrySchema.sessionId z.string().optional()`; `StateSnapshotSchema.currentAppSessionId z.string().optional()` |
 | `web/src/pages/Timeline/index.tsx` | `NormalisedSession.sessionId?: string` threaded through `fromRunning`/`fromHistory`; `extractSubagents` accepts `filterSessionId?: string` — filters log entries to the run's session before parsing, so each expanded run shows only its own subagents; daemon session badge in header |
 
+#### `.env` file support
+
+| File | Change |
+|------|--------|
+| `cmd/symphony/main.go` | `loadDotEnv()` *(new)* — loads `.symphony/.env` or `.env` from CWD at startup via `github.com/joho/godotenv`; existing env vars are never overwritten; runs before `config.Load` so env vars are available for config resolution |
+| `.env.example` *(new)* | Documents all required env vars with format hints (`LINEAR_API_KEY`, `GITHUB_TOKEN`, `SSH_KEY_PATH`) |
+
+#### Single-issue fast-path fetch (`FetchIssueByIdentifier`)
+
+| File | Change |
+|------|--------|
+| `internal/tracker/tracker.go` | `Tracker` interface gains `FetchIssueByIdentifier(ctx, identifier) (*Issue, error)` method |
+| `internal/tracker/linear/client.go` | Implements `FetchIssueByIdentifier` for Linear |
+| `internal/tracker/github/client.go` | Implements `FetchIssueByIdentifier` for GitHub |
+| `internal/tracker/memory.go` | Implements `FetchIssueByIdentifier` for in-memory tracker |
+| `internal/server/server.go` | New `FetchIssue` callback on `server.Config`; `handleIssueDetail` uses fast path via `FetchIssue` with fallback to `fetchIssues` scan |
+
 #### `symphony init --runner` flag
 
 | File | Change |
@@ -136,6 +153,26 @@ would show subagents from all prior runs mixed together.
 | `internal/orchestrator/orchestrator.go` | `Snapshot()` merges live `issueProfiles` map (written concurrently by `SetIssueProfile`) into the snapshot overlay so board views see profile assignments without waiting for the next event-loop tick |
 | `internal/agent/claude.go` | `ValidateClaudeCLI()` / `ValidateClaudeCLICommand(command string)` *(new)* — verify CLI availability on PATH with a 5-second timeout before spawning; `validateCLI(name, hint)` internal helper |
 
+#### Server constructor refactor (`server.Config` struct)
+
+| File | Change |
+|------|--------|
+| `internal/server/server.go` | `server.New()` now accepts a `server.Config` struct instead of positional arguments + 20+ setter methods; all setter methods removed; `server.Validate()` method added for startup config validation; nil-check guards removed from handlers (functions are now required at construction) |
+
+#### Log buffer memory safety
+
+| File | Change |
+|------|--------|
+| `internal/server/handlers.go` | SSE log streaming `pending` changed from `string` to `bytes.Buffer` with **256 KB cap** to prevent unbounded memory growth from fast-producing agents |
+
+#### Typed tracker errors
+
+| File | Change |
+|------|--------|
+| `internal/tracker/errors.go` *(new)* | `ErrNotFound` sentinel, `NotFoundError` (supports `errors.Is`), `APIStatusError`, `GraphQLError` — structured error types replace opaque `fmt.Errorf` strings across Linear and GitHub adapters |
+| `internal/tracker/normalize.go` *(new)* | Shared `ParseTime` and `ToIntVal` helpers extracted from both Linear and GitHub packages (removes duplication) |
+| `internal/workflow/loader.go` | `workflow.Error` type with error codes (`ErrMissingFile`, `ErrParseError`) for structured error handling |
+
 #### Tests
 
 | File | Change |
@@ -181,6 +218,7 @@ would show subagents from all prior runs mixed together.
 - Web UI: `parseLogLine` now handles `ERROR`-level log entries (previously silently dropped)
 - TUI: `logBuf` entries added for `before_run hook failed` and `prompt render failed` paths so
   the TUI shows actual error reasons instead of a blank log
+- SSH agent execution: flag changed from `-T` (disable PTY) to `-t` (allocate PTY) so remote processes receive `SIGHUP` when SSH exits — prevents orphaned agent processes on SSH hosts
 - `gofmt` violations in `state.go` and `client_test.go`
 - README: license badge replaced with static badge (was failing due to GitHub license detection)
 
@@ -201,6 +239,7 @@ would show subagents from all prior runs mixed together.
 | `AgentConfig` timeout docs | Each of `turn_timeout_ms`, `read_timeout_ms`, `stall_timeout_ms` now has a doc comment explaining scope, default, and how it differs from the others |
 | ADR 001 | `docs/adr/001-single-goroutine-orchestrator.md` — explains the event-loop model, invariants, and trade-offs vs channels/actors |
 | Compatibility matrix | `docs/compatibility.md` — Go runtime, Claude Code / Codex CLI versions, Linear API, GitHub REST API (pinned `2022-11-28`), Node.js, OS support |
+| Dashboard redesign spec | `docs/dashboard-redesign-spec.md` — design direction, information hierarchy, UI modules, and visual system for the web dashboard |
 | Lint clean | Fixed `react-hooks/set-state-in-effect`, `react-hooks/refs`, `no-confusing-void-expression`, and `restrict-template-expressions` in `RunningSessionsTable` and `ErrorBoundary` |
 
 ### Changed

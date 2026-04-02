@@ -26,6 +26,9 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if _, discarding := state.DiscardingIdentifiers[issue.Identifier]; discarding {
 		return "discarding"
 	}
+	if _, inputReq := state.InputRequiredIssues[issue.Identifier]; inputReq {
+		return "input_required"
+	}
 	if _, running := state.Running[issue.ID]; running {
 		return "already_running"
 	}

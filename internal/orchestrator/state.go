@@ -38,6 +38,13 @@ const (
 	// retry queue (no live worker). The event loop removes the retry entry,
 	// releases the claim, and moves the issue to PausedIdentifiers.
 	EventCancelRetry EventType = "CancelRetry"
+	// EventProvideInput is sent by ProvideInput when the user provides a message
+	// for an input-required issue. The event loop removes the entry from
+	// InputRequiredIssues and dispatches a resumed worker.
+	EventProvideInput EventType = "ProvideInput"
+	// EventDismissInput is sent by DismissInput when the user dismisses an
+	// input-required issue without providing input. Moves to PausedIdentifiers.
+	EventDismissInput EventType = "DismissInput"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -47,8 +54,10 @@ type OrchestratorEvent struct { //nolint:revive
 	Identifier   string // human identifier (e.g. "ENG-1"); used by ForceReanalyze events
 	RunEntry     *RunEntry
 	RetryEntry   *RetryEntry
-	Error        error
-	CompletedRun *CompletedRun // used by EventReviewerCompleted
+	Error              error
+	Message            string              // user-provided text for EventProvideInput
+	CompletedRun       *CompletedRun       // used by EventReviewerCompleted
+	InputRequiredEntry *InputRequiredEntry  // used by TerminalInputRequired
 }
 
 // TerminalReason classifies why a worker stopped.
@@ -59,12 +68,30 @@ const (
 	TerminalSucceeded                TerminalReason = "succeeded"
 	TerminalFailed                   TerminalReason = "failed"
 	TerminalCanceledByReconciliation TerminalReason = "canceled_by_reconciliation"
-	TerminalCanceledByUser           TerminalReason = "canceled_by_user"
 	// TerminalStalled is used when a worker is killed by stall detection.
 	// Claim and retry management are handled inline by ReconcileStalls; the
 	// event loop only records history when it sees this reason.
 	TerminalStalled TerminalReason = "stalled"
+	// TerminalInputRequired is used when the agent signals it needs human input
+	// (permission prompt, missing API key, etc.). The issue is moved to the
+	// InputRequiredIssues queue instead of being retried or marked as succeeded.
+	TerminalInputRequired TerminalReason = "input_required"
 )
+
+// InputRequiredEntry holds context for an issue whose agent is blocked waiting
+// for human input. Stored in State.InputRequiredIssues until the user provides
+// input (via ProvideInput) or dismisses it (via DismissInput).
+type InputRequiredEntry struct {
+	IssueID     string
+	Identifier  string
+	SessionID   string    // for --resume
+	Context     string    // what the agent was waiting for (from FailureText/ResultText)
+	Backend     string    // which runner was used
+	Command     string    // agent command (for resume on same runner)
+	WorkerHost  string    // SSH host (for resume on same host)
+	ProfileName string    // active profile
+	QueuedAt    time.Time
+}
 
 // RunEntry tracks a live agent worker goroutine.
 type RunEntry struct {
@@ -97,7 +124,7 @@ type CompletedRun struct {
 	TotalTokens  int
 	InputTokens  int
 	OutputTokens int
-	Status       string // "succeeded" | "failed" | "cancelled"
+	Status       string // "succeeded" | "failed" | "cancelled" | "stalled" | "input_required"
 	WorkerHost   string
 	Backend      string
 	SessionID    string
@@ -157,6 +184,28 @@ type State struct {
 	// TUI's background TriggerPoll from re-picking them before the label update
 	// (e.g. removing "In Progress") finishes. Cleared by EventDiscardComplete.
 	DiscardingIdentifiers map[string]struct{}
+	// InputRequiredIssues tracks issues whose agent signalled that it needs
+	// human input to continue. Key: identifier. These issues are not dispatched
+	// until the user provides input or dismisses.
+	InputRequiredIssues map[string]*InputRequiredEntry
+	// InlineInputIssues is deprecated but kept for snapshot copy compatibility.
+	// All input-required handling now uses InputRequiredIssues.
+	InlineInputIssues map[string]*InlineInputEntry
+}
+
+// InlineInputEntry holds context for an input-required issue that was
+// delegated to the tracker via a comment (inlineInput mode).
+type InlineInputEntry struct {
+	IssueID          string
+	Identifier       string
+	SessionID        string
+	Context          string // agent's question
+	Backend          string
+	Command          string
+	WorkerHost       string
+	ProfileName      string
+	PostedAt         time.Time
+	LastCommentCount int // comment count at time of posting, to detect new ones
 }
 
 // NewState initialises a State from a config snapshot.
@@ -175,5 +224,7 @@ func NewState(cfg *config.Config) State {
 		ForceReanalyze:        make(map[string]struct{}),
 		PrevActiveIdentifiers: make(map[string]struct{}),
 		DiscardingIdentifiers: make(map[string]struct{}),
+		InputRequiredIssues:   make(map[string]*InputRequiredEntry),
+		InlineInputIssues:    make(map[string]*InlineInputEntry),
 	}
 }

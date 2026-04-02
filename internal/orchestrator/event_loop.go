@@ -22,6 +22,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.loadHistoryFromDisk()
 	state := NewState(o.cfg)
 	state = o.loadPausedFromDisk(state)
+	state = o.loadInputRequiredFromDisk(state)
 	tick := time.NewTimer(0)
 	defer tick.Stop()
 
@@ -49,6 +50,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	o.reviewerWg.Wait()
 	o.autoClearWg.Wait()
+	o.discardWg.Wait()
 	return loopErr
 }
 
@@ -118,6 +120,10 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 
 	state.PrevActiveIdentifiers = currentActive
 
+	// Check for tracker comment replies to input-required issues.
+	// If a user replied via Linear/GitHub, auto-resume the agent.
+	state = o.checkTrackerReplies(ctx, state)
+
 	slots := AvailableSlots(state)
 	slog.Debug("orchestrator: tick",
 		"fetched", len(issues),
@@ -142,6 +148,19 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 				"state", issue.State,
 				"reason", reason,
 			)
+			continue
+		}
+		// Guard: if the latest comment is an unresolved Symphony input-required
+		// comment, restore the issue to InputRequiredIssues instead of dispatching
+		// a fresh worker. This recovers from daemon restarts / state loss.
+		if entry := o.recoverInputRequired(ctx, issue); entry != nil {
+			state.InputRequiredIssues[issue.Identifier] = entry
+			slog.Info("orchestrator: recovered input-required from tracker comment",
+				"identifier", issue.Identifier)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLine("INFO",
+					"worker: awaiting user input (recovered from tracker comment)"))
+			}
 			continue
 		}
 		state = o.dispatch(ctx, state, issue, 0)
@@ -208,6 +227,130 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 	return state
 }
 
+// symphonyCommentPrefix is the prefix used by Symphony when posting input-required
+// question comments. Used to identify and skip own comments when detecting user replies.
+const symphonyCommentPrefix = "🤖 **Agent needs your input**"
+
+// recoverInputRequired fetches the full issue detail (with comments) and checks
+// if the latest comment is an unresolved Symphony input-required question.
+// If so, returns an InputRequiredEntry reconstructed from the comment,
+// preventing a wasteful fresh dispatch. Returns nil if no recovery is needed.
+func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Issue) *InputRequiredEntry {
+	detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
+	if err != nil {
+		slog.Warn("orchestrator: recoverInputRequired detail fetch failed",
+			"identifier", issue.Identifier, "error", err)
+		return nil
+	}
+	if len(detailed.Comments) == 0 {
+		return nil
+	}
+	// Walk comments in reverse to find the last Symphony question.
+	lastSymphonyIdx := -1
+	for i := len(detailed.Comments) - 1; i >= 0; i-- {
+		if strings.HasPrefix(detailed.Comments[i].Body, symphonyCommentPrefix) {
+			lastSymphonyIdx = i
+			break
+		}
+	}
+	if lastSymphonyIdx < 0 {
+		return nil // no Symphony question comment found
+	}
+	// Check if there's a non-Symphony comment after it (= user replied).
+	for i := lastSymphonyIdx + 1; i < len(detailed.Comments); i++ {
+		if !strings.HasPrefix(detailed.Comments[i].Body, symphonyCommentPrefix) {
+			return nil // user already replied — safe to dispatch fresh
+		}
+	}
+	// Extract the question context from the comment body.
+	body := detailed.Comments[lastSymphonyIdx].Body
+	questionCtx := strings.TrimPrefix(body, symphonyCommentPrefix)
+	questionCtx = strings.TrimSpace(questionCtx)
+	// Strip the trailing instruction line.
+	if idx := strings.LastIndex(questionCtx, "\n---\n"); idx >= 0 {
+		questionCtx = strings.TrimSpace(questionCtx[:idx])
+	}
+	return &InputRequiredEntry{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		Context:    questionCtx,
+		QueuedAt:   time.Now(),
+	}
+}
+
+// checkTrackerReplies polls tracker comments for each InputRequiredIssues entry.
+// If a non-Symphony comment appeared after the agent's question, treat it as
+// the user's reply and resume the agent — same as ProvideInput from the dashboard.
+func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) State {
+	if len(state.InputRequiredIssues) == 0 {
+		return state
+	}
+	for identifier, entry := range state.InputRequiredIssues {
+		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
+		if err != nil {
+			slog.Warn("orchestrator: tracker-reply check failed",
+				"identifier", identifier, "error", err)
+			continue
+		}
+		// Find the last Symphony question comment and check for a reply after it.
+		lastSymphonyIdx := -1
+		for i := len(detailed.Comments) - 1; i >= 0; i-- {
+			if strings.HasPrefix(detailed.Comments[i].Body, symphonyCommentPrefix) {
+				lastSymphonyIdx = i
+				break
+			}
+		}
+		if lastSymphonyIdx < 0 {
+			continue // no question comment found — wait
+		}
+		// Look for a non-Symphony reply after the question.
+		var userReply string
+		for i := lastSymphonyIdx + 1; i < len(detailed.Comments); i++ {
+			if !strings.HasPrefix(detailed.Comments[i].Body, symphonyCommentPrefix) {
+				userReply = detailed.Comments[i].Body
+				break
+			}
+		}
+		if userReply == "" {
+			continue // no reply yet
+		}
+		slog.Info("orchestrator: tracker comment reply detected, resuming agent",
+			"identifier", identifier, "reply_length", len(userReply))
+		if o.logBuf != nil {
+			o.logBuf.Add(identifier, makeBufLine("INFO",
+				"worker: user replied via tracker comment — resuming agent"))
+		}
+		delete(state.InputRequiredIssues, identifier)
+
+		sid := entry.SessionID
+		var sessionPtr *string
+		if sid != "" {
+			sessionPtr = &sid
+		}
+		workerCtx, workerCancel := context.WithCancel(ctx)
+		state.Claimed[entry.IssueID] = struct{}{}
+		state.Running[entry.IssueID] = &RunEntry{
+			Issue:      *detailed,
+			SessionID:  entry.SessionID,
+			WorkerHost: entry.WorkerHost,
+			Backend:    entry.Backend,
+			StartedAt:  time.Now(),
+		}
+		o.workerCancelsMu.Lock()
+		o.workerCancels[identifier] = workerCancel
+		o.workerCancelsMu.Unlock()
+		runnerCommand := entry.Command
+		if entry.Backend != "" {
+			runnerCommand = agent.CommandWithBackendHint(entry.Command, entry.Backend)
+		}
+		go o.runWorkerWithResume(workerCtx, *detailed, entry.WorkerHost, runnerCommand, entry.Backend, entry.ProfileName, sessionPtr, userReply)
+		if o.OnStateChange != nil {
+			o.OnStateChange()
+		}
+	}
+	return state
+}
+
 func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.Issue, attempt int) State {
 	workerCtx, workerCancel := context.WithCancel(ctx)
 
@@ -235,22 +378,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	workerHost := ""
 	if len(hosts) > 0 {
 		if dispatchStrategy == "least-loaded" {
-			hostCount := make(map[string]int, len(hosts))
-			for _, h := range hosts {
-				hostCount[h] = 0
-			}
-			for _, entry := range state.Running {
-				if _, ok := hostCount[entry.WorkerHost]; ok {
-					hostCount[entry.WorkerHost]++
-				}
-			}
-			minCount := int(^uint(0) >> 1)
-			for _, h := range hosts {
-				if c := hostCount[h]; c < minCount {
-					minCount = c
-					workerHost = h
-				}
-			}
+			workerHost = selectLeastLoadedHost(hosts, state.Running)
 		} else {
 			// Default: round-robin.
 			workerHost = hosts[o.sshHostIdx%len(hosts)]
@@ -270,20 +398,22 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		o.cfgMu.RLock()
 		profile, ok := o.cfg.Agent.Profiles[profileName]
 		o.cfgMu.RUnlock()
-		if ok && profile.Command != "" {
-			agentCommand = profile.Command
-			runnerCommand = agentCommand
-			backend = agent.BackendFromCommand(agentCommand)
+		if !ok {
+			slog.Warn("orchestrator: profile not found, using default",
+				"identifier", issue.Identifier, "profile", profileName)
+			profileName = "" // clear so the worker does not reference a missing profile
+		} else {
+			if profile.Command != "" {
+				agentCommand = profile.Command
+				runnerCommand = agentCommand
+				backend = agent.BackendFromCommand(agentCommand)
+			}
 			if profile.Backend != "" {
 				backend = profile.Backend
 				runnerCommand = agent.CommandWithBackendHint(agentCommand, profile.Backend)
 			}
-			slog.Info("orchestrator: using profile command",
+			slog.Info("orchestrator: using profile",
 				"identifier", issue.Identifier, "profile", profileName, "command", agentCommand, "backend", backend)
-		} else {
-			slog.Warn("orchestrator: profile not found or has no command, using default",
-				"identifier", issue.Identifier, "profile", profileName)
-			profileName = "" // clear so the worker does not reference a missing profile
 		}
 	}
 
@@ -347,7 +477,7 @@ func (o *Orchestrator) transitionToWorking(ctx context.Context, issue domain.Iss
 	}
 }
 
-func (o *Orchestrator) handleEvent(_ context.Context, state State, ev OrchestratorEvent) State {
+func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev OrchestratorEvent) State {
 	switch ev.Type {
 	case EventWorkerUpdate:
 		if entry, ok := state.Running[ev.IssueID]; ok && ev.RunEntry != nil {
@@ -442,6 +572,69 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 		state.PausedIdentifiers[ev.Identifier] = ev.IssueID
 		o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
 		slog.Info("orchestrator: retry-queue issue cancelled and paused", "identifier", ev.Identifier)
+		if o.OnStateChange != nil {
+			o.OnStateChange()
+		}
+
+	case EventProvideInput:
+		entry, ok := state.InputRequiredIssues[ev.Identifier]
+		if !ok {
+			slog.Warn("orchestrator: provide-input for unknown identifier", "identifier", ev.Identifier)
+			return state
+		}
+		delete(state.InputRequiredIssues, ev.Identifier)
+		slog.Info("orchestrator: user provided input, resuming agent",
+			"identifier", ev.Identifier, "session_id", entry.SessionID)
+		// Post the user's reply as a tracker comment so the conversation
+		// is visible in Linear/GitHub alongside the agent's question.
+		go func(issueID, ident, msg string) {
+			postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
+			defer cancel()
+			if err := o.tracker.CreateComment(postCtx, issueID, msg); err != nil {
+				slog.Warn("orchestrator: failed to post user input as tracker comment",
+					"identifier", ident, "error", err)
+			}
+		}(entry.IssueID, ev.Identifier, ev.Message)
+		// Dispatch a resumed worker with the user's message as the prompt
+		// and the saved session ID for --resume.
+		sid := entry.SessionID
+		var sessionPtr *string
+		if sid != "" {
+			sessionPtr = &sid
+		}
+		workerCtx, workerCancel := context.WithCancel(ctx)
+		state.Claimed[entry.IssueID] = struct{}{}
+		state.Running[entry.IssueID] = &RunEntry{
+			Issue:      domain.Issue{ID: entry.IssueID, Identifier: entry.Identifier},
+			SessionID:  entry.SessionID,
+			WorkerHost: entry.WorkerHost,
+			Backend:    entry.Backend,
+			StartedAt:  time.Now(),
+		}
+		o.workerCancelsMu.Lock()
+		o.workerCancels[entry.Identifier] = workerCancel
+		o.workerCancelsMu.Unlock()
+		// Build the command with backend hint if needed.
+		runnerCommand := entry.Command
+		if entry.Backend != "" {
+			runnerCommand = agent.CommandWithBackendHint(entry.Command, entry.Backend)
+		}
+		issue := domain.Issue{ID: entry.IssueID, Identifier: entry.Identifier}
+		go o.runWorkerWithResume(workerCtx, issue, entry.WorkerHost, runnerCommand, entry.Backend, entry.ProfileName, sessionPtr, ev.Message)
+		if o.OnStateChange != nil {
+			o.OnStateChange()
+		}
+
+	case EventDismissInput:
+		entry, ok := state.InputRequiredIssues[ev.Identifier]
+		if !ok {
+			slog.Warn("orchestrator: dismiss-input for unknown identifier", "identifier", ev.Identifier)
+			return state
+		}
+		delete(state.InputRequiredIssues, ev.Identifier)
+		state.PausedIdentifiers[ev.Identifier] = entry.IssueID
+		o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
+		slog.Info("orchestrator: input-required issue dismissed and paused", "identifier", ev.Identifier)
 		if o.OnStateChange != nil {
 			o.OnStateChange()
 		}
@@ -572,6 +765,28 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 			// is nil because ReconcileStalls already deleted it from state.Running).
 			o.recordHistory(ev.RunEntry, issue, now, "stalled")
 
+		case TerminalInputRequired:
+			delete(state.Claimed, ev.IssueID)
+			entry := ev.InputRequiredEntry
+			if entry == nil {
+				break
+			}
+			// Post the agent's question as a tracker comment so it's visible
+			// in Linear/GitHub. The dashboard shows a reply UI; user replies
+			// are also posted as tracker comments before resuming the agent.
+			commentText := fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n_Reply via the Symphony dashboard to continue._", entry.Context)
+			go func(issueID, ident string) {
+				postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
+				defer cancel()
+				if err := o.tracker.CreateComment(postCtx, issueID, commentText); err != nil {
+					slog.Warn("orchestrator: failed to post input-required comment", "identifier", ident, "error", err)
+				}
+			}(entry.IssueID, issue.Identifier)
+			state.InputRequiredIssues[issue.Identifier] = entry
+			slog.Info("orchestrator: issue queued for human input",
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+			o.recordHistory(liveEntry, issue, now, "input_required")
+
 		default: // TerminalFailed (and any other unhandled terminal reasons)
 			// context.Canceled means the worker was stopped by the orchestrator
 			// (stall timeout, reload, shutdown) — not a real failure. Release the
@@ -582,19 +797,93 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 					"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 				// Not recorded — the issue will be re-dispatched.
 			} else {
-				backoff := BackoffMs(attempt+1, o.cfg.Agent.MaxRetryBackoffMs)
 				errMsg := ""
 				if ev.Error != nil {
 					errMsg = ev.Error.Error()
 				}
-				state = ScheduleRetry(state, ev.IssueID, attempt+1, issue.Identifier, errMsg, now, backoff)
-				slog.Info("orchestrator: worker failed, retry scheduled",
-					"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
-					"attempt", attempt+1, "backoff_ms", backoff)
-				o.recordHistory(liveEntry, issue, now, "failed")
+				nextAttempt := attempt + 1
+				maxRetries := o.cfg.Agent.MaxRetries
+				if maxRetries > 0 && nextAttempt > maxRetries {
+					// Max retries exhausted — move to failed state or pause.
+					slog.Warn("worker: max retries exhausted",
+						"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+						"attempts", attempt, "max_retries", maxRetries)
+					if o.logBuf != nil {
+						o.logBuf.Add(issue.Identifier, makeBufLine("ERROR",
+							fmt.Sprintf("worker: max retries exhausted (%d/%d) — moving to failed state", attempt, maxRetries)))
+					}
+					o.commentMaxRetriesExhausted(issue, attempt, errMsg)
+					failedState := o.cfg.Tracker.FailedState
+					if failedState != "" {
+						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState)
+					} else {
+						state.PausedIdentifiers[issue.Identifier] = issue.ID
+						o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
+					}
+					delete(state.Claimed, ev.IssueID)
+					o.recordHistory(liveEntry, issue, now, "failed")
+				} else {
+					backoff := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
+					state = ScheduleRetry(state, ev.IssueID, nextAttempt, issue.Identifier, errMsg, now, backoff)
+					slog.Info("orchestrator: worker failed, retry scheduled",
+						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
+						"attempt", nextAttempt, "backoff_ms", backoff)
+					o.recordHistory(liveEntry, issue, now, "failed")
+				}
 			}
 		}
 	}
+	return state
+}
+
+// commentMaxRetriesExhausted posts a comment on the issue explaining that
+// the maximum number of retries has been exhausted.
+// Uses context.Background() intentionally: this notification must be delivered
+// even during graceful shutdown so the issue owner knows why retries stopped.
+func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts int, lastErr string) {
+	comment := fmt.Sprintf(
+		"Symphony: maximum retries exhausted (%d attempts). Last error:\n\n%s\n\nIssue has been moved to failed state. Re-open or move back to an active state to retry.",
+		attempts, lastErr)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := o.tracker.CreateComment(ctx, issue.ID, comment); err != nil {
+		slog.Warn("worker: failed to post max-retries comment", "issue_id", issue.ID, "error", err)
+	}
+}
+
+// asyncDiscardAndTransitionTo is like asyncDiscardAndTransition but transitions
+// the issue to a caller-specified target state instead of computing backlog/active.
+// Returns the (potentially mutated) state. No-op when issueID or targetState is empty.
+//
+// Uses context.Background() intentionally: the tracker state transition must
+// complete even during graceful shutdown to avoid leaving issues in an
+// inconsistent state. The timeout ensures the goroutine is bounded.
+func (o *Orchestrator) asyncDiscardAndTransitionTo(state State, issueID, identifier, targetState string) State {
+	if issueID == "" || targetState == "" {
+		return state
+	}
+	state.DiscardingIdentifiers[identifier] = struct{}{}
+	o.discardWg.Add(1)
+	go func() {
+		defer o.discardWg.Done()
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState); err != nil {
+			slog.Warn("orchestrator: failed to transition issue to failed state",
+				"identifier", identifier, "target_state", targetState, "error", err)
+		} else {
+			slog.Info("orchestrator: issue transitioned to failed state",
+				"identifier", identifier, "state", targetState)
+		}
+		updateCancel()
+		sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer sendCancel()
+		select {
+		case o.events <- OrchestratorEvent{Type: EventDiscardComplete, Identifier: identifier}:
+		case <-sendCtx.Done():
+			slog.Warn("orchestrator: discard complete event lost, identifier may be stuck",
+				"identifier", identifier)
+		}
+	}()
 	return state
 }
 
@@ -603,6 +892,10 @@ func (o *Orchestrator) handleEvent(_ context.Context, state State, ev Orchestrat
 // and spawns a goroutine to update the tracker and send EventDiscardComplete.
 // Returns the (potentially mutated) state. No-op when issueID is empty or no
 // target state can be determined.
+//
+// Uses context.Background() intentionally: the tracker state transition must
+// complete even during graceful shutdown to avoid leaving issues in an
+// inconsistent state. The timeout ensures the goroutine is bounded.
 func (o *Orchestrator) asyncDiscardAndTransition(state State, issueID, identifier string) State {
 	if issueID == "" {
 		return state
@@ -623,7 +916,9 @@ func (o *Orchestrator) asyncDiscardAndTransition(state State, issueID, identifie
 	}
 
 	state.DiscardingIdentifiers[identifier] = struct{}{}
+	o.discardWg.Add(1)
 	go func() {
+		defer o.discardWg.Done()
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		if err := o.tracker.UpdateIssueState(updateCtx, issueID, targetState); err != nil {
 			slog.Warn("orchestrator: failed to transition discarded issue",
@@ -709,17 +1004,21 @@ func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile
 }
 
 // StartupTerminalCleanup fetches terminal issues and removes their workspaces.
-// Fetch failure logs a warning and continues startup.
+// Runs in the background with a 15-second timeout so it never blocks startup.
 func StartupTerminalCleanup(ctx context.Context, tr tracker.Tracker, terminalStates []string, removeWorkspace func(string) error) {
-	issues, err := tr.FetchIssuesByStates(ctx, terminalStates)
-	if err != nil {
-		slog.Warn("startup: terminal workspace cleanup fetch failed, continuing", "error", err)
-		return
-	}
-	for _, issue := range issues {
-		if err := removeWorkspace(issue.Identifier); err != nil {
-			slog.Warn("startup: failed to remove workspace",
-				"identifier", issue.Identifier, "error", err)
+	go func() {
+		cleanupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		issues, err := tr.FetchIssuesByStates(cleanupCtx, terminalStates)
+		if err != nil {
+			slog.Warn("startup: terminal workspace cleanup fetch failed, continuing", "error", err)
+			return
 		}
-	}
+		for _, issue := range issues {
+			if err := removeWorkspace(issue.Identifier); err != nil {
+				slog.Warn("startup: failed to remove workspace",
+					"identifier", issue.Identifier, "error", err)
+			}
+		}
+	}()
 }

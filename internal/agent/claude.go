@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -111,6 +112,7 @@ func (c *ClaudeRunner) RunTurn(
 		// Bare name — wrap in login shell so PATH is resolved at runtime.
 		cmd = exec.CommandContext(turnCtx, loginShell(), "-lc", buildShellCmd(command, sessionID, prompt))
 	}
+	setProcessGroup(cmd)
 	if workspacePath != "" && workerHost == "" {
 		cmd.Dir = workspacePath
 	}
@@ -135,16 +137,26 @@ func (c *ClaudeRunner) RunTurn(
 	result, readErr := readLines(turnCtx, log, onProgress, stdout, readTimeoutMs, "claude", ParseLine)
 
 	// Wait regardless of readErr so we don't leave zombie processes.
-	if waitErr := cmd.Wait(); waitErr != nil && readErr == nil {
+	waitErr := cmd.Wait()
+	if waitErr != nil && readErr == nil {
 		result.Failed = true
 	}
 
-	// Attach stderr to FailureText when it adds information.
-	if stderr := strings.TrimSpace(stderrBuf.String()); stderr != "" && result.Failed {
+	// Attach stderr and/or wait error to FailureText so the user sees why the CLI failed.
+	stderr := strings.TrimSpace(stderrBuf.String())
+	if result.Failed {
+		parts := make([]string, 0, 3)
 		if result.FailureText != "" {
-			result.FailureText = result.FailureText + " | stderr: " + stderr
-		} else {
-			result.FailureText = stderr
+			parts = append(parts, result.FailureText)
+		}
+		if stderr != "" {
+			parts = append(parts, "stderr: "+stderr)
+		}
+		if waitErr != nil && result.FailureText == "" && stderr == "" {
+			parts = append(parts, "exit: "+waitErr.Error())
+		}
+		if len(parts) > 0 {
+			result.FailureText = strings.Join(parts, " | ")
 		}
 	}
 
@@ -409,6 +421,20 @@ func shellSemanticDesc(cmd string) string {
 }
 
 // loginShell returns the user's login shell from $SHELL, falling back to bash.
+// setProcessGroup configures cmd to run in its own process group and to kill
+// the entire group (including child processes) when the context is cancelled.
+// Without this, cancelling a "bash -lc 'codex ...'" only kills bash, not codex.
+func setProcessGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		// Kill the entire process group (negative PID).
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}
+
 func loginShell() string {
 	if sh := os.Getenv("SHELL"); sh != "" {
 		return sh

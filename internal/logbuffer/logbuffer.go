@@ -13,39 +13,67 @@ import (
 
 const maxLinesPerIssue = 500
 
+// issueBuf is a per-identifier ring buffer with its own mutex.
+// Different identifiers never contend with each other.
+type issueBuf struct {
+	mu    sync.RWMutex
+	lines []string
+}
+
 // Buffer stores the last N log lines per issue identifier.
 // When a log directory is configured via SetLogDir, lines are also appended to
 // per-issue files on disk so they survive restarts and issue completion.
 type Buffer struct {
-	mu     sync.RWMutex
-	lines  map[string][]string
+	issues sync.Map // map[string]*issueBuf
+
+	// dirMu guards logDir only. It is separate from per-issue locks
+	// so reading logDir never blocks on a different issue's Add.
+	dirMu  sync.RWMutex
 	logDir string // empty = no disk persistence
 }
 
 // New creates an empty Buffer.
 func New() *Buffer {
-	return &Buffer{lines: make(map[string][]string)}
+	return &Buffer{}
 }
 
 // SetLogDir configures a directory for per-issue log file persistence.
 // The directory is created on first use. Calling this after Add calls is safe.
 func (b *Buffer) SetLogDir(dir string) {
-	b.mu.Lock()
+	b.dirMu.Lock()
 	b.logDir = dir
-	b.mu.Unlock()
+	b.dirMu.Unlock()
+}
+
+func (b *Buffer) getLogDir() string {
+	b.dirMu.RLock()
+	defer b.dirMu.RUnlock()
+	return b.logDir
+}
+
+// getOrCreate returns the issueBuf for identifier, creating it if needed.
+func (b *Buffer) getOrCreate(identifier string) *issueBuf {
+	if v, ok := b.issues.Load(identifier); ok {
+		return v.(*issueBuf)
+	}
+	ib := &issueBuf{}
+	v, _ := b.issues.LoadOrStore(identifier, ib)
+	return v.(*issueBuf)
 }
 
 // Add appends a line for the given identifier, dropping the oldest if over capacity.
 // If a log directory is configured, the line is also written to disk.
 func (b *Buffer) Add(identifier, line string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.lines[identifier] = append(b.lines[identifier], line)
-	if len(b.lines[identifier]) > maxLinesPerIssue {
-		b.lines[identifier] = b.lines[identifier][len(b.lines[identifier])-maxLinesPerIssue:]
+	ib := b.getOrCreate(identifier)
+	ib.mu.Lock()
+	ib.lines = append(ib.lines, line)
+	if len(ib.lines) > maxLinesPerIssue {
+		ib.lines = ib.lines[len(ib.lines)-maxLinesPerIssue:]
 	}
-	if b.logDir != "" {
-		b.appendToDisk(identifier, line)
+	ib.mu.Unlock()
+
+	if dir := b.getLogDir(); dir != "" {
+		appendToDisk(dir, identifier, line)
 	}
 }
 
@@ -53,36 +81,45 @@ func (b *Buffer) Add(identifier, line string) {
 // If the in-memory buffer is empty and a log directory is configured, falls back
 // to reading the on-disk log file.
 func (b *Buffer) Get(identifier string) []string {
-	b.mu.RLock()
-	mem := b.lines[identifier]
-	dir := b.logDir
-	b.mu.RUnlock()
+	dir := b.getLogDir()
 
-	if len(mem) == 0 && dir == "" {
-		return nil // unknown identifier, no disk configured
+	v, ok := b.issues.Load(identifier)
+	if !ok {
+		if dir == "" {
+			return nil
+		}
+		return readFromDisk(dir, identifier)
 	}
-	if len(mem) > 0 {
-		out := make([]string, len(mem))
-		copy(out, mem)
-		return out
+
+	ib := v.(*issueBuf)
+	ib.mu.RLock()
+	n := len(ib.lines)
+	if n == 0 {
+		ib.mu.RUnlock()
+		if dir == "" {
+			return nil
+		}
+		return readFromDisk(dir, identifier)
 	}
-	// Memory is empty and disk is configured — fall back to disk.
-	return b.readFromDisk(identifier)
+	out := make([]string, n)
+	copy(out, ib.lines)
+	ib.mu.RUnlock()
+	return out
 }
 
 // Identifiers returns all identifiers that have log data — either in-memory or
-// on disk. The returned slice is unsorted and may contain duplicates if both
-// sources are present; callers should deduplicate when order matters.
+// on disk. The returned slice is unsorted.
 func (b *Buffer) Identifiers() []string {
-	b.mu.RLock()
-	dir := b.logDir
-	ids := make([]string, 0, len(b.lines))
-	seen := make(map[string]struct{}, len(b.lines))
-	for id := range b.lines {
+	dir := b.getLogDir()
+	seen := make(map[string]struct{})
+	var ids []string
+
+	b.issues.Range(func(key, _ any) bool {
+		id := key.(string)
 		ids = append(ids, id)
 		seen[id] = struct{}{}
-	}
-	b.mu.RUnlock()
+		return true
+	})
 
 	if dir == "" {
 		return ids
@@ -110,32 +147,33 @@ func (b *Buffer) Identifiers() []string {
 // The on-disk log file is intentionally preserved so logs remain viewable after
 // an issue completes.
 func (b *Buffer) Remove(identifier string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.lines, identifier)
+	b.issues.Delete(identifier)
 }
 
 // ClearAll deletes all in-memory buffers and all on-disk log files in logDir.
 func (b *Buffer) ClearAll() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.lines = make(map[string][]string)
-	if b.logDir == "" {
+	b.issues.Range(func(key, _ any) bool {
+		b.issues.Delete(key)
+		return true
+	})
+
+	dir := b.getLogDir()
+	if dir == "" {
 		return nil
 	}
-	entries, err := os.ReadDir(b.logDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("logbuffer: read dir %s: %w", b.logDir, err)
+		return fmt.Errorf("logbuffer: read dir %s: %w", dir, err)
 	}
 	var first error
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
 			continue
 		}
-		if err := os.Remove(filepath.Join(b.logDir, e.Name())); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) {
 			if first == nil {
 				first = err
 			}
@@ -146,11 +184,9 @@ func (b *Buffer) ClearAll() error {
 
 // Clear deletes both the in-memory buffer and the on-disk log file for identifier.
 func (b *Buffer) Clear(identifier string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.lines, identifier)
-	if b.logDir != "" {
-		p := b.issuePath(identifier)
+	b.issues.Delete(identifier)
+	if dir := b.getLogDir(); dir != "" {
+		p := issuePath(dir, identifier)
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -158,18 +194,19 @@ func (b *Buffer) Clear(identifier string) error {
 	return nil
 }
 
-// --- internal helpers (must be called with mu held for write, or unlocked for read) ---
+// --- internal helpers ---
 
-func (b *Buffer) issuePath(identifier string) string {
-	// Sanitise the identifier so it is safe as a filename.
+// issuePath returns the on-disk log file path for identifier within dir.
+func issuePath(dir, identifier string) string {
 	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(identifier)
-	return filepath.Join(b.logDir, safe+".log")
+	return filepath.Join(dir, safe+".log")
 }
 
-func (b *Buffer) appendToDisk(identifier, line string) {
-	p := b.issuePath(identifier)
-	if err := os.MkdirAll(b.logDir, 0o755); err != nil {
-		slog.Warn("logbuffer: failed to create log dir", "dir", b.logDir, "error", err)
+// appendToDisk writes a single log line to the per-identifier file in dir.
+func appendToDisk(dir, identifier, line string) {
+	p := issuePath(dir, identifier)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Warn("logbuffer: failed to create log dir", "dir", dir, "error", err)
 		return
 	}
 	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -183,8 +220,8 @@ func (b *Buffer) appendToDisk(identifier, line string) {
 	}
 }
 
-func (b *Buffer) readFromDisk(identifier string) []string {
-	p := b.issuePath(identifier)
+func readFromDisk(dir, identifier string) []string {
+	p := issuePath(dir, identifier)
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil

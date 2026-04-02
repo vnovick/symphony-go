@@ -8,18 +8,14 @@ import {
   useCancelIssue,
   useTerminateIssue,
   useResumeIssue,
-  useReanalyzeIssue,
   useSetIssueProfile,
   useIssues,
 } from '../../queries/issues';
 import { fmtMs, stateBadgeColor } from '../../utils/format';
 import Badge from '../ui/badge/Badge';
-import { EMPTY_PROFILE_LABEL, EMPTY_PROFILES } from '../../utils/format';
+import { EMPTY_PROFILE_LABEL } from '../../utils/format';
+import { EMPTY_RUNNING, EMPTY_PAUSED, EMPTY_PROFILES } from '../../utils/constants';
 import { SessionAccordion } from './SessionAccordion';
-
-// Stable empty references — module-level to avoid reference equality churn
-const EMPTY_RUNNING: RunningRow[] = [];
-const EMPTY_PAUSED: string[] = [];
 const EMPTY_PAUSED_WITH_PR: Record<string, string> = {};
 
 
@@ -64,7 +60,6 @@ export default function RunningSessionsTable() {
   const cancelIssueMutation = useCancelIssue();
   const terminateIssueMutation = useTerminateIssue();
   const resumeIssueMutation = useResumeIssue();
-  const reanalyzeIssueMutation = useReanalyzeIssue();
   const setIssueProfileMutation = useSetIssueProfile();
   const { data: issues } = useIssues();
 
@@ -310,15 +305,6 @@ export default function RunningSessionsTable() {
 
                     {/* Actions — wrap on mobile */}
                     <div className="flex flex-shrink-0 gap-1.5 w-full sm:w-auto sm:ml-0 mt-1 sm:mt-0" onClick={(e) => { e.stopPropagation(); }}>
-                      {prURL && (
-                        <button
-                          onClick={() => { reanalyzeIssueMutation.mutate(identifier); }}
-                          className="btn-action-reanalyze inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"
-                          style={{ background: 'var(--accent-soft)', borderColor: 'var(--accent-soft)', color: 'var(--accent)' }}
-                        >
-                          Re-analyze
-                        </button>
-                      )}
                       <button
                         onClick={() => { resumeIssueMutation.mutate(identifier); }}
                         className="btn-action-resume inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"

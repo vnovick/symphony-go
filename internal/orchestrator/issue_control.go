@@ -216,3 +216,36 @@ func (o *Orchestrator) cancelRunningWorker(identifier string, cleanupFn func()) 
 	}
 	return false
 }
+
+// ProvideInput sends the user's message to an input-required issue, resuming
+// the agent session. Returns false if the issue is not in the input-required queue.
+// Safe to call from any goroutine.
+func (o *Orchestrator) ProvideInput(identifier, message string) bool {
+	select {
+	case o.events <- OrchestratorEvent{
+		Type:       EventProvideInput,
+		Identifier: identifier,
+		Message:    message,
+	}:
+		return true
+	default:
+		slog.Warn("orchestrator: provide-input event channel full", "identifier", identifier)
+		return false
+	}
+}
+
+// DismissInput moves an input-required issue to paused state without providing
+// input. Returns false if the issue is not in the input-required queue.
+// Safe to call from any goroutine.
+func (o *Orchestrator) DismissInput(identifier string) bool {
+	select {
+	case o.events <- OrchestratorEvent{
+		Type:       EventDismissInput,
+		Identifier: identifier,
+	}:
+		return true
+	default:
+		slog.Warn("orchestrator: dismiss-input event channel full", "identifier", identifier)
+		return false
+	}
+}

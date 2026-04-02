@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { IssueLogEntry } from '../types/schemas';
 import { IssueLogEntrySchema } from '../types/schemas';
 import { z } from 'zod';
+import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS } from '../utils/timings';
 
 export const logsKey = (identifier: string) => ['logs', identifier] as const;
 export const sublogsKey = (identifier: string) => ['sublogs', identifier] as const;
@@ -50,33 +51,72 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
     setSseLoading(true);
     setSseError(false);
 
-    const es = new EventSource(`/api/v1/issues/${encodeURIComponent(identifier)}/log-stream`);
+    let es: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    let reconnectAttempt = 0;
 
-    es.onopen = () => {
-      // Connection confirmed; initial batch events follow immediately
-      setSseLoading(false);
-    };
+    function connect() {
+      if (cancelled) return;
 
-    es.addEventListener('log', (e: MessageEvent) => {
-      try {
-        const entry = IssueLogEntrySchema.parse(JSON.parse(String(e.data)) as unknown);
-        // Guard: ignore late events from a previous identifier's stream
-        if (identifierRef.current === identifier) {
-          setSseData((prev) => [...prev, entry]);
-        }
-      } catch {
-        // malformed event — skip
+      // Clear stale logs on reconnect to avoid duplicates
+      if (reconnectAttempt > 0) {
+        setSseData([]);
+        setSseLoading(true);
       }
-    });
 
-    es.onerror = () => {
-      setSseError(true);
-      setSseLoading(false);
-      es.close();
-    };
+      es = new EventSource(`/api/v1/issues/${encodeURIComponent(identifier)}/log-stream`);
+
+      es.onopen = () => {
+        // Connection confirmed; initial batch events follow immediately
+        setSseLoading(false);
+        setSseError(false);
+        reconnectAttempt = 0; // reset backoff on successful connection
+      };
+
+      es.addEventListener('log', (e: MessageEvent) => {
+        try {
+          const entry = IssueLogEntrySchema.parse(JSON.parse(String(e.data)) as unknown);
+          // Guard: ignore late events from a previous identifier's stream
+          if (identifierRef.current === identifier) {
+            setSseData((prev) => [...prev, entry]);
+          }
+        } catch {
+          // malformed event — skip
+        }
+      });
+
+      es.onerror = () => {
+        setSseError(true);
+        setSseLoading(false);
+        es?.close();
+        es = null;
+
+        if (import.meta.env.DEV) {
+          console.warn(`[symphony] Log stream disconnected for ${identifier}, reconnecting (attempt ${String(reconnectAttempt + 1)})…`);
+        }
+
+        // Schedule reconnect with exponential backoff
+        if (!cancelled && reconnectTimer === null) {
+          const delay = Math.min(
+            SSE_RECONNECT_BASE_MS * 2 ** reconnectAttempt,
+            SSE_RECONNECT_MAX_MS,
+          );
+          reconnectAttempt++;
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connect();
+          }, delay);
+        }
+      };
+    }
+
+    connect();
 
     return () => {
-      es.close();
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      es?.close();
     };
   }, [identifier, isLive]);
 

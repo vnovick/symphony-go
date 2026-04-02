@@ -83,16 +83,16 @@ export function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
             prompt={prompt}
             onBackendChange={(value) => {
               const next = applyBackendSelection(command, backend, value);
-              setValue('backend', value);
+              setValue('backend', value, { shouldValidate: true });
               setValue('model', next.model);
-              setValue('command', next.command);
+              setValue('command', next.command, { shouldValidate: true });
             }}
             onModelChange={(value) => {
               setValue('model', value);
-              setValue('command', applyModelSelection(command, backend, value));
+              setValue('command', applyModelSelection(command, backend, value), { shouldValidate: true });
             }}
             onCommandChange={(value) => {
-              setValue('command', value);
+              setValue('command', value, { shouldValidate: true });
               setValue('model', commandToModel(value));
               const inferred = inferBackendFromCommand(value);
               if (inferred) setValue('backend', inferred);

@@ -54,6 +54,7 @@ export function Terminal({ entries, follow = true, showTime = false, className }
           )}
           <span
             data-level={entry.level}
+            className="whitespace-pre-wrap"
             style={{ color: LEVEL_COLOR[entry.level] }}
           >
             {entry.message}

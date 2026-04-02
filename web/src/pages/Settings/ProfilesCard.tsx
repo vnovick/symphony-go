@@ -224,19 +224,20 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
                       prompt={addPrompt}
                       onBackendChange={(value) => {
                         const next = applyBackendSelection(addCommand, addBackend, value);
-                        addForm.setValue('backend', value);
+                        addForm.setValue('backend', value, { shouldValidate: true });
                         addForm.setValue('model', next.model);
-                        addForm.setValue('command', next.command);
+                        addForm.setValue('command', next.command, { shouldValidate: true });
                       }}
                       onModelChange={(value) => {
                         addForm.setValue('model', value);
                         addForm.setValue(
                           'command',
                           applyModelSelection(addCommand, addBackend, value),
+                          { shouldValidate: true },
                         );
                       }}
                       onCommandChange={(value) => {
-                        addForm.setValue('command', value);
+                        addForm.setValue('command', value, { shouldValidate: true });
                         addForm.setValue('model', commandToModel(value));
                         const inferred = inferBackendFromCommand(value);
                         if (inferred) addForm.setValue('backend', inferred);

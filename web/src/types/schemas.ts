@@ -42,7 +42,7 @@ export const HistoryRowSchema = z.object({
   tokens: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
-  status: z.enum(['succeeded', 'failed', 'cancelled']),
+  status: z.enum(['succeeded', 'failed', 'cancelled', 'stalled', 'input_required']),
   workerHost: z.string().optional(),
   backend: z.string().optional(),
   sessionId: z.string().optional(),
@@ -105,6 +105,16 @@ export const StateSnapshotSchema = z.object({
   currentAppSessionId: z.string().optional(),
   sshHosts: z.array(SSHHostInfoSchema).optional(),
   dispatchStrategy: z.string().optional(),
+  defaultBackend: z.string().optional(),
+  inlineInput: z.boolean().optional(),
+  inputRequired: z.array(z.object({
+    identifier: z.string(),
+    sessionId: z.string(),
+    context: z.string(),
+    backend: z.string().optional(),
+    profile: z.string().optional(),
+    queuedAt: z.string(),
+  })).optional(),
 });
 
 export const LogEventTypeSchema = z.enum([
@@ -134,7 +144,7 @@ export const TrackerIssueSchema = z.object({
   state: z.string(),
   description: z.string().optional(), // omitempty — absent when ""
   url: z.string().optional(), // omitempty — absent when ""
-  orchestratorState: z.enum(['idle', 'running', 'retrying', 'paused']),
+  orchestratorState: z.enum(['idle', 'running', 'retrying', 'paused', 'input_required']),
   turnCount: z.number().optional(), // omitempty — absent when 0
   tokens: z.number().optional(), // omitempty — absent when 0
   elapsedMs: z.number().optional(), // omitempty — absent when 0

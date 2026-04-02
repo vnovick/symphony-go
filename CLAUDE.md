@@ -76,6 +76,9 @@ and must always be accessed under `cfgMu`:
 - `cfg.Agent.AgentMode`
 - `cfg.Agent.MaxConcurrentAgents`
 - `cfg.Agent.Profiles`
+- `cfg.Agent.SSHHosts`
+- `cfg.Agent.DispatchStrategy`
+- `cfg.Agent.InlineInput`
 - `cfg.Tracker.ActiveStates`
 - `cfg.Tracker.TerminalStates`
 - `cfg.Tracker.CompletionState`
@@ -93,25 +96,36 @@ HTTP handlers call `Snapshot()` — they must never hold `cfgMu` while doing so.
 ## Package dependency order (no circular deps)
 
 ```
-domain
-  └── tracker (interface + adapters: linear, github, memory)
-workflow
-  └── config
-        └── workspace
-              └── prompt
-                    └── agent
-                          └── orchestrator
-                                └── server
-                                      └── cmd/symphony
+domain ─────┬── tracker (interface + adapters: linear, github, memory)
+            ├── prompt (Liquid template rendering)
+            ├── logbuffer (per-issue ring buffer)
+            └── prdetector (PR URL detection)
+
+workflow ──── config ──── workspace
+
+agent (claude/codex subprocess runners — imports domain, config)
+
+orchestrator (single-goroutine state machine — imports agent, config, domain,
+              logbuffer, prdetector, prompt, tracker, workspace)
+
+app (EnrichIssue business logic — imports domain, tracker)
+
+server (HTTP API — imports domain, config)
+
+statusui (Bubbletea TUI — imports domain)
+
+templates (WORKFLOW.md scaffolding)
+
+cmd/symphony (wires everything)
 ```
 
 ---
 
 ## Frontend architecture
 
-- **Vite + React 18 + TypeScript + TailwindCSS**
-- **State**: Zustand (`symphonyStore` for snapshot, `toastStore` for notifications)
-- **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`, `refetchInterval: 30_000`)
+- **Vite + React 19 + TypeScript + TailwindCSS**
+- **State**: Zustand (`symphonyStore` for snapshot, `toastStore` for notifications, `uiStore` for view mode/filters)
+- **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`)
 - **Real-time**: SSE (`useSymphonySSE`) for snapshot updates; `useLogStream` for log lines
 - **Routing**: React Router v7 (file-based lazy pages)
 - **DnD**: dnd-kit (`PointerSensor` + `KeyboardSensor` registered on all boards)
@@ -124,11 +138,12 @@ workflow
 | `web/src/store/symphonyStore.ts` | SSE snapshot, `patchSnapshot`, `refreshSnapshot` |
 | `web/src/store/toastStore.ts` | Toast queue with auto-dismiss timers |
 | `web/src/queries/issues.ts` | All issue mutations with optimistic updates + rollback |
-| `web/src/queries/logs.ts` | Log fetch query |
+| `web/src/queries/logs.ts` | Log fetch + sublog queries |
+| `web/src/queries/projects.ts` | Project list query |
 | `web/src/hooks/useSymphonySSE.ts` | SSE connection with exponential backoff |
 | `web/src/hooks/useSettingsActions.ts` | Settings mutations — PUT/POST/DELETE with toast error surface |
+| `web/src/store/uiStore.ts` | View mode, search, filters, accordion expansion |
 | `web/src/types/schemas.ts` | Canonical Zod schemas (source of truth) |
-| `web/src/types/symphony.ts` | **@deprecated** barrel — migrate away from this |
 | `web/src/utils/timings.ts` | Shared timing constants (TOAST_DISMISS_MS, SSE_RECONNECT_BASE_MS, …) |
 
 ### Toast API
@@ -145,10 +160,7 @@ useToastStore.getState().addToast({ message: 'x', type: 'error' }); // ❌
 
 ## Known dead code (do not flag as bugs)
 
-| Item | Reason |
-|---|---|
-| `web/src/hooks/useSettingsActions.ts` `setAgentMode` | Function exists and works; the Settings UI control is missing (WIRE-8) |
-| `useClearIssueLogs` in `queries/issues.ts` | Backend route exists; no UI wired yet (WIRE-3) |
+*No known dead code at this time.*
 
 ---
 

@@ -1,7 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useSymphonyStore } from '../../store/symphonyStore';
-
-const EMPTY_PROJECT_FILTER: string[] = [];
+import { EMPTY_STATES as EMPTY_PROJECT_FILTER } from '../../utils/constants';
 
 const LinearIcon = () => (
   <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden="true">

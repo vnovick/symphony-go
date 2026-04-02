@@ -1,11 +1,6 @@
 import { useMemo } from 'react';
 import { useSymphonyStore } from '../../store/symphonyStore';
-import type { SSHHostInfo } from '../../types/schemas';
-
-import type { RunningRow } from '../../types/schemas';
-
-const EMPTY_SSH_HOSTS: SSHHostInfo[] = [];
-const EMPTY_RUNNING: RunningRow[] = [];
+import { EMPTY_HOSTS as EMPTY_SSH_HOSTS, EMPTY_RUNNING } from '../../utils/constants';
 
 interface HostEntry {
   id: string;

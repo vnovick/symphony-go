@@ -89,6 +89,8 @@ func formatBufLine(level, msg string, args []any) string {
 			e.URL = val
 		case "summary":
 			e.Summary = val
+		case "detail":
+			e.Detail = val
 		case "session_id":
 			e.SessionID = val //nolint:govet
 		}

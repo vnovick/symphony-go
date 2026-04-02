@@ -31,6 +31,9 @@ type TrackerConfig struct {
 	// BacklogStates are always fetched and shown as the leftmost board column(s).
 	// Defaults to ["Backlog"] for linear, [] for github.
 	BacklogStates []string
+	// FailedState is the state to move issues to when max retries are exhausted.
+	// When empty, issues are paused instead of transitioned.
+	FailedState string
 }
 
 // PollingConfig holds polling settings.
@@ -50,6 +53,12 @@ type WorkspaceConfig struct {
 	// one empty directory per issue. Requires the base git clone at
 	// workspace.root to already exist. Default: false.
 	Worktree bool
+	// CloneURL is the git remote URL used to initialise the bare clone when
+	// worktree mode is enabled. When empty and worktree is true, the caller
+	// must ensure a git repo already exists at Root.
+	CloneURL string
+	// BaseBranch is the branch worktrees are created from (default: "main").
+	BaseBranch string
 }
 
 // DefaultReviewerPrompt is used when reviewer_prompt is absent from WORKFLOW.md.
@@ -134,6 +143,18 @@ type AgentConfig struct {
 	// "teams":        profile role context injected into the prompt so the agent
 	//                 knows which specialised sub-agents it can call.
 	AgentMode string
+	// InlineInput controls whether agent input-required signals are posted as
+	// tracker comments (true) or queued in the dashboard UI (false).
+	// When true, the issue moves to the completion state with a question comment;
+	// the user replies in the tracker and moves the issue back to continue.
+	// When false (default), the dashboard shows a reply UI and posts the user's
+	// response as a tracker comment before resuming the agent.
+	// Default: false.
+	InlineInput bool
+	// MaxRetries is the maximum number of retry attempts before an issue is
+	// moved to the failed state. 0 means unlimited retries (legacy behavior).
+	// Default: 5.
+	MaxRetries int
 	// BaseBranch is the remote branch used as the base for git diffs when
 	// enriching PR context (e.g. "origin/main", "origin/develop", "origin/master").
 	// When empty, Symphony auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
@@ -209,6 +230,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 		defaultBacklog = []string{"Backlog"}
 	}
 	cfg.Tracker.BacklogStates = strSliceField(tracker, "backlog_states", defaultBacklog)
+	cfg.Tracker.FailedState = strField(tracker, "failed_state", "")
 
 	// Polling
 	polling := nestedMap(raw, "polling")
@@ -220,6 +242,8 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Workspace.Root = resolvePathValue(strField(ws, "root", ""), defaultWSRoot)
 	cfg.Workspace.AutoClearWorkspace = boolField(ws, "auto_clear", false)
 	cfg.Workspace.Worktree = boolField(ws, "worktree", false)
+	cfg.Workspace.CloneURL = strField(ws, "clone_url", "")
+	cfg.Workspace.BaseBranch = strField(ws, "base_branch", "main")
 
 	// Agent
 	agent := nestedMap(raw, "agent")
@@ -235,6 +259,8 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.SSHHosts = strSliceField(agent, "ssh_hosts", nil)
 	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
+	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
+	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
 	cfg.Agent.Profiles = parseAgentProfiles(mapField(agent, "profiles"))
 	agentMode := strField(agent, "agent_mode", "")

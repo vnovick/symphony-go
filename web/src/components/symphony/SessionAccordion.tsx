@@ -2,23 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { IssueLogEntry } from '../../types/schemas';
 import { useIssueLogs } from '../../queries/logs';
 import { Terminal } from '../ui/Terminal/Terminal';
-import type { LogEntry, LogLevel } from '../ui/Terminal/Terminal';
-
-function toTermLevel(event: string, level?: string): LogLevel {
-  if (event === 'action') return 'action';
-  if (event === 'subagent') return 'subagent';
-  if (event === 'warn' || level === 'warn') return 'warn';
-  if (event === 'error' || level === 'error') return 'error';
-  return 'info';
-}
-
-function toTermEntries(logs: IssueLogEntry[]): LogEntry[] {
-  return logs.map((e, i) => ({
-    ts: i,
-    level: toTermLevel(e.event, e.level),
-    message: e.message,
-  }));
-}
+import { issueLogToTerminal } from '../../utils/logFormatting';
 
 interface LogSection {
   label: string;
@@ -63,7 +47,7 @@ export function SessionAccordion({ identifier, workerHost, sessionId }: SessionA
   }, [sections.length, selectedIdx]);
 
   const active = sections[selectedIdx] ?? sections[0];
-  const termEntries = toTermEntries(active.entries);
+  const termEntries = active.entries.map(issueLogToTerminal);
 
   return (
     <div

@@ -2,14 +2,12 @@ import { useState } from 'react';
 import { useSymphonyStore } from '../../store/symphonyStore';
 import { useSettingsActions } from '../../hooks/useSettingsActions';
 import { AddSSHHostModal } from './AddSSHHostModal';
-import type { SSHHostInfo } from '../../types/schemas';
+import { EMPTY_HOSTS } from '../../utils/constants';
 
 const STRATEGIES: { id: string; label: string; desc: string; available: boolean }[] = [
   { id: 'round-robin',  label: 'Round Robin',  desc: 'Cycle hosts in order',                        available: true  },
   { id: 'least-loaded', label: 'Least Loaded', desc: 'Route to host with fewest active agents',     available: true  },
 ];
-
-const EMPTY_HOSTS: SSHHostInfo[] = [];
 
 export function SSHHostsCard() {
   const hosts = useSymphonyStore((s) => s.snapshot?.sshHosts ?? EMPTY_HOSTS);

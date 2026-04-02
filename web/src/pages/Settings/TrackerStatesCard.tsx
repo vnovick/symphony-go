@@ -77,7 +77,7 @@ export function TrackerStatesCard({
     };
   }, []);
 
-  const onSubmit = handleSubmit(async (values) => {
+  const doSubmit = async (values: TrackerStatesFormValues) => {
     setSaveError('');
     setSaveOk(false);
     const ok = await onSave(values.activeStates, values.terminalStates, values.completionState);
@@ -90,7 +90,7 @@ export function TrackerStatesCard({
     } else {
       setSaveError('Failed to save. Check the server logs.');
     }
-  });
+  };
 
   return (
     <div
@@ -106,7 +106,7 @@ export function TrackerStatesCard({
         </p>
       </div>
 
-      <form onSubmit={(e) => { void onSubmit(e); }} className="space-y-5 px-5 py-5">
+      <form onSubmit={(e) => { void handleSubmit(doSubmit)(e); }} className="space-y-5 px-5 py-5">
         <div>
           <label className="mb-2 block text-xs font-medium tracking-wider uppercase">
             Active States

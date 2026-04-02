@@ -14,6 +14,8 @@ vi.mock('../../../queries/issues', () => ({
   useResumeIssue: vi.fn(),
   useTriggerAIReview: vi.fn(),
   useSetIssueProfile: vi.fn(),
+  useProvideInput: vi.fn(),
+  useDismissInput: vi.fn(),
   ISSUES_KEY: ['issues'],
 }));
 
@@ -28,6 +30,8 @@ const mockUseTerminateIssue = vi.mocked(issueQueries.useTerminateIssue);
 const mockUseResumeIssue = vi.mocked(issueQueries.useResumeIssue);
 const mockUseTriggerAIReview = vi.mocked(issueQueries.useTriggerAIReview);
 const mockUseSetIssueProfile = vi.mocked(issueQueries.useSetIssueProfile);
+const mockUseProvideInput = vi.mocked(issueQueries.useProvideInput);
+const mockUseDismissInput = vi.mocked(issueQueries.useDismissInput);
 
 const baseIssue = {
   identifier: 'ENG-10',
@@ -74,6 +78,8 @@ function setupDefaultMocks(
   mockUseResumeIssue.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false } as any);
   mockUseTriggerAIReview.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false } as any);
   mockUseSetIssueProfile.mockReturnValue({ mutate: vi.fn(), isPending: false } as any);
+  mockUseProvideInput.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false } as any);
+  mockUseDismissInput.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false } as any);
 
   return setSelectedIdentifier;
 }
@@ -117,10 +123,10 @@ describe('IssueDetailSlide', () => {
     expect(screen.getByText('In Progress')).toBeInTheDocument();
   });
 
-  it('shows description content', () => {
+  it('shows description content', async () => {
     setupDefaultMocks('ENG-10');
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
-    expect(screen.getByText('A detailed description')).toBeInTheDocument();
+    expect(await screen.findByText('A detailed description')).toBeInTheDocument();
   });
 
   it('calls setSelectedIdentifier(null) when close button clicked', async () => {
@@ -145,12 +151,12 @@ describe('IssueDetailSlide', () => {
     expect(screen.getByText(/Discard/)).toBeInTheDocument();
   });
 
-  it('shows comments when present', () => {
+  it('shows comments when present', async () => {
     setupDefaultMocks('ENG-10', {
       comments: [{ author: 'alice', body: 'Looks good to me', createdAt: '2024-01-01T00:00:00Z' }],
     });
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
-    expect(screen.getByText('Looks good to me')).toBeInTheDocument();
+    expect(await screen.findByText('Looks good to me')).toBeInTheDocument();
     expect(screen.getByText('alice')).toBeInTheDocument();
   });
 });

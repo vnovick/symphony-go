@@ -46,7 +46,7 @@ type HistoryRow struct {
 	TotalTokens  int       `json:"tokens"`
 	InputTokens  int       `json:"inputTokens"`
 	OutputTokens int       `json:"outputTokens"`
-	Status       string    `json:"status"` // "succeeded" | "failed" | "cancelled"
+	Status       string    `json:"status"` // "succeeded" | "failed" | "cancelled" | "stalled" | "input_required"
 	WorkerHost   string    `json:"workerHost,omitempty"`
 	Backend      string    `json:"backend,omitempty"`
 	SessionID    string    `json:"sessionId,omitempty"`
@@ -123,6 +123,9 @@ type OrchestratorClient interface {
 	AddSSHHost(host, description string) error
 	RemoveSSHHost(host string) error
 	SetDispatchStrategy(strategy string) error
+	ProvideInput(identifier, message string) bool
+	DismissInput(identifier string) bool
+	SetInlineInput(enabled bool) error
 }
 
 // noopClient implements OrchestratorClient with harmless defaults.
@@ -156,6 +159,9 @@ func (noopClient) UpdateTrackerStates([]string, []string, string) error         
 func (noopClient) AddSSHHost(string, string) error                                { return errNotConfigured }
 func (noopClient) RemoveSSHHost(string) error                                     { return errNotConfigured }
 func (noopClient) SetDispatchStrategy(string) error                               { return errNotConfigured }
+func (noopClient) ProvideInput(string, string) bool                               { return false }
+func (noopClient) DismissInput(string) bool                                        { return false }
+func (noopClient) SetInlineInput(bool) error                                       { return errNotConfigured }
 
 // FuncClient builds an OrchestratorClient from individual function fields.
 // Any nil field falls back to the noopClient default. Intended for tests.
@@ -349,6 +355,9 @@ func (c *FuncClient) SetDispatchStrategy(strategy string) error {
 	}
 	return errNotConfigured
 }
+func (c *FuncClient) ProvideInput(identifier, message string) bool { return false }
+func (c *FuncClient) DismissInput(identifier string) bool          { return false }
+func (c *FuncClient) SetInlineInput(bool) error                    { return errNotConfigured }
 
 // StateSnapshot is the payload returned by GET /api/v1/state.
 type StateSnapshot struct {
@@ -402,6 +411,24 @@ type StateSnapshot struct {
 	// DispatchStrategy is the active SSH host dispatch strategy.
 	// "round-robin" (default) | "least-loaded"
 	DispatchStrategy string `json:"dispatchStrategy,omitempty"`
+	// DefaultBackend is the configured default runner backend ("claude" or "codex").
+	// Used by the frontend to show the correct badge on non-running issues.
+	DefaultBackend string `json:"defaultBackend,omitempty"`
+	// InlineInput indicates whether agent input-required signals are posted as
+	// tracker comments (true) or queued in the dashboard UI (false).
+	InlineInput bool `json:"inlineInput,omitempty"`
+	// InputRequired lists issues whose agent is blocked waiting for human input.
+	InputRequired []InputRequiredRow `json:"inputRequired,omitempty"`
+}
+
+// InputRequiredRow is one issue waiting for human input in the snapshot.
+type InputRequiredRow struct {
+	Identifier string `json:"identifier"`
+	SessionID  string `json:"sessionId"`
+	Context    string `json:"context"`
+	Backend    string `json:"backend,omitempty"`
+	Profile    string `json:"profile,omitempty"`
+	QueuedAt   string `json:"queuedAt"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.
@@ -515,6 +542,10 @@ type Config struct {
 	FetchIssue func(ctx context.Context, identifier string) (*TrackerIssue, error)
 	// ProjectManager supports project filtering (Linear only). Nil = no project API.
 	ProjectManager ProjectManager
+	// APIToken, when non-empty, enables bearer-token authentication on all
+	// /api/ routes except /api/v1/health. Requests must include the header
+	// "Authorization: Bearer <token>".
+	APIToken string
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -527,6 +558,7 @@ type Server struct {
 	fetchIssue     func(ctx context.Context, identifier string) (*TrackerIssue, error)
 	projectManager ProjectManager
 	bc             *broadcaster
+	apiToken       string
 }
 
 // New constructs a Server from a Config. Snapshot and RefreshChan must be non-nil.
@@ -544,6 +576,7 @@ func New(cfg Config) *Server {
 		fetchIssue:     cfg.FetchIssue,
 		projectManager: cfg.ProjectManager,
 		bc:             newBroadcaster(),
+		apiToken:       cfg.APIToken,
 	}
 	s.routes()
 	return s
@@ -603,6 +636,14 @@ func (s *Server) routes() {
 	// API routes are nested under /api so method-not-allowed works correctly
 	// even when the SPA catch-all is registered at the root level.
 	s.router.Route("/api/v1", func(r chi.Router) {
+		// Health check is unauthenticated so load balancers can reach it.
+		r.Get("/health", s.handleHealth)
+
+		// If an API token is configured, all remaining routes require it.
+		if s.apiToken != "" {
+			r.Use(s.bearerAuthMiddleware)
+		}
+
 		r.Get("/state", s.handleState)
 		r.Get("/events", s.handleEvents)
 		r.Get("/issues", s.handleIssues)
@@ -623,6 +664,9 @@ func (s *Server) routes() {
 		r.Post("/issues/{identifier}/ai-review", s.handleAIReview)
 		r.Patch("/issues/{identifier}/state", s.handleUpdateIssueState)
 		r.Post("/issues/{identifier}/profile", s.handleSetIssueProfile)
+		r.Post("/issues/{identifier}/provide-input", s.handleProvideInput)
+		r.Post("/issues/{identifier}/dismiss-input", s.handleDismissInput)
+		r.Post("/settings/inline-input", s.handleSetInlineInput)
 		r.Get("/logs", s.handleLogs)
 		r.Post("/refresh", s.handleRefresh)
 		r.Get("/projects", s.handleListProjects)
@@ -648,4 +692,23 @@ func (s *Server) routes() {
 	// React SPA: serves all non-API paths from the embedded web/dist.
 	// Falls back to index.html so React Router client-side routing works.
 	s.router.Handle("/*", spaHandler())
+}
+
+// handleHealth returns a lightweight 200 OK for load balancer probes.
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// bearerAuthMiddleware rejects requests that do not carry a valid
+// "Authorization: Bearer <token>" header matching s.apiToken.
+func (s *Server) bearerAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "Bearer "
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, prefix) || strings.TrimPrefix(auth, prefix) != s.apiToken {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

@@ -23,14 +23,14 @@ import { ListView } from './components/ListView';
 import { HeroStats } from './components/HeroStats';
 
 // ─── Stable fallbacks ─────────────────────────────────────────────────────────
-const EMPTY_PROFILES: string[] = [];
-const EMPTY_BACKLOG_STATES: string[] = [];
-const EMPTY_ACTIVE_STATES: string[] = [];
-const EMPTY_TERMINAL_STATES: string[] = [];
+import { EMPTY_PROFILES, EMPTY_STATES, EMPTY_RUNNING, EMPTY_HISTORY } from '../../utils/constants';
+const EMPTY_BACKLOG_STATES = EMPTY_STATES;
+const EMPTY_ACTIVE_STATES = EMPTY_STATES;
+const EMPTY_TERMINAL_STATES = EMPTY_STATES;
 
 export default function Dashboard() {
   const { data: issues = [] } = useIssues();
-  const { hasSnapshot, availableProfiles, backlogStates, activeStates, terminalStates, completionState, profileDefs } = useSymphonyStore(
+  const { hasSnapshot, availableProfiles, backlogStates, activeStates, terminalStates, completionState, profileDefs, defaultBackend, running, runHistory } = useSymphonyStore(
     useShallow((s) => ({
       hasSnapshot: s.snapshot !== null,
       availableProfiles: s.snapshot?.availableProfiles ?? EMPTY_PROFILES,
@@ -39,8 +39,26 @@ export default function Dashboard() {
       terminalStates: s.snapshot?.terminalStates ?? EMPTY_TERMINAL_STATES,
       completionState: s.snapshot?.completionState ?? '',
       profileDefs: s.snapshot?.profileDefs,
+      defaultBackend: s.snapshot?.defaultBackend,
+      running: s.snapshot?.running ?? EMPTY_RUNNING,
+      runHistory: s.snapshot?.history ?? EMPTY_HISTORY,
     })),
   );
+  const backlogStateSet = useMemo(() => new Set(backlogStates), [backlogStates]);
+  const runningBackendByIdentifier = useMemo(() => {
+    const map: Record<string, string> = {};
+    const backlogIdentifiers = new Set(
+      issues.filter((i) => backlogStateSet.has(i.state)).map((i) => i.identifier),
+    );
+    for (const h of runHistory) {
+      if (h.backend && !backlogIdentifiers.has(h.identifier)) map[h.identifier] = h.backend;
+    }
+    for (const r of running) {
+      if (r.backend) map[r.identifier] = r.backend;
+    }
+    return map;
+  }, [running, runHistory, issues, backlogStateSet]);
+
   const invalidateIssues = useInvalidateIssues();
   const setSelectedIdentifier = useSymphonyStore((s) => s.setSelectedIdentifier);
   const { mutateAsync: updateIssueState } = useUpdateIssueState();
@@ -296,6 +314,10 @@ export default function Dashboard() {
                 issues={filtered}
                 onSelect={setSelectedIdentifier}
                 availableProfiles={availableProfiles}
+                profileDefs={profileDefs}
+                runningBackendByIdentifier={runningBackendByIdentifier}
+                defaultBackend={defaultBackend}
+                backlogStates={backlogStates}
                 onProfileChange={handleProfileChange}
               />
             )}

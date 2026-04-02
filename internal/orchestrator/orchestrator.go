@@ -29,7 +29,7 @@ type Orchestrator struct {
 	cfg       *config.Config
 	tracker   tracker.Tracker
 	runner    agent.Runner
-	workspace *workspace.Manager // nil is safe — workspace ops skipped (useful in tests)
+	workspace workspace.Provider // nil is safe — workspace ops skipped (useful in tests)
 	logBuf    *logbuffer.Buffer  // nil is safe — log buffering disabled
 	events    chan OrchestratorEvent
 	refresh   chan struct{} // signals an immediate re-poll (e.g. from the web dashboard)
@@ -66,6 +66,10 @@ type Orchestrator struct {
 	// pausedMu guards pausedFile, which is an unrelated concern from history.
 	pausedMu   sync.RWMutex
 	pausedFile string // optional path for persisting PausedIdentifiers across restarts
+
+	// inputRequiredMu guards inputRequiredFile.
+	inputRequiredMu   sync.RWMutex
+	inputRequiredFile string // optional path for persisting InputRequiredIssues across restarts
 
 	// workerCancelsMu guards workerCancels, which is written by dispatch (event
 	// loop goroutine) and read by cancelRunningWorker (any goroutine).
@@ -109,6 +113,10 @@ type Orchestrator struct {
 	// wait for them before returning.
 	autoClearWg sync.WaitGroup
 
+	// discardWg tracks in-flight asyncDiscardAndTransition / asyncDiscardAndTransitionTo
+	// goroutines so Run can wait for them before returning.
+	discardWg sync.WaitGroup
+
 	// runCtx is the context passed to Run. Stored atomically so DispatchReviewer
 	// can read it safely from any goroutine without a mutex.
 	runCtx atomic.Pointer[context.Context]
@@ -121,7 +129,7 @@ type Orchestrator struct {
 }
 
 // New constructs an Orchestrator ready to Run. wm may be nil (workspace ops skipped).
-func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm *workspace.Manager) *Orchestrator {
+func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspace.Provider) *Orchestrator {
 	return &Orchestrator{
 		cfg:               cfg,
 		tracker:           tr,
@@ -255,6 +263,18 @@ func (o *Orchestrator) AutoClearWorkspaceCfg() bool {
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
 	return o.cfg.Workspace.AutoClearWorkspace
+}
+
+func (o *Orchestrator) SetInlineInputCfg(enabled bool) {
+	o.cfgMu.Lock()
+	o.cfg.Agent.InlineInput = enabled
+	o.cfgMu.Unlock()
+}
+
+func (o *Orchestrator) InlineInputCfg() bool {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Agent.InlineInput
 }
 
 // ProfilesCfg returns a shallow copy of cfg.Agent.Profiles under cfgMu.

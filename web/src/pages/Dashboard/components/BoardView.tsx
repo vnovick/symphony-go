@@ -15,10 +15,8 @@ import { useShallow } from 'zustand/react/shallow';
 import IssueCard from '../../../components/symphony/IssueCard';
 import BoardColumn from '../../../components/symphony/BoardColumn';
 import { useSymphonyStore } from '../../../store/symphonyStore';
-import type { TrackerIssue, RunningRow } from '../../../types/schemas';
-
-const EMPTY_RUNNING: RunningRow[] = [];
-const EMPTY_STATES: string[] = [];
+import type { TrackerIssue } from '../../../types/schemas';
+import { EMPTY_RUNNING, EMPTY_HISTORY, EMPTY_STATES } from '../../../utils/constants';
 
 interface BoardViewProps {
   issues: TrackerIssue[];
@@ -39,6 +37,8 @@ export function BoardView({
     snapshotLoaded,
     profileDefs,
     running,
+    history: runHistory,
+    defaultBackend,
     backlogStates,
     activeStates,
     completionState,
@@ -48,6 +48,8 @@ export function BoardView({
       snapshotLoaded: s.snapshot !== null,
       profileDefs: s.snapshot?.profileDefs,
       running: s.snapshot?.running ?? EMPTY_RUNNING,
+      history: s.snapshot?.history ?? EMPTY_HISTORY,
+      defaultBackend: s.snapshot?.defaultBackend,
       backlogStates: s.snapshot?.backlogStates ?? EMPTY_STATES,
       activeStates: s.snapshot?.activeStates ?? EMPTY_STATES,
       completionState: s.snapshot?.completionState ?? '',
@@ -57,13 +59,27 @@ export function BoardView({
   const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
 
+  const backlogStateSet = useMemo(
+    () => new Set(backlogStates),
+    [backlogStates],
+  );
+
   const runningBackendByIdentifier = useMemo(() => {
     const map: Record<string, string> = {};
+    // History: only include non-backlog issues so that issues moved back to
+    // Todo/Backlog show the profile/default badge, not a stale history backend.
+    const backlogIdentifiers = new Set(
+      issues.filter((i) => backlogStateSet.has(i.state)).map((i) => i.identifier),
+    );
+    for (const h of runHistory) {
+      if (h.backend && !backlogIdentifiers.has(h.identifier)) map[h.identifier] = h.backend;
+    }
+    // Running entries always take priority.
     for (const r of running) {
       if (r.backend) map[r.identifier] = r.backend;
     }
     return map;
-  }, [running]);
+  }, [running, runHistory, issues, backlogStateSet]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -71,10 +87,6 @@ export function BoardView({
     useSensor(KeyboardSensor),
   );
 
-  const backlogStateSet = useMemo(
-    () => new Set(backlogStates),
-    [backlogStates],
-  );
   const firstActiveState = activeStates[0] ?? '';
 
   const handleDispatch = useCallback(
@@ -157,6 +169,7 @@ export function BoardView({
             availableProfiles={availableProfiles}
             profileDefs={profileDefs}
             runningBackendByIdentifier={runningBackendByIdentifier}
+            defaultBackend={defaultBackend}
             onProfileChange={onProfileChange}
             onDispatch={backlogStateSet.has(state) ? handleDispatch : undefined}
           />

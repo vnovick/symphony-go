@@ -348,17 +348,38 @@ export function useClearIssueSubLogs() {
   });
 }
 
-export function useClearSessionSublog() {
+export function useProvideInput() {
   return useMutation({
-    mutationFn: async ({ identifier, sessionId }: { identifier: string; sessionId: string }) => {
-      const res = await fetch(
-        `/api/v1/issues/${encodeURIComponent(identifier)}/sublogs/${encodeURIComponent(sessionId)}`,
-        { method: 'DELETE' },
-      );
-      if (!res.ok) throw new Error(`clearSessionSublog failed: ${String(res.status)}`);
+    mutationFn: async ({ identifier, message }: { identifier: string; message: string }) => {
+      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/provide-input`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      });
+      if (!res.ok) throw new Error(`provideInput failed: ${String(res.status)}`);
+    },
+    onSuccess: () => {
+      void useSymphonyStore.getState().refreshSnapshot();
     },
     onError: (err: unknown) => {
-      toastApiError(err, 'Clear session logs failed — please try again.');
+      toastApiError(err, 'Failed to send input to agent.');
+    },
+  });
+}
+
+export function useDismissInput() {
+  return useMutation({
+    mutationFn: async (identifier: string) => {
+      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/dismiss-input`, {
+        method: 'POST',
+      });
+      if (!res.ok) throw new Error(`dismissInput failed: ${String(res.status)}`);
+    },
+    onSuccess: () => {
+      void useSymphonyStore.getState().refreshSnapshot();
+    },
+    onError: (err: unknown) => {
+      toastApiError(err, 'Failed to dismiss input request.');
     },
   });
 }

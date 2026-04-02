@@ -29,6 +29,9 @@ func (o *Orchestrator) DispatchReviewer(identifier string) error {
 	}
 	o.cfgMu.RLock()
 	allStates := append(append([]string{}, o.cfg.Tracker.ActiveStates...), o.cfg.Tracker.TerminalStates...)
+	if o.cfg.Tracker.CompletionState != "" {
+		allStates = append(allStates, o.cfg.Tracker.CompletionState)
+	}
 	o.cfgMu.RUnlock()
 	issues, err := o.tracker.FetchIssuesByStates(ctx, allStates)
 	if err != nil {
@@ -96,11 +99,36 @@ func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue
 	o.cfgMu.RLock()
 	reviewerPrompt := o.cfg.Agent.ReviewerPrompt
 	reviewerCommand := o.cfg.Agent.Command
+	reviewerBackend := o.cfg.Agent.Backend
 	reviewerReadTimeoutMs := o.cfg.Agent.ReadTimeoutMs
 	reviewerTurnTimeoutMs := o.cfg.Agent.TurnTimeoutMs
 	reviewerSSHHosts := append([]string{}, o.cfg.Agent.SSHHosts...)
 	dispatchStrategy := o.cfg.Agent.DispatchStrategy
+	profiles := o.cfg.Agent.Profiles
 	o.cfgMu.RUnlock()
+
+	// Resolve per-issue profile overrides — same logic as dispatch() in
+	// event_loop.go so the reviewer runs with the same backend as the worker.
+	o.issueProfilesMu.Lock()
+	profileName := o.issueProfiles[issue.Identifier]
+	o.issueProfilesMu.Unlock()
+	if profileName != "" {
+		if profile, ok := profiles[profileName]; ok {
+			if profile.Command != "" {
+				reviewerCommand = profile.Command
+			}
+			if profile.Backend != "" {
+				reviewerBackend = profile.Backend
+			}
+		}
+	}
+	// Resolve the final backend and embed the hint in the command so
+	// MultiRunner dispatches to the correct runner (same as event_loop.go).
+	resolvedBackend := agent.BackendFromCommand(reviewerCommand)
+	if reviewerBackend != "" {
+		resolvedBackend = reviewerBackend
+		reviewerCommand = agent.CommandWithBackendHint(reviewerCommand, reviewerBackend)
+	}
 
 	renderedPrompt, err := prompt.Render(reviewerPrompt, issue, nil)
 	if err != nil {
@@ -116,22 +144,7 @@ func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue
 	if len(reviewerSSHHosts) > 0 {
 		if dispatchStrategy == "least-loaded" {
 			snap := o.Snapshot()
-			hostCount := make(map[string]int, len(reviewerSSHHosts))
-			for _, h := range reviewerSSHHosts {
-				hostCount[h] = 0
-			}
-			for _, entry := range snap.Running {
-				if _, ok := hostCount[entry.WorkerHost]; ok {
-					hostCount[entry.WorkerHost]++
-				}
-			}
-			minCount := int(^uint(0) >> 1)
-			for _, h := range reviewerSSHHosts {
-				if c := hostCount[h]; c < minCount {
-					minCount = c
-					workerHost = h
-				}
-			}
+			workerHost = selectLeastLoadedHost(reviewerSSHHosts, snap.Running)
 		} else {
 			workerHost = reviewerSSHHosts[rand.IntN(len(reviewerSSHHosts))]
 		}
@@ -177,7 +190,7 @@ func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue
 				OutputTokens: result.OutputTokens,
 				TurnCount:    1,
 				WorkerHost:   workerHost,
-				Backend:      agent.BackendFromCommand(reviewerCommand),
+				Backend:      resolvedBackend,
 				Status:       "failed",
 				ProjectKey:   projectKey,
 				AppSessionID: o.appSessionID,
@@ -214,7 +227,7 @@ func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue
 			OutputTokens: result.OutputTokens,
 			TurnCount:    1, // reviewer runs one turn (up to maxReviewerAttempts retries)
 			WorkerHost:   workerHost,
-			Backend:      agent.BackendFromCommand(reviewerCommand),
+			Backend:      resolvedBackend,
 			Status:       "succeeded",
 			ProjectKey:   projectKey,
 			AppSessionID: o.appSessionID,
