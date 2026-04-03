@@ -20,7 +20,7 @@ agent:
   stall_timeout_ms: 300000
 
 workspace:
-  root: ~/.simphony/workspaces/my-project
+  root: ~/.symphony/workspaces/my-project
 
 hooks:
   after_create: |

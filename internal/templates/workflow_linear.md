@@ -24,7 +24,7 @@ agent:
   #     command: claude --model claude-opus-4-6
 
 workspace:
-  root: ~/.simphony/workspaces/my-project
+  root: ~/.symphony/workspaces/my-project
 
 hooks:
   after_create: |

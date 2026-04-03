@@ -327,7 +327,7 @@ ssh-keyscan -p 2222 build-worker-2.internal >> ~/.ssh/known_hosts
 
 | Field | Default | Description |
 |---|---|---|
-| `root` | `~/.simphony/workspaces` | Root directory for per-issue workspaces. Supports `~` expansion and `$ENV_VAR` references. |
+| `root` | `~/.symphony/workspaces` | Root directory for per-issue workspaces. Supports `~` expansion and `$ENV_VAR` references. |
 
 #### `hooks`
 

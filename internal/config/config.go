@@ -246,11 +246,11 @@ func resolvePathValue(value, defaultVal string) string {
 	return expanded
 }
 
-// defaultWorkspaceRoot returns ~/.simphony/workspaces, falling back to
+// defaultWorkspaceRoot returns ~/.symphony/workspaces, falling back to
 // os.TempDir()/symphony_workspaces if the home directory cannot be determined.
 func defaultWorkspaceRoot() string {
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".simphony", "workspaces")
+		return filepath.Join(home, ".symphony", "workspaces")
 	}
 	return filepath.Join(os.TempDir(), "symphony_workspaces")
 }
