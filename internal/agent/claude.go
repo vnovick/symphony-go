@@ -433,6 +433,11 @@ func setProcessGroup(cmd *exec.Cmd) {
 		// Kill the entire process group (negative PID).
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+	// WaitDelay ensures cmd.Wait returns promptly after Cancel fires, even if
+	// child processes inherited the stdout pipe and are still alive. Without
+	// this, Wait blocks until all pipe readers close — which may never happen
+	// if the agent spawned background subprocesses.
+	cmd.WaitDelay = 5 * time.Second
 }
 
 func loginShell() string {

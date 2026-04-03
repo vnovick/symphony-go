@@ -221,7 +221,7 @@ func TestCancelIssue_Running(t *testing.T) {
 	require.True(t, ok, "cancel should return true for a running worker")
 }
 
-func TestDispatchReviewer_IssueNotFound(t *testing.T) {
+func TestDispatchReviewer_NoProfileConfigured(t *testing.T) {
 	cfg := baseConfig()
 	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 	fake := agenttest.NewFakeRunner(nil)
@@ -234,7 +234,7 @@ func TestDispatchReviewer_IssueNotFound(t *testing.T) {
 
 	err := orch.DispatchReviewer("NONEXISTENT-1")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.Contains(t, err.Error(), "no reviewer_profile configured")
 }
 
 // trackingRunner wraps a Runner and signals done on the first RunTurn call.
@@ -282,6 +282,10 @@ func (r *capturingRunner) LastPrompt() string {
 func TestDispatchReviewer_Success(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude", Prompt: "You are a code reviewer."},
+	}
 	issue := makeIssue("id1", "ENG-1", "In Review", nil, nil)
 	mt := tracker.NewMemoryTracker(
 		[]domain.Issue{issue},
@@ -308,7 +312,7 @@ func TestDispatchReviewer_Success(t *testing.T) {
 
 	select {
 	case <-done:
-		// reviewer RunTurn completed — no panic, no deadlock
+		// reviewer RunTurn completed through the regular worker queue
 	case <-ctx.Done():
 		t.Fatal("reviewer did not complete within 3s")
 	}

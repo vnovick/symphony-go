@@ -26,7 +26,7 @@ describe('AgentInfoModal', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(screen.getByText('claude')).toBeInTheDocument();
+    expect(screen.getByText('Claude')).toBeInTheDocument();
   });
 
   it('shows prompt text when available', () => {

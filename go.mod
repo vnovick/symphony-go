@@ -18,6 +18,12 @@ require (
 )
 
 require (
+	github.com/charmbracelet/log v1.0.0
+	github.com/go-logfmt/logfmt v0.6.1 // indirect
+	golang.org/x/exp v0.0.0-20231006140011-7918f672742d // indirect
+)
+
+require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/aymanbagabas/go-udiff v0.3.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
@@ -30,7 +36,6 @@ require (
 	github.com/cockroachdb/datadriven v1.0.2 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
-	github.com/joho/godotenv v1.5.1
 	github.com/knz/lipgloss-convert v0.1.0 // indirect
 	github.com/kr/pretty v0.3.0 // indirect
 	github.com/kr/text v0.2.0 // indirect

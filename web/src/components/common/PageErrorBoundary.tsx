@@ -22,7 +22,9 @@ export class PageErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[Symphony] Page render error', error, info.componentStack);
+    if (import.meta.env.DEV) {
+      console.error('[Symphony] Page render error', error, info.componentStack);
+    }
   }
 
   render() {

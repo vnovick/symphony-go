@@ -1,8 +1,8 @@
 import {
   isSimpleBackendCommand,
-  modelDatalistId,
   modelsForBackend,
   normalizeBackend,
+  type ModelOption,
   type SupportedBackend,
 } from '../profileCommands';
 
@@ -26,35 +26,41 @@ function ModelInput({
   backend,
   value,
   onChange,
+  dynamicModels,
 }: {
   backend: SupportedBackend;
   value: string;
   onChange: (v: string) => void;
+  dynamicModels?: Record<string, ModelOption[]>;
 }) {
-  const models = modelsForBackend(backend);
-  const datalistId = modelDatalistId(backend);
-  const placeholder =
-    backend === 'codex'
-      ? 'Model ID (e.g. gpt-5.2-codex) or leave blank for default'
-      : 'Model ID (e.g. claude-sonnet-4-6) or leave blank for default';
+  const models = modelsForBackend(backend, dynamicModels);
+  const isKnownModel = !value || models.some((m) => m.id === value);
   return (
     <>
-      <datalist id={datalistId}>
+      <select
+        value={isKnownModel ? value : '__custom__'}
+        onChange={(e) => {
+          const v = e.target.value;
+          onChange(v === '__custom__' ? '' : v);
+        }}
+        className={selectCls}
+      >
+        <option value="">Default model</option>
         {models.map((m) => (
           <option key={m.id} value={m.id}>
-            {m.label}
+            {m.id} — {m.label}
           </option>
         ))}
-      </datalist>
-      <input
-        list={datalistId}
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value);
-        }}
-        placeholder={placeholder}
-        className={selectCls}
-      />
+        <option value="__custom__">Custom model ID…</option>
+        </select>
+      {!isKnownModel && (
+        <input
+          value={value}
+          onChange={(e) => { onChange(e.target.value); }}
+          placeholder="Enter custom model ID"
+          className={`${selectCls} font-mono text-xs mt-1`}
+        />
+      )}
     </>
   );
 }
@@ -114,6 +120,7 @@ interface ProfileEditorFieldsProps {
   onModelChange: (value: string) => void;
   onCommandChange: (value: string) => void;
   onPromptChange: (value: string) => void;
+  dynamicModels?: Record<string, ModelOption[]>;
 }
 
 export function ProfileEditorFields({
@@ -125,12 +132,13 @@ export function ProfileEditorFields({
   onModelChange,
   onCommandChange,
   onPromptChange,
+  dynamicModels,
 }: ProfileEditorFieldsProps) {
   const isCustomCommand = !isSimpleBackendCommand(command, backend);
   return (
     <>
       <BackendSelect value={backend} onChange={onBackendChange} />
-      <ModelInput backend={backend} value={model} onChange={onModelChange} />
+      <ModelInput backend={backend} value={model} onChange={onModelChange} dynamicModels={dynamicModels} />
       <CommandInput value={command} backend={backend} onChange={onCommandChange} />
       {isCustomCommand && (
         <p className="text-[10px] text-theme-muted">
@@ -142,10 +150,25 @@ export function ProfileEditorFields({
         onChange={(e) => {
           onPromptChange(e.target.value);
         }}
-        placeholder="System prompt (optional) — appended to the workflow prompt."
+        placeholder="System prompt (optional) — appended to the workflow prompt. Supports Liquid variables."
         className={textareaCls}
         rows={3}
       />
+      <details className="text-[10px] text-theme-muted">
+        <summary className="cursor-pointer hover:text-theme-text-secondary transition-colors">
+          Available template variables
+        </summary>
+        <div className="mt-1 space-y-0.5 font-mono pl-2 border-l-2 border-theme-line ml-1">
+          <p>{'{{ issue.identifier }}'} — Issue ID (e.g. ENG-42)</p>
+          <p>{'{{ issue.title }}'} — Issue title</p>
+          <p>{'{{ issue.description }}'} — Issue body</p>
+          <p>{'{{ issue.url }}'} — Issue URL</p>
+          <p>{'{{ issue.branch_name }}'} — Git branch name</p>
+          <p>{'{{ issue.labels }}'} — Labels array</p>
+          <p>{'{{ issue.priority }}'} — Priority level</p>
+          <p>{'{{ attempt }}'} — Retry attempt number</p>
+        </div>
+      </details>
     </>
   );
 }

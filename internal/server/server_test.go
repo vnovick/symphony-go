@@ -643,6 +643,95 @@ func TestHandleDeleteProfile_Success(t *testing.T) {
 	assert.NotContains(t, *defs, "fast")
 }
 
+// ─── handleListModels ──────────────────────────────────────────────────────────
+
+func TestHandleListModels_ReturnsModels(t *testing.T) {
+	models := map[string][]server.ModelOption{
+		"claude": {{ID: "claude-sonnet-4-6", Label: "Sonnet 4.6"}, {ID: "claude-opus-4-6", Label: "Opus 4.6"}},
+		"codex":  {{ID: "gpt-5.2-codex", Label: "GPT-5.2 Codex"}},
+	}
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		AvailableModelsFn: func() map[string][]server.ModelOption { return models },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/models", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "claude-sonnet-4-6")
+	assert.Contains(t, w.Body.String(), "gpt-5.2-codex")
+	assert.Contains(t, w.Body.String(), "Sonnet 4.6")
+}
+
+func TestHandleListModels_EmptyReturnsEmptyObject(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/models", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "{}")
+}
+
+// ─── handleGetReviewer / handleSetReviewer ─────────────────────────────────────
+
+func TestHandleGetReviewer_ReturnsConfig(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ReviewerConfigFn: func() (string, bool) { return "code-reviewer", true },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/reviewer", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "code-reviewer")
+	assert.Contains(t, w.Body.String(), "true")
+}
+
+func TestHandleSetReviewer_UpdatesConfig(t *testing.T) {
+	var savedProfile string
+	var savedAutoReview bool
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(profile string, autoReview bool) error {
+			savedProfile = profile
+			savedAutoReview = autoReview
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/reviewer",
+		bytes.NewBufferString(`{"profile":"reviewer","auto_review":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "reviewer", savedProfile)
+	assert.True(t, savedAutoReview)
+}
+
+func TestHandleSetReviewer_DisableReviewer(t *testing.T) {
+	var savedProfile string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(profile string, autoReview bool) error {
+			savedProfile = profile
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/reviewer",
+		bytes.NewBufferString(`{"profile":"","auto_review":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "", savedProfile)
+}
+
 // ─── handleListProjects / handleGetProjectFilter / handleSetProjectFilter ─────
 
 type fakeProjectManager struct {
@@ -810,4 +899,32 @@ func TestHandleAIReview_DispatchError(t *testing.T) {
 	srv := server.New(cfg)
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/ai-review", "")
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleSetIssueBackend(t *testing.T) {
+	tests := []struct {
+		name       string
+		identifier string
+		body       string
+		wantCode   int
+	}{
+		{"set codex", "PROJ-1", `{"backend":"codex"}`, 200},
+		{"set claude", "PROJ-1", `{"backend":"claude"}`, 200},
+		{"clear", "PROJ-1", `{"backend":""}`, 200},
+		{"bad json", "PROJ-1", `{invalid`, 400},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := baseSnap()
+			srv := server.New(makeTestConfig(snap))
+			path := "/api/v1/issues/" + tc.identifier + "/backend"
+			req := httptest.NewRequest("POST", path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, req)
+			if w.Code != tc.wantCode {
+				t.Errorf("got %d, want %d", w.Code, tc.wantCode)
+			}
+		})
+	}
 }

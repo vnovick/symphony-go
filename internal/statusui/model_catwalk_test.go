@@ -66,49 +66,44 @@ func catwalkUpdater(m tea.Model, cmd string, args ...string) (bool, tea.Model, t
 			},
 		})
 		return true, newM, c, nil
+	case "set-profiles":
+		// Inject available profiles into the snapshot so 'a' key works.
+		mod := m.(Model)
+		origSnap := mod.snap
+		mod.snap = func() server.StateSnapshot {
+			s := origSnap()
+			s.AvailableProfiles = []string{"frontend", "backend", "infra"}
+			s.ProfileDefs = map[string]server.ProfileDef{
+				"frontend": {Command: "claude", Backend: "claude"},
+				"backend":  {Command: "claude", Backend: "claude"},
+				"infra":    {Command: "codex", Backend: "codex"},
+			}
+			return s
+		}
+		mod.cfg.SetIssueProfile = func(id, profile string) {
+			mod.profileOverrides[id] = profile
+		}
+		mod.cfg.IssueProfiles = func() map[string]string {
+			return mod.profileOverrides
+		}
+		// Trigger a tick to pick up new snap.
+		newM, c := mod.Update(tickMsg(time.Now()))
+		return true, newM, c, nil
 	}
 	return false, m, nil, nil
 }
 
 // ---------------------------------------------------------------------------
-// renderToolsView  (was 0% coverage)
+// Session details via split pane
 // ---------------------------------------------------------------------------
 
-// TestCatwalk_ToolsView verifies that pressing 't' switches the right pane to
-// the per-tool call statistics table (renderToolsView).
-func TestCatwalk_ToolsView(t *testing.T) {
-	m := newCatwalkModel()
-	catwalk.RunModel(t, "testdata/catwalk_tools", m,
-		catwalk.WithWindowSize(100, 30),
-		catwalk.WithUpdater(catwalkUpdater),
-	)
-}
-
-// ---------------------------------------------------------------------------
-// renderSessionDetails  (was 0% coverage)
-// ---------------------------------------------------------------------------
-
-// TestCatwalk_SessionDetails verifies that pressing 'd' switches the right
-// pane to the session-details view (renderSessionDetails).
+// TestCatwalk_SessionDetails verifies that pressing 's' opens the split
+// pane showing session details alongside logs.
 func TestCatwalk_SessionDetails(t *testing.T) {
 	m := newCatwalkModel()
+	m.profileOverrides = make(map[string]string)
 	catwalk.RunModel(t, "testdata/catwalk_details", m,
-		catwalk.WithWindowSize(100, 30),
-		catwalk.WithUpdater(catwalkUpdater),
-	)
-}
-
-// ---------------------------------------------------------------------------
-// renderToolDetailView  (was 0% coverage)
-// ---------------------------------------------------------------------------
-
-// TestCatwalk_ToolDetailDrilldown verifies that the drill-down sequence
-// (t → tab → enter) opens the per-call history for the selected tool
-// (renderToolDetailView).
-func TestCatwalk_ToolDetailDrilldown(t *testing.T) {
-	m := newCatwalkModel()
-	catwalk.RunModel(t, "testdata/catwalk_tool_detail", m,
-		catwalk.WithWindowSize(100, 30),
+		catwalk.WithWindowSize(160, 30), // wide enough for split
 		catwalk.WithUpdater(catwalkUpdater),
 	)
 }
@@ -139,5 +134,35 @@ func TestCatwalk_ProjectPicker(t *testing.T) {
 			_, err := w.Write([]byte(applied[0]))
 			return err
 		})),
+	)
+}
+
+// ---------------------------------------------------------------------------
+// Split pane toggle
+// ---------------------------------------------------------------------------
+
+// TestCatwalk_SplitPane verifies the split pane toggle:
+// 's' opens split details, 's' again closes it.
+func TestCatwalk_SplitPane(t *testing.T) {
+	m := newCatwalkModel()
+	m.profileOverrides = make(map[string]string)
+	catwalk.RunModel(t, "testdata/catwalk_split", m,
+		catwalk.WithWindowSize(160, 30), // wide enough for split (>=120)
+		catwalk.WithUpdater(catwalkUpdater),
+	)
+}
+
+// ---------------------------------------------------------------------------
+// Profile picker flow
+// ---------------------------------------------------------------------------
+
+// TestCatwalk_ProfilePicker verifies the profile assignment picker flow:
+// set-profiles → 'a' opens picker → navigate → enter confirms.
+func TestCatwalk_ProfilePicker(t *testing.T) {
+	m := newCatwalkModel()
+	m.profileOverrides = make(map[string]string)
+	catwalk.RunModel(t, "testdata/catwalk_profile_picker", m,
+		catwalk.WithWindowSize(100, 30),
+		catwalk.WithUpdater(catwalkUpdater),
 	)
 }

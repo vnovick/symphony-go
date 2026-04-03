@@ -417,6 +417,16 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		}
 	}
 
+	// Per-issue backend override takes highest priority.
+	o.issueBackendsMu.RLock()
+	if issueBackend := o.issueBackends[issue.Identifier]; issueBackend != "" {
+		backend = issueBackend
+		runnerCommand = agent.CommandWithBackendHint(agentCommand, issueBackend)
+		slog.Info("orchestrator: using per-issue backend override",
+			"identifier", issue.Identifier, "backend", issueBackend)
+	}
+	o.issueBackendsMu.RUnlock()
+
 	if o.DryRun {
 		workerCancel()
 		slog.Info("orchestrator: [DRY-RUN] would dispatch agent",
@@ -454,6 +464,76 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck)
 	return state
+}
+
+// dispatchReviewerForIssue dispatches a reviewer worker for the given issue
+// using the specified profile. The reviewer enters the regular worker queue with
+// Kind="reviewer" and gets full retry/pause/resume support.
+func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *State, issue domain.Issue, profileName string, now time.Time) {
+	// Resolve the reviewer profile's command and backend.
+	o.cfgMu.RLock()
+	profile, ok := o.cfg.Agent.Profiles[profileName]
+	defaultCommand := o.cfg.Agent.Command
+	defaultBackend := o.cfg.Agent.Backend
+	o.cfgMu.RUnlock()
+
+	if !ok {
+		slog.Warn("orchestrator: reviewer profile not found, skipping auto-review",
+			"issue_identifier", issue.Identifier, "profile", profileName)
+		return
+	}
+
+	agentCommand := defaultCommand
+	backend := agent.BackendFromCommand(agentCommand)
+	if defaultBackend != "" {
+		backend = defaultBackend
+	}
+	runnerCommand := agentCommand
+	if profile.Command != "" {
+		agentCommand = profile.Command
+		runnerCommand = agentCommand
+		backend = agent.BackendFromCommand(agentCommand)
+	}
+	if profile.Backend != "" {
+		backend = profile.Backend
+		runnerCommand = agent.CommandWithBackendHint(agentCommand, profile.Backend)
+	}
+
+	workerCtx, workerCancel := context.WithCancel(ctx)
+
+	if o.DryRun {
+		workerCancel()
+		slog.Info("orchestrator: [DRY-RUN] would dispatch reviewer",
+			"identifier", issue.Identifier, "profile", profileName)
+		return
+	}
+
+	state.Claimed[issue.ID] = struct{}{}
+	attempt := 0
+	state.Running[issue.ID] = &RunEntry{
+		Issue:        issue,
+		Kind:         "reviewer",
+		WorkerHost:   "",
+		Backend:      backend,
+		StartedAt:    now,
+		RetryAttempt: &attempt,
+		WorkerCancel: workerCancel,
+	}
+
+	o.workerCancelsMu.Lock()
+	o.workerCancels[issue.Identifier] = workerCancel
+	o.workerCancelsMu.Unlock()
+
+	slog.Info("orchestrator: dispatching reviewer",
+		"issue_identifier", issue.Identifier, "profile", profileName, "backend", backend)
+
+	// Set the issue's profile to the reviewer profile so runWorker uses the
+	// reviewer's prompt (appended via the profile system).
+	o.issueProfilesMu.Lock()
+	o.issueProfiles[issue.Identifier] = profileName
+	o.issueProfilesMu.Unlock()
+
+	go o.runWorker(workerCtx, issue, attempt, "", runnerCommand, backend, profileName, false)
 }
 
 // transitionToWorking moves the issue to the configured working state (e.g. "In Progress").
@@ -648,6 +728,44 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			o.addCompletedRun(*ev.CompletedRun)
 		}
 
+	case EventDispatchReviewer:
+		// Manual reviewer dispatch via API. Fetch the issue and dispatch.
+		if ev.ReviewerProfile == "" {
+			slog.Warn("orchestrator: dispatch-reviewer event with empty profile", "identifier", ev.Identifier)
+			return state
+		}
+		// Check if issue is already running.
+		for _, entry := range state.Running {
+			if entry.Issue.Identifier == ev.Identifier {
+				slog.Warn("orchestrator: cannot dispatch reviewer — issue already running", "identifier", ev.Identifier)
+				return state
+			}
+		}
+		// Fetch the issue from tracker.
+		o.cfgMu.RLock()
+		allStates := append(append([]string{}, o.cfg.Tracker.ActiveStates...), o.cfg.Tracker.TerminalStates...)
+		if o.cfg.Tracker.CompletionState != "" {
+			allStates = append(allStates, o.cfg.Tracker.CompletionState)
+		}
+		o.cfgMu.RUnlock()
+		issues, err := o.tracker.FetchIssuesByStates(ctx, allStates)
+		if err != nil {
+			slog.Warn("orchestrator: reviewer fetch failed", "identifier", ev.Identifier, "error", err)
+			return state
+		}
+		var found *domain.Issue
+		for i := range issues {
+			if issues[i].Identifier == ev.Identifier {
+				found = &issues[i]
+				break
+			}
+		}
+		if found == nil {
+			slog.Warn("orchestrator: reviewer issue not found", "identifier", ev.Identifier)
+			return state
+		}
+		o.dispatchReviewerForIssue(ctx, &state, *found, ev.ReviewerProfile, time.Now())
+
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
 		liveEntry := state.Running[ev.IssueID]
@@ -722,8 +840,14 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Do NOT schedule a retry; successful completions must not appear in
 			// the retry queue and must not cause infinite re-dispatch loops.
 			delete(state.Claimed, ev.IssueID)
-			slog.Info("orchestrator: worker succeeded, claim released",
-				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+			successArgs := []any{
+				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
+				"turns", liveEntry.TurnCount, "input_tokens", liveEntry.InputTokens, "output_tokens", liveEntry.OutputTokens,
+			}
+			if ev.RunEntry != nil && ev.RunEntry.PRURL != "" {
+				successArgs = append(successArgs, "pr_url", ev.RunEntry.PRURL)
+			}
+			slog.Info("orchestrator: worker succeeded, claim released", successArgs...)
 			o.recordHistory(liveEntry, issue, now, "succeeded")
 			// Auto-clear workspace if configured — removes the cloned directory
 			// but leaves logs intact (they live under the logs dir, not here).
@@ -756,6 +880,19 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 							"identifier", id)
 					}
 				}()
+			}
+
+			// Auto-review: if configured, dispatch a reviewer worker for this issue.
+			// Only trigger when the completed worker was NOT itself a reviewer
+			// (prevents infinite review loops).
+			if liveEntry.Kind != "reviewer" {
+				o.cfgMu.RLock()
+				reviewerProfile := o.cfg.Agent.ReviewerProfile
+				autoReview := o.cfg.Agent.AutoReview
+				o.cfgMu.RUnlock()
+				if autoReview && reviewerProfile != "" {
+					o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
+				}
 			}
 
 		case TerminalStalled:
@@ -827,7 +964,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					state = ScheduleRetry(state, ev.IssueID, nextAttempt, issue.Identifier, errMsg, now, backoff)
 					slog.Info("orchestrator: worker failed, retry scheduled",
 						"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
-						"attempt", nextAttempt, "backoff_ms", backoff)
+						"attempt", nextAttempt, "backoff_ms", backoff,
+						"turns", liveEntry.TurnCount, "input_tokens", liveEntry.InputTokens, "output_tokens", liveEntry.OutputTokens)
 					o.recordHistory(liveEntry, issue, now, "failed")
 				}
 			}
@@ -963,6 +1101,7 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.OutputTokens = liveEntry.OutputTokens
 		run.WorkerHost = liveEntry.WorkerHost
 		run.Backend = liveEntry.Backend
+		run.Kind = liveEntry.Kind
 		run.SessionID = liveEntry.SessionID
 	} else {
 		run.StartedAt = finishedAt

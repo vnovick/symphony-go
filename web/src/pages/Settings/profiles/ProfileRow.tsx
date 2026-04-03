@@ -29,9 +29,10 @@ interface ProfileRowProps {
   def: ProfileDef;
   onEdit: (name: string, def: ProfileDef) => Promise<void>;
   onDelete: (name: string) => Promise<void>;
+  availableModels?: Record<string, { id: string; label: string }[]>;
 }
 
-export function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
+export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: ProfileRowProps) {
   const initial = draftFromProfileDef(def);
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -100,6 +101,7 @@ export function ProfileRow({ name, def, onEdit, onDelete }: ProfileRowProps) {
             onPromptChange={(value) => {
               setValue('prompt', value);
             }}
+            dynamicModels={availableModels}
           />
           {errors.command && (
             <p role="alert" className="text-xs text-theme-danger">

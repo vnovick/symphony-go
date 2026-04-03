@@ -1,0 +1,94 @@
+---
+title: Getting Started
+description: Install Itervox, configure your first WORKFLOW.md, and start resolving issues autonomously.
+sidebar:
+  order: 1
+---
+
+## Install
+
+Itervox is a single Go binary. Install it with Homebrew:
+
+```bash
+brew tap vnovick/tap && brew install symphony-go
+```
+
+Or download the latest release from [GitHub Releases](https://github.com/vnovick/symphony-go/releases).
+
+> **Note:** The binary installs as `symphony` and will be renamed to `itervox` in an upcoming release.
+
+## Prerequisites
+
+- **An AI agent CLI** — one of:
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
+  - [Codex](https://github.com/openai/codex) (`codex`)
+  - [OpenCode](https://github.com/opencode-ai/opencode) (`opencode`)
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
+- **A project tracker** — Linear or GitHub Issues
+
+## Quick Setup
+
+### 1. Initialize WORKFLOW.md
+
+Navigate to your project repo and run:
+
+```bash
+itervox init --tracker linear --runner claude
+```
+
+This scans your repository, detects the tech stack, and generates a `WORKFLOW.md` starter.
+
+For GitHub Issues:
+
+```bash
+itervox init --tracker github --runner claude
+```
+
+### 2. Configure secrets
+
+Create a `.symphony/.env` file (gitignored) with your API keys:
+
+```bash
+# For Linear
+LINEAR_API_KEY=lin_api_xxxxx
+
+# For GitHub (use a personal access token with repo scope)
+GITHUB_TOKEN=ghp_xxxxx
+```
+
+Reference them in WORKFLOW.md as `$LINEAR_API_KEY` or `$GITHUB_TOKEN`.
+
+### 3. Run
+
+```bash
+itervox -workflow WORKFLOW.md
+```
+
+Itervox starts polling your tracker, spawning agents for active issues, and streaming logs to the terminal.
+
+Open the dashboard at `http://localhost:8090` to see the Kanban board.
+
+### 4. (Optional) Verbose mode
+
+```bash
+itervox -workflow WORKFLOW.md -verbose
+```
+
+Enables DEBUG-level logging including agent output.
+
+## What happens next
+
+1. Itervox polls your tracker for issues in active states (default: "Todo", "In Progress")
+2. For each issue, it creates an isolated workspace (clone or worktree)
+3. An AI agent is spawned with your WORKFLOW.md prompt template
+4. The agent works on the issue, creates a branch, and submits a PR
+5. Itervox transitions the issue state on success
+
+All of this is visible in real time via the web dashboard or terminal UI.
+
+## Next steps
+
+- [Configuration Reference](/configuration/) — Full WORKFLOW.md format
+- [CLI Reference](/cli/) — All flags and commands
+- [Linear Setup Guide](/guides/linear-setup/) — Detailed Linear integration
+- [GitHub Issues Guide](/guides/github-issues/) — GitHub-specific setup

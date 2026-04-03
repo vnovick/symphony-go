@@ -35,6 +35,8 @@ import (
 	"github.com/vnovick/symphony-go/internal/tracker/linear"
 	"github.com/vnovick/symphony-go/internal/workflow"
 	"github.com/vnovick/symphony-go/internal/workspace"
+	charmlog "github.com/charmbracelet/log"
+	"github.com/vnovick/symphony-go/internal/logging"
 	"gopkg.in/lumberjack.v2"
 )
 
@@ -88,6 +90,21 @@ func defaultLogsDir(workflowPath string) string {
 	// Encode the slug so it is safe as a directory name component.
 	safe := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(cfg.Tracker.ProjectSlug)
 	return filepath.Join(base, cfg.Tracker.Kind, safe)
+}
+
+func convertModelsForSnapshot(models map[string][]config.ModelOption) map[string][]server.ModelOption {
+	if len(models) == 0 {
+		return nil
+	}
+	result := make(map[string][]server.ModelOption, len(models))
+	for backend, opts := range models {
+		converted := make([]server.ModelOption, len(opts))
+		for i, m := range opts {
+			converted[i] = server.ModelOption{ID: m.ID, Label: m.Label}
+		}
+		result[backend] = converted
+	}
+	return result
 }
 
 func configuredBackend(command, explicit string) string {
@@ -239,10 +256,21 @@ func main() {
 		MaxBackups: 5,
 		Compress:   true,
 	}
-	logWriter := io.MultiWriter(os.Stderr, rotatingFile)
-	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{
+	// Colored handler for stderr (auto-detects TTY for ANSI colors).
+	charmLevel := charmlog.InfoLevel
+	if logLevel == slog.LevelDebug {
+		charmLevel = charmlog.DebugLevel
+	}
+	stderrHandler := charmlog.NewWithOptions(os.Stderr, charmlog.Options{
+		ReportTimestamp: true,
+		TimeFormat:      time.TimeOnly,
+		Level:           charmLevel,
+	})
+	// Plain text handler for the rotating log file (no colors).
+	fileHandler := slog.NewTextHandler(rotatingFile, &slog.HandlerOptions{
 		Level: logLevel,
-	})))
+	})
+	slog.SetDefault(slog.New(logging.NewFanoutHandler(stderrHandler, fileHandler)))
 	slog.Info("symphony starting", "version", version, "commit", commit, "date", date)
 	slog.Info("logging to file", "path", rotatingFile.Filename)
 
@@ -263,6 +291,24 @@ func main() {
 		if err := config.ValidateDispatch(cfg); err != nil {
 			slog.Error("config validation failed", "path", *workflowPath, "error", err)
 			os.Exit(1)
+		}
+
+		// Auto-discover models at startup when WORKFLOW.md doesn't have available_models.
+		// This ensures the dashboard model dropdown is populated even for pre-existing configs.
+		if len(cfg.Agent.AvailableModels) == 0 {
+			claudeModels := agent.ListClaudeModels()
+			codexModels := agent.ListCodexModels()
+			cfg.Agent.AvailableModels = map[string][]config.ModelOption{
+				"claude": make([]config.ModelOption, len(claudeModels)),
+				"codex":  make([]config.ModelOption, len(codexModels)),
+			}
+			for i, m := range claudeModels {
+				cfg.Agent.AvailableModels["claude"][i] = config.ModelOption{ID: m.ID, Label: m.Label}
+			}
+			for i, m := range codexModels {
+				cfg.Agent.AvailableModels["codex"][i] = config.ModelOption{ID: m.ID, Label: m.Label}
+			}
+			slog.Info("models auto-discovered", "claude", len(claudeModels), "codex", len(codexModels))
 		}
 
 		runCtx, runCancel := context.WithCancel(ctx)
@@ -532,6 +578,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				SessionID:    r.SessionID,
 				WorkerHost:   r.WorkerHost,
 				Backend:      r.Backend,
+				Kind:         r.Kind,
 				ElapsedMs:    now.Sub(r.StartedAt).Milliseconds(),
 				StartedAt:    r.StartedAt,
 			})
@@ -614,6 +661,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				Status:       r.Status,
 				WorkerHost:   r.WorkerHost,
 				Backend:      r.Backend,
+				Kind:         r.Kind,
 				SessionID:    r.SessionID,
 				AppSessionID: r.AppSessionID,
 			})
@@ -655,6 +703,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DispatchStrategy:    orch.DispatchStrategyCfg(),
 			DefaultBackend:      configuredBackend(cfg.Agent.Command, cfg.Agent.Backend),
 			InlineInput:         orch.InlineInputCfg(),
+			AvailableModels:     convertModelsForSnapshot(cfg.Agent.AvailableModels),
+			ReviewerProfile:     func() string { p, _ := orch.ReviewerCfg(); return p }(),
+			AutoReview:          func() bool { _, a := orch.ReviewerCfg(); return a }(),
 		}
 		// Build input-required rows from the snapshot.
 		for _, entry := range s.InputRequiredIssues {
@@ -780,7 +831,42 @@ func buildTUIConfig(
 		}
 		return ok
 	}
+	tuiCfg.SetIssueProfile = func(identifier, profile string) {
+		orch.SetIssueProfile(identifier, profile)
+	}
+	tuiCfg.IssueProfiles = func() map[string]string {
+		s := orch.Snapshot()
+		return s.IssueProfiles
+	}
 	tuiCfg.TriggerPoll = orch.Refresh
+	tuiCfg.FetchIssueDetail = func(identifier string) (*statusui.BacklogIssueItem, error) {
+		fetchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		issue, err := tr.FetchIssueByIdentifier(fetchCtx, identifier)
+		if err != nil {
+			return nil, err
+		}
+		pri := 0
+		if issue.Priority != nil {
+			pri = *issue.Priority
+		}
+		var desc string
+		if issue.Description != nil {
+			desc = *issue.Description
+		}
+		var comments []statusui.CommentItem
+		for _, c := range issue.Comments {
+			comments = append(comments, statusui.CommentItem{Author: c.AuthorName, Body: c.Body})
+		}
+		return &statusui.BacklogIssueItem{
+			Identifier:  issue.Identifier,
+			Title:       issue.Title,
+			State:       issue.State,
+			Priority:    pri,
+			Description: desc,
+			Comments:    comments,
+		}, nil
+	}
 
 	tuiCancel := func(identifier string) bool {
 		issue := orch.GetRunningIssue(identifier)
@@ -1010,6 +1096,10 @@ func (a *orchestratorAdapter) SetIssueProfile(identifier, profile string) {
 	a.orch.SetIssueProfile(identifier, profile)
 }
 
+func (a *orchestratorAdapter) SetIssueBackend(identifier, backend string) {
+	a.orch.SetIssueBackend(identifier, backend)
+}
+
 func (a *orchestratorAdapter) ProfileDefs() map[string]server.ProfileDef {
 	profiles := a.orch.ProfilesCfg()
 	defs := make(map[string]server.ProfileDef, len(profiles))
@@ -1017,6 +1107,28 @@ func (a *orchestratorAdapter) ProfileDefs() map[string]server.ProfileDef {
 		defs[name] = server.ProfileDef{Command: p.Command, Prompt: p.Prompt, Backend: p.Backend}
 	}
 	return defs
+}
+
+func (a *orchestratorAdapter) ReviewerConfig() (string, bool) {
+	return a.orch.ReviewerCfg()
+}
+
+func (a *orchestratorAdapter) SetReviewerConfig(profile string, autoReview bool) error {
+	a.orch.SetReviewerCfg(profile, autoReview)
+	return nil
+}
+
+func (a *orchestratorAdapter) AvailableModels() map[string][]server.ModelOption {
+	models := a.orch.AvailableModelsCfg()
+	result := make(map[string][]server.ModelOption, len(models))
+	for backend, opts := range models {
+		converted := make([]server.ModelOption, len(opts))
+		for i, m := range opts {
+			converted[i] = server.ModelOption{ID: m.ID, Label: m.Label}
+		}
+		result[backend] = converted
+	}
+	return result
 }
 
 func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef) error {
@@ -1312,7 +1424,10 @@ type repoInfo struct {
 	DefaultBranch string // "main" or "master"
 	ProjectName   string // repo name, used for workspace.root
 	HasClaudeMD   bool   // CLAUDE.md present in dir
+	HasAgentsMD   bool   // AGENTS.md present in dir
 	Stacks        []detectedStack
+	ClaudeModels  []agent.ModelOption // discovered Claude models (may be empty)
+	CodexModels   []agent.ModelOption // discovered Codex models (may be empty)
 }
 
 type detectedStack struct {
@@ -1350,6 +1465,11 @@ func scanRepo(dir string) repoInfo {
 	// ── CLAUDE.md ─────────────────────────────────────────────────────────────
 	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err == nil {
 		info.HasClaudeMD = true
+	}
+
+	// ── AGENTS.md ─────────────────────────────────────────────────────────────
+	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); err == nil {
+		info.HasAgentsMD = true
 	}
 
 	// ── tech stack ────────────────────────────────────────────────────────────
@@ -1538,6 +1658,45 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	b.WriteString("  read_timeout_ms: 120000\n")
 	b.WriteString("  stall_timeout_ms: 300000\n")
 
+	// Reviewer prompt — used when a reviewer worker is dispatched (via auto_review or AI Review button).
+	// Uses the reviewer_prompt template instead of the main WORKFLOW.md body.
+	b.WriteString("  # reviewer_profile: reviewer       # Uncomment and create a 'reviewer' profile to enable AI code review.\n")
+	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run.\n")
+	b.WriteString("  reviewer_prompt: |\n")
+	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
+	b.WriteString("\n")
+	b.WriteString("    ## Your task\n")
+	b.WriteString("\n")
+	b.WriteString("    Review the pull request created for this issue.\n")
+	b.WriteString("\n")
+	b.WriteString("    1. Run `gh pr diff` to read the PR changes\n")
+	b.WriteString("    2. Review for: correctness, test coverage, edge cases, security issues, code style\n")
+	b.WriteString("    3. If you find problems:\n")
+	b.WriteString("       - Fix them directly in the workspace\n")
+	b.WriteString("       - Commit and push: `git add -A && git commit -m \"fix: reviewer corrections\" && git push`\n")
+	b.WriteString("       - Post a comment on the tracker issue summarising what you fixed\n")
+	b.WriteString("    4. If the PR is clean:\n")
+	b.WriteString("       - Post an approval comment: \"AI review passed — no issues found\"\n")
+	b.WriteString("\n")
+	b.WriteString("    Be concise. Focus on real bugs, not style preferences.\n")
+
+	// Write discovered models so the dashboard profile editor has suggestions.
+	if len(info.ClaudeModels) > 0 || len(info.CodexModels) > 0 {
+		b.WriteString("  available_models:\n")
+		if len(info.ClaudeModels) > 0 {
+			b.WriteString("    claude:\n")
+			for _, m := range info.ClaudeModels {
+				b.WriteString(fmt.Sprintf("      - { id: %q, label: %q }\n", m.ID, m.Label))
+			}
+		}
+		if len(info.CodexModels) > 0 {
+			b.WriteString("    codex:\n")
+			for _, m := range info.CodexModels {
+				b.WriteString(fmt.Sprintf("      - { id: %q, label: %q }\n", m.ID, m.Label))
+			}
+		}
+	}
+
 	cloneURL := info.CloneURL
 	if cloneURL == "" {
 		cloneURL = "git@github.com:owner/" + info.ProjectName + ".git"
@@ -1575,6 +1734,14 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("This project has a `CLAUDE.md`. Read it before touching any code:\n\n")
 		b.WriteString("```bash\ncat CLAUDE.md\n```\n\n")
 		b.WriteString("Follow all conventions, architecture rules, and preferences documented there.\n\n")
+		b.WriteString("---\n\n")
+	}
+
+	// AGENTS.md — multi-agent configuration
+	if info.HasAgentsMD {
+		b.WriteString("## Multi-Agent Configuration\n\n")
+		b.WriteString("This project has an `AGENTS.md`. Read it for multi-agent conventions and coordination rules:\n\n")
+		b.WriteString("```bash\ncat AGENTS.md\n```\n\n")
 		b.WriteString("---\n\n")
 	}
 
@@ -1767,9 +1934,18 @@ func runInit(args []string) {
 	} else {
 		fmt.Printf("  CLAUDE.md  : not found — add one for best results\n")
 	}
+	if info.HasAgentsMD {
+		fmt.Printf("  AGENTS.md  : found — prompt will reference it\n")
+	}
 	for _, s := range info.Stacks {
 		fmt.Printf("  stack      : %s (%s)\n", s.Name, strings.Join(s.Commands, ", "))
 	}
+
+	// Discover available models from provider APIs (best-effort).
+	fmt.Printf("symphony init: discovering available models...\n")
+	info.ClaudeModels = agent.ListClaudeModels()
+	info.CodexModels = agent.ListCodexModels()
+	fmt.Printf("  models     : %d claude, %d codex\n", len(info.ClaudeModels), len(info.CodexModels))
 
 	content := generateWorkflow(*trackerKind, *runner, info)
 

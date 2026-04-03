@@ -90,6 +90,11 @@ func (o *Orchestrator) ResumeIssue(identifier string) bool {
 // Returns true if any action was taken (worker cancelled or paused removed).
 // Safe to call from any goroutine.
 func (o *Orchestrator) TerminateIssue(identifier string) bool {
+	// Clean up the per-issue backend override so stale entries don't persist.
+	o.issueBackendsMu.Lock()
+	delete(o.issueBackends, identifier)
+	o.issueBackendsMu.Unlock()
+
 	// Read both paused and running state under a single RLock so the two
 	// checks are consistent with the same snapshot.
 	o.snapMu.RLock()
@@ -181,6 +186,31 @@ func (o *Orchestrator) SetIssueProfile(identifier, profileName string) {
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}
+}
+
+// SetIssueBackend sets (or clears) a per-issue backend override.
+// Pass an empty backend to reset the issue to the default backend.
+// Safe to call from any goroutine.
+func (o *Orchestrator) SetIssueBackend(identifier, backend string) {
+	o.issueBackendsMu.Lock()
+	if backend == "" {
+		delete(o.issueBackends, identifier)
+	} else {
+		o.issueBackends[identifier] = backend
+	}
+	o.issueBackendsMu.Unlock()
+	slog.Info("orchestrator: issue backend updated", "identifier", identifier, "backend", backend)
+	if o.OnStateChange != nil {
+		o.OnStateChange()
+	}
+}
+
+// getIssueBackend returns the per-issue backend override (may be "").
+// Safe to call from any goroutine.
+func (o *Orchestrator) getIssueBackend(identifier string) string {
+	o.issueBackendsMu.RLock()
+	defer o.issueBackendsMu.RUnlock()
+	return o.issueBackends[identifier]
 }
 
 // GetRunningIssue returns a copy of the domain.Issue for the currently running

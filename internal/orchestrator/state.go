@@ -45,6 +45,10 @@ const (
 	// EventDismissInput is sent by DismissInput when the user dismisses an
 	// input-required issue without providing input. Moves to PausedIdentifiers.
 	EventDismissInput EventType = "DismissInput"
+	// EventDispatchReviewer is sent by DispatchReviewer (manual trigger) to
+	// dispatch a reviewer worker through the event loop so state mutations
+	// happen in the single event-loop goroutine.
+	EventDispatchReviewer EventType = "DispatchReviewer"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -56,6 +60,7 @@ type OrchestratorEvent struct { //nolint:revive
 	RetryEntry   *RetryEntry
 	Error              error
 	Message            string              // user-provided text for EventProvideInput
+	ReviewerProfile    string              // profile name for EventDispatchReviewer
 	CompletedRun       *CompletedRun       // used by EventReviewerCompleted
 	InputRequiredEntry *InputRequiredEntry  // used by TerminalInputRequired
 }
@@ -101,6 +106,7 @@ type RunEntry struct {
 	Backend        string // e.g. "claude", "codex", or "" when unknown
 	Kind           string // "worker" (default) | "reviewer"
 	BranchName     string // actual resolved branch used for the worktree (may differ from issue.BranchName when a PR branch was used)
+	PRURL          string // URL of the PR created or continued during this run (empty if none)
 	TerminalReason TerminalReason
 	LastEventAt    *time.Time // when last EventWorkerUpdate was received
 	LastMessage    string
@@ -132,6 +138,7 @@ type CompletedRun struct {
 	// history file does not leak runs across projects. Format: "<kind>:<slug>".
 	// Empty string means "unscoped" (legacy entries written before this field
 	// was added); these are retained so existing history is not silently dropped.
+	Kind         string // "worker" (default) | "reviewer"
 	ProjectKey   string
 	AppSessionID string // daemon-invocation grouping key; empty for legacy entries
 }
@@ -166,6 +173,9 @@ type State struct {
 	// When set for an issue, the named profile's Command is used instead of
 	// the default cfg.Agent.Command when dispatching that issue.
 	IssueProfiles map[string]string
+	// IssueBackends maps issue identifier to a backend override ("claude" or "codex").
+	// When set, overrides the profile and config backend for dispatch.
+	IssueBackends map[string]string
 	// PausedOpenPRs tracks issues that were auto-paused because an open PR was detected.
 	// Key: issue identifier, Value: open PR URL.
 	PausedOpenPRs map[string]string
@@ -220,6 +230,7 @@ func NewState(cfg *config.Config) State {
 		RetryAttempts:         make(map[string]*RetryEntry),
 		PausedIdentifiers:     make(map[string]string),
 		IssueProfiles:         make(map[string]string),
+		IssueBackends:         make(map[string]string),
 		PausedOpenPRs:         make(map[string]string),
 		ForceReanalyze:        make(map[string]struct{}),
 		PrevActiveIdentifiers: make(map[string]struct{}),

@@ -3,7 +3,7 @@
 //
 // Layout (horizontal split):
 //
-//	╭─ SYMPHONY ────────────────────────────...
+//	╭─ ITERVOX ────────────────────────────...
 //	│ Agents: 2/10   Tokens: ↑12k ↓8k  Retrying: 0
 //	│ Web: http://localhost:8090
 //	┌──── ISSUES (k↑ j↓ tab expand) ─┐ │ ┌── LOGS: TIPRD-25 ↗ subagent ─┐
@@ -69,11 +69,21 @@ type Config struct {
 	// TerminateIssue hard-stops a running or paused agent without pausing it.
 	// If nil, the 'd' key is disabled.
 	TerminateIssue func(identifier string) bool
+	// SetIssueProfile assigns (or clears) a per-issue agent profile override.
+	// Empty profile string resets to default. If nil, the 'a' key is disabled.
+	SetIssueProfile func(identifier, profile string)
+	// IssueProfiles returns the current map of issue identifier to profile name.
+	// If nil, profile badges are not shown.
+	IssueProfiles func() map[string]string
 	// TriggerPoll requests an immediate orchestrator poll cycle. Used to make
 	// paused issues that were moved back to an active state in the tracker get
 	// picked up faster than the normal poll interval (default 30 s).
 	// If nil, no extra polling is triggered.
 	TriggerPoll func()
+	// FetchIssueDetail loads full issue details (title, description, labels,
+	// priority, comments) for the split details pane. If nil, the issue
+	// details section is not shown.
+	FetchIssueDetail func(identifier string) (*BacklogIssueItem, error)
 }
 
 // ProjectItem is one entry in the TUI project picker.
@@ -133,13 +143,14 @@ type keyMap struct {
 	Dispatch      key.Binding
 	Resume        key.Binding
 	Terminate     key.Binding
-	ToolsPane     key.Binding
 	PanelNext     key.Binding
 	EscKey        key.Binding
 	DrillDown     key.Binding
 	OpenURL       key.Binding
 	OpenWebUI     key.Binding
 	HistoryTab    key.Binding
+	AssignProfile key.Binding
+	SplitToggle   key.Binding
 }
 
 func defaultKeys() keyMap {
@@ -224,10 +235,6 @@ func defaultKeys() keyMap {
 			key.WithKeys("D"),
 			key.WithHelp("D", "discard paused"),
 		),
-		ToolsPane: key.NewBinding(
-			key.WithKeys("t"),
-			key.WithHelp("t", "tools view"),
-		),
 		OpenURL: key.NewBinding(
 			key.WithKeys("o"),
 			key.WithHelp("o", "open PR in browser"),
@@ -240,17 +247,25 @@ func defaultKeys() keyMap {
 			key.WithKeys("h"),
 			key.WithHelp("h", "history"),
 		),
+		AssignProfile: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "assign profile"),
+		),
+		SplitToggle: key.NewBinding(
+			key.WithKeys("s"),
+			key.WithHelp("s", "split details"),
+		),
 	}
 }
 
 // ShortHelp implements key.Map and returns the compact help binding list.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.ListUp, k.ListDown, k.PanelNext, k.DrillDown, k.EscKey, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.ToolsPane, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.OpenURL, k.OpenWebUI, k.Quit}
+	return []key.Binding{k.ListUp, k.ListDown, k.PanelNext, k.DrillDown, k.EscKey, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.OpenURL, k.OpenWebUI, k.AssignProfile, k.SplitToggle, k.Quit}
 }
 
 // FullHelp implements key.Map and returns the full help binding list.
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.ListUp, k.ListDown, k.Toggle, k.PanelNext, k.EscKey, k.DrillDown, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.ToolsPane, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.Quit}}
+	return [][]key.Binding{{k.ListUp, k.ListDown, k.Toggle, k.PanelNext, k.EscKey, k.DrillDown, k.LogUp, k.LogDown, k.Kill, k.Resume, k.Terminate, k.WorkersUp, k.WorkersDown, k.BacklogToggle, k.Dispatch, k.OpenPicker, k.AssignProfile, k.SplitToggle, k.Quit}}
 }
 
 // pickerLoadedMsg carries async-loaded project list into the TUI update loop.
@@ -371,6 +386,22 @@ type Model struct {
 	backlogCursor  int
 	dispatchMsg    string // feedback after dispatching a backlog issue
 
+	// profile picker state
+	profilePickerOpen   bool
+	profilePickerCursor int
+	profilePickerTarget string   // identifier of the issue being assigned
+	profilePickerItems  []string // cached AvailableProfiles from snapshot
+
+	// per-issue profile overrides, refreshed each tick from IssueProfiles callback
+	profileOverrides map[string]string
+
+	// split pane state
+	splitMode         bool              // true = details pane visible on right
+	splitVP           viewport.Model    // scrollable viewport for details pane
+	splitReady        bool              // true after first splitVP initialization
+	splitIssueDetail  *BacklogIssueItem // cached issue detail for split pane
+	splitDetailTarget string            // identifier currently loaded in split detail
+
 	// paused section navigation
 	inPausedSection bool
 	pausedCursor    int
@@ -378,18 +409,10 @@ type Model struct {
 	// history section navigation
 	historyCursor int
 
-	// right pane display mode: "logs" (default), "tools", or "details"
-	rightPaneView string
-
 	// Panel focus: 0=left, 1=right, 2=bottom(timeline)
 	activePanel int
 	// leftTab controls which sub-view is shown in the left panel: "" = issues, "history" = history
 	leftTab string
-
-	// Tool drill-down state
-	toolCursor       int    // row cursor in tools table
-	toolDetailTool   string // non-empty = showing call list for this tool
-	toolDetailScroll int    // scroll offset in tool detail view
 
 	// Timeline drill-down state
 	timelineCursor  int  // selected session bar in timeline
@@ -417,7 +440,8 @@ func New(snap func() server.StateSnapshot, buf *logbuffer.Buffer, cfg Config, ca
 		lastText:  make(map[string]string),
 		subagents: make(map[string][]subagentInfo),
 		collapsed: make(map[string]bool),
-		pickerSel: make(map[string]bool),
+		pickerSel:        make(map[string]bool),
+		profileOverrides: make(map[string]string),
 	}
 }
 
@@ -464,6 +488,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.resizeViewport()
+		if m.splitMode && m.width < 120 {
+			m.splitMode = false
+			m.resizeViewport()
+		}
 
 	case tickMsg:
 		s := m.snap()
@@ -495,6 +523,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Sync MaxAgents from snapshot so the header stays accurate after API changes.
 		if s.MaxConcurrentAgents > 0 {
 			m.cfg.MaxAgents = s.MaxConcurrentAgents
+		}
+
+		// Refresh per-issue profile overrides from the orchestrator.
+		if m.cfg.IssueProfiles != nil {
+			m.profileOverrides = m.cfg.IssueProfiles()
 		}
 
 		// Persist the most-recent text block per session.
@@ -541,6 +574,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		if m.splitMode {
+			m.refreshSplitDetail()
+		}
 		m.resizeViewport()
 		m.refreshViewport()
 		cmds = append(cmds, tickCmd())
@@ -577,9 +613,70 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case key.Matches(msg, m.keys.AssignProfile):
+				if m.cfg.SetIssueProfile != nil && m.backlogCursor < len(m.backlogItems) {
+					snap := m.snap()
+					if len(snap.AvailableProfiles) > 0 {
+						item := m.backlogItems[m.backlogCursor]
+						m.profilePickerItems = snap.AvailableProfiles
+						m.profilePickerTarget = item.Identifier
+						m.profilePickerCursor = 0
+						current := m.profileOverrides[item.Identifier]
+						for i, p := range m.profilePickerItems {
+							if p == current {
+								m.profilePickerCursor = i
+								break
+							}
+						}
+						if current == "" {
+							m.profilePickerCursor = len(m.profilePickerItems)
+						}
+						m.profilePickerOpen = true
+					}
+				}
 			case key.Matches(msg, m.keys.EscKey), key.Matches(msg, m.keys.BacklogToggle), key.Matches(msg, m.keys.PickerClose):
 				m.backlogOpen = false
 				m.dispatchMsg = ""
+			}
+			break
+		}
+
+		// Profile picker navigation takes priority when open.
+		if m.profilePickerOpen {
+			switch {
+			case key.Matches(msg, m.keys.ListUp):
+				if m.profilePickerCursor > 0 {
+					m.profilePickerCursor--
+				}
+			case key.Matches(msg, m.keys.ListDown):
+				// +1 for "clear override" row
+				total := len(m.profilePickerItems) + 1
+				if m.profilePickerCursor < total-1 {
+					m.profilePickerCursor++
+				}
+			case key.Matches(msg, m.keys.PickerApply), key.Matches(msg, m.keys.DrillDown):
+				if m.cfg.SetIssueProfile != nil {
+					var profile string
+					if m.profilePickerCursor < len(m.profilePickerItems) {
+						profile = m.profilePickerItems[m.profilePickerCursor]
+					}
+					// else: cursor is on "clear override" row, profile stays ""
+					m.cfg.SetIssueProfile(m.profilePickerTarget, profile)
+					if profile == "" {
+						m.killMsg = "⚙ profile cleared for " + m.profilePickerTarget
+					} else {
+						m.killMsg = "⚙ " + profile + " assigned to " + m.profilePickerTarget
+					}
+					// Update local cache immediately so badge appears without waiting for tick.
+					if profile == "" {
+						delete(m.profileOverrides, m.profilePickerTarget)
+					} else {
+						m.profileOverrides[m.profilePickerTarget] = profile
+					}
+				}
+				m.profilePickerOpen = false
+			case key.Matches(msg, m.keys.PickerClose), key.Matches(msg, m.keys.EscKey):
+				m.profilePickerOpen = false
 			}
 			break
 		}
@@ -622,22 +719,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 			}
 		case key.Matches(msg, m.keys.PanelNext):
-			// Cycle active panel: left → right → bottom(timeline) → left.
-			// Skip bottom if no timeline content.
-			next := (m.activePanel + 1) % 3
-			if next == 2 && !m.ganttVisible() {
+			maxPanel := 3 // 0=left, 1=logs, 2=gantt
+			if m.splitMode {
+				maxPanel = 4 // 0=left, 1=logs, 2=details, 3=gantt
+			}
+			next := (m.activePanel + 1) % maxPanel
+			// Skip gantt if not visible.
+			ganttPanel := maxPanel - 1
+			if next == ganttPanel && !m.ganttVisible() {
 				next = 0
 			}
-			if next == 2 && m.leftTab != "history" {
-				// Sync timeline cursor to first bar when entering timeline panel.
+			if next == ganttPanel && m.leftTab != "history" {
 				m.timelineCursor = 0
 			}
 			m.activePanel = next
 		case key.Matches(msg, m.keys.EscKey):
-			if m.toolDetailTool != "" {
-				m.toolDetailTool = ""
-				m.toolDetailScroll = 0
-			} else if m.timelineDetail {
+			if m.timelineDetail {
 				m.timelineDetail = false
 			} else if m.leftTab == "history" {
 				m.leftTab = ""
@@ -648,21 +745,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.ListUp):
 			switch m.activePanel {
-			case 1: // right pane
-				if m.rightPaneView == "tools" {
-					if m.toolDetailTool != "" {
-						if m.toolDetailScroll > 0 {
-							m.toolDetailScroll--
-						}
-					} else {
-						if m.toolCursor > 0 {
-							m.toolCursor--
-						}
-					}
+			case 1: // right pane (logs)
+				m.logVP.ScrollUp(1)
+			case 2:
+				if m.splitMode {
+					// details pane scroll
+					m.splitVP.ScrollUp(1)
 				} else {
-					m.logVP.ScrollUp(1)
+					// timeline — arrows always move cursor; exits detail mode if needed
+					m.ganttEntryCount = m.computeGanttEntryCount()
+					if m.timelineCursor > 0 {
+						m.timelineCursor--
+						m.timelineDetail = false
+					}
 				}
-			case 2: // timeline — arrows always move cursor; exits detail mode if needed
+			case 3: // timeline when split is active
 				m.ganttEntryCount = m.computeGanttEntryCount()
 				if m.timelineCursor > 0 {
 					m.timelineCursor--
@@ -673,11 +770,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.historyCursor > 0 {
 						m.historyCursor--
 						m.refreshViewport()
+						if m.splitMode {
+							m.refreshSplitDetail()
+						}
 					}
 				} else if m.inPausedSection {
 					if m.pausedCursor > 0 {
 						m.pausedCursor--
 						m.refreshViewport()
+						if m.splitMode {
+							m.refreshSplitDetail()
+						}
 					} else {
 						// Return to nav list, land on last item.
 						m.inPausedSection = false
@@ -685,6 +788,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.selectedNav = len(m.navItems) - 1
 						}
 						m.refreshViewport()
+						if m.splitMode {
+							m.refreshSplitDetail()
+						}
 					}
 					m.killMsg = ""
 				} else if m.selectedNav > 0 {
@@ -693,30 +799,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.timelineCursor = 0
 					m.timelineDetail = false
 					m.refreshViewport()
+					if m.splitMode {
+						m.refreshSplitDetail()
+					}
 				}
 			}
 		case key.Matches(msg, m.keys.ListDown):
 			switch m.activePanel {
-			case 1: // right pane
-				if m.rightPaneView == "tools" {
-					if m.toolDetailTool != "" {
-						m.toolDetailScroll++
-					} else {
-						lines := []string{}
-						if m.buf != nil {
-							if id, _ := m.selectedSessionID(); id != "" {
-								lines = m.buf.Get(id)
-							}
-						}
-						stats := buildToolStats(lines)
-						if m.toolCursor < len(stats)-1 {
-							m.toolCursor++
-						}
-					}
+			case 1: // right pane (logs)
+				m.logVP.ScrollDown(1)
+			case 2:
+				if m.splitMode {
+					m.splitVP.ScrollDown(1)
 				} else {
-					m.logVP.ScrollDown(1)
+					m.ganttEntryCount = m.computeGanttEntryCount()
+					if m.timelineCursor < m.ganttEntryCount-1 {
+						m.timelineCursor++
+					}
+					m.timelineDetail = false
 				}
-			case 2: // timeline — arrows always move cursor; exits detail mode if needed
+			case 3: // timeline when split is active
 				m.ganttEntryCount = m.computeGanttEntryCount()
 				if m.timelineCursor < m.ganttEntryCount-1 {
 					m.timelineCursor++
@@ -727,11 +829,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.historyCursor < len(m.history)-1 {
 						m.historyCursor++
 						m.refreshViewport()
+						if m.splitMode {
+							m.refreshSplitDetail()
+						}
 					}
 				} else if m.inPausedSection {
 					if m.pausedCursor < len(m.paused)-1 {
 						m.pausedCursor++
 						m.refreshViewport()
+						if m.splitMode {
+							m.refreshSplitDetail()
+						}
 					}
 					m.killMsg = ""
 				} else if m.selectedNav < len(m.navItems)-1 {
@@ -740,12 +848,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.timelineCursor = 0
 					m.timelineDetail = false
 					m.refreshViewport()
+					if m.splitMode {
+						m.refreshSplitDetail()
+					}
 				} else if len(m.paused) > 0 {
 					// At end of nav list — enter paused section.
 					m.inPausedSection = true
 					m.pausedCursor = 0
 					m.killMsg = ""
 					m.refreshViewport()
+					if m.splitMode {
+						m.refreshSplitDetail()
+					}
 				}
 			}
 		case key.Matches(msg, m.keys.Toggle):
@@ -766,29 +880,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case key.Matches(msg, m.keys.DrillDown):
-			// Enter: drill down into tool detail, timeline phases, focus right pane for paused,
-			// or toggle details view for normal left-pane items.
+			// Enter: drill down into timeline phases, or focus right pane for paused.
 			if m.activePanel == 0 && m.inPausedSection {
 				// Focus right pane to read paused session logs.
 				m.activePanel = 1
-			} else if m.activePanel == 1 && m.rightPaneView == "tools" && m.toolDetailTool == "" && m.buf != nil {
-				if id, _ := m.selectedSessionID(); id != "" {
-					stats := buildToolStats(m.buf.Get(id))
-					if m.toolCursor < len(stats) {
-						m.toolDetailTool = stats[m.toolCursor].name
-						m.toolDetailScroll = 0
-					}
-				}
 			} else if m.activePanel == 2 && m.ganttVisible() && !m.timelineDetail {
 				// Show phases for the cursor row (history mode) or selected session (normal mode).
 				m.timelineDetail = true
-			} else if m.activePanel == 0 && !m.inPausedSection && !m.backlogOpen {
-				// Toggle details/logs for the selected running/history session.
-				if m.rightPaneView == "details" {
-					m.rightPaneView = "logs"
-				} else {
-					m.rightPaneView = "details"
-				}
 			}
 		case key.Matches(msg, m.keys.LogUp):
 			pageSize := m.logVP.Height / 2
@@ -904,12 +1002,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.killMsg = fmt.Sprintf("⚡ Workers → %d", m.cfg.MaxAgents)
 			}
-		case key.Matches(msg, m.keys.ToolsPane):
-			if m.rightPaneView == "tools" {
-				m.rightPaneView = "logs"
-			} else {
-				m.rightPaneView = "tools"
-			}
 		case key.Matches(msg, m.keys.BacklogToggle):
 			if m.cfg.FetchBacklog != nil && !m.backlogLoading {
 				if m.backlogOpen {
@@ -923,14 +1015,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 				}
 			}
-		case key.Matches(msg, m.keys.Dispatch):
-			// Dispatch key (d/enter): toggle issue details view for running/paused/history issues
-			if !m.backlogOpen {
-				if m.rightPaneView == "details" {
-					m.rightPaneView = "logs"
-				} else {
-					m.rightPaneView = "details"
+		case key.Matches(msg, m.keys.AssignProfile):
+			if m.cfg.SetIssueProfile != nil {
+				snap := m.snap()
+				if len(snap.AvailableProfiles) > 0 {
+					var target string
+					if m.backlogOpen && m.backlogCursor < len(m.backlogItems) {
+						target = m.backlogItems[m.backlogCursor].Identifier
+					} else if id, _ := m.selectedSessionID(); id != "" {
+						target = id
+					}
+					if target != "" {
+						m.profilePickerItems = snap.AvailableProfiles
+						m.profilePickerTarget = target
+						m.profilePickerCursor = 0
+						// Pre-select current profile.
+						current := m.profileOverrides[target]
+						for i, p := range m.profilePickerItems {
+							if p == current {
+								m.profilePickerCursor = i
+								break
+							}
+						}
+						if current == "" {
+							// Position on "clear override" row (last item).
+							m.profilePickerCursor = len(m.profilePickerItems)
+						}
+						m.profilePickerOpen = true
+					}
 				}
+			}
+		case key.Matches(msg, m.keys.SplitToggle):
+			if m.width >= 120 && !m.backlogOpen {
+				m.splitMode = !m.splitMode
+				m.resizeViewport()
+				if m.splitMode {
+					m.refreshSplitDetail()
+				}
+				m.refreshViewport()
 			}
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
@@ -965,12 +1087,49 @@ func (m *Model) resizeViewport() {
 	rightW := max(20, m.width-leftPaneWidth-1)
 	bh := m.bodyHeight()
 	vpH := max(3, bh-3) // 3 lines for right-pane title + info-row + separator
-	if !m.ready {
-		m.logVP = viewport.New(rightW, vpH)
-		m.ready = true
+
+	if m.splitMode {
+		logW := max(20, rightW*60/100)
+		detailW := max(15, rightW-logW-1) // -1 for divider
+		if !m.ready {
+			m.logVP = viewport.New(logW, vpH)
+			m.ready = true
+		} else {
+			m.logVP.Width = logW
+			m.logVP.Height = vpH
+		}
+		if !m.splitReady {
+			m.splitVP = viewport.New(detailW, vpH)
+			m.splitReady = true
+		} else {
+			m.splitVP.Width = detailW
+			m.splitVP.Height = vpH
+		}
 	} else {
-		m.logVP.Width = rightW
-		m.logVP.Height = vpH
+		if !m.ready {
+			m.logVP = viewport.New(rightW, vpH)
+			m.ready = true
+		} else {
+			m.logVP.Width = rightW
+			m.logVP.Height = vpH
+		}
+	}
+}
+
+// refreshSplitDetail loads issue details for the currently selected session
+// into the split viewport. Skips if already loaded for the same identifier.
+func (m *Model) refreshSplitDetail() {
+	selID, _ := m.selectedSessionID()
+	if selID == "" || selID == m.splitDetailTarget {
+		return
+	}
+	m.splitDetailTarget = selID
+	m.splitIssueDetail = nil
+	if m.cfg.FetchIssueDetail != nil {
+		detail, err := m.cfg.FetchIssueDetail(selID)
+		if err == nil {
+			m.splitIssueDetail = detail
+		}
 	}
 }
 
@@ -1156,7 +1315,7 @@ func (m Model) View() string {
 	// ── Angular sci-fi header ────────────────────────────────
 	// Top bar: ╔═[ SYMPHONY ]═══...═╗
 	innerW := max(0, m.width-2)
-	title := "[ SYM//PHONY ]"
+	title := "[ ITER//VOX ]"
 	ruleLen := max(0, innerW-len(title)-1)
 	hdrTop := styleGray.Render("╔═") +
 		styleCyan.Bold(true).Render(title) +
@@ -1241,7 +1400,14 @@ func (m Model) View() string {
 	left := m.renderLeft()
 	divider := m.renderDivider()
 	right := m.renderRight()
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
+	var body string
+	if m.splitMode && !m.backlogOpen {
+		splitDiv := m.renderSplitDivider()
+		details := m.renderSplitDetails()
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right, splitDiv, details)
+	} else {
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, divider, right)
+	}
 
 	// ── Gantt timeline (shown when sessions are active) ─────
 	gantt := ""
@@ -1259,6 +1425,9 @@ func (m Model) View() string {
 // renderLeft builds the left pane (issue list with subagents, retry queue, paused).
 // It always produces exactly bodyHeight lines, each leftPaneWidth chars wide.
 func (m *Model) renderLeft() string {
+	if m.profilePickerOpen {
+		return m.renderProfilePicker()
+	}
 	if m.backlogOpen || m.backlogLoading {
 		return m.renderBacklogPanel()
 	}
@@ -1401,9 +1570,14 @@ func (m *Model) renderLeft() string {
 		turns := fmt.Sprintf("t%-2d", r.TurnCount)
 		tok := fmtCount(r.InputTokens + r.OutputTokens)
 
+		profileBadge := ""
+		if prof := m.profileOverrides[r.Identifier]; prof != "" {
+			profileBadge = " " + styleYellow.Render("⚙"+truncate(prof, 8))
+		}
+
 		if selected {
 			id := styleReverse.Render("▶ " + truncate(r.Identifier, 13))
-			row := fmt.Sprintf("%s %s %s %4s %s", id, expandMark, turns, tok, stateBadge)
+			row := fmt.Sprintf("%s %s%s %s %4s %s", id, expandMark, profileBadge, turns, tok, stateBadge)
 			padded := fmt.Sprintf("%-*s", leftPaneWidth, row)
 			if len(padded) > leftPaneWidth {
 				padded = padded[:leftPaneWidth]
@@ -1411,7 +1585,7 @@ func (m *Model) renderLeft() string {
 			add(padded)
 		} else {
 			id := styleMuted.Render("  " + truncate(r.Identifier, 13))
-			row := fmt.Sprintf("%s %s %s %4s %s", id, expandMark, turns, tok, stateBadge)
+			row := fmt.Sprintf("%s %s%s %s %4s %s", id, expandMark, profileBadge, turns, tok, stateBadge)
 			add(row)
 		}
 
@@ -1531,11 +1705,6 @@ func (m *Model) renderRight() string {
 		return m.renderBacklogDetails()
 	}
 
-	// If details view is active, show issue details for selected session.
-	if m.rightPaneView == "details" {
-		return m.renderSessionDetails()
-	}
-
 	// Collect metadata for the selected session regardless of its kind.
 	selID, selKind := m.selectedSessionID()
 
@@ -1576,14 +1745,9 @@ func (m *Model) renderRight() string {
 		rightHdrStyle = styleGreen.Bold(true)
 	}
 
-	inTools := m.rightPaneView == "tools" && selID != "" && m.buf != nil
-	inDetails := m.rightPaneView == "details"
-
-	toggleHint := styleMuted.Render("  t:tools  d:details")
-	if inTools {
-		toggleHint = styleMuted.Render("  t:logs  d:details")
-	} else if inDetails {
-		toggleHint = styleMuted.Render("  d:logs  t:tools")
+	splitHint := ""
+	if m.width >= 120 {
+		splitHint = styleMuted.Render("  s:details")
 	}
 
 	// Kind badge appended to title.
@@ -1604,20 +1768,7 @@ func (m *Model) renderRight() string {
 
 	var titleText string
 	if selID == "" {
-		titleText = rightHdrStyle.Render(rightHeader+"[ LOGS ]") + styleMuted.Render("  d:details")
-	} else if inDetails {
-		titleText = rightHdrStyle.Render(rightHeader+"[ DETAILS: "+selID+subLabel+" ]") +
-			kindBadge + toggleHint
-	} else if inTools {
-		if m.toolDetailTool != "" {
-			titleText = rightHdrStyle.Render(rightHeader+"[ TOOLS: "+selID+" › "+m.toolDetailTool+" ]") +
-				kindBadge + styleMuted.Render("  esc back")
-		} else {
-			titleText = rightHdrStyle.Render(rightHeader+"[ TOOLS: "+selID+" ]") +
-				kindBadge +
-				styleMuted.Render(fmt.Sprintf("  t%d  %s", selTurns, fmtCount(selTok))) +
-				toggleHint + styleMuted.Render("  ↑/↓ select  enter detail")
-		}
+		titleText = rightHdrStyle.Render(rightHeader+"[ LOGS ]") + splitHint
 	} else {
 		panelHint := ""
 		if m.activePanel == 1 {
@@ -1628,17 +1779,10 @@ func (m *Model) renderRight() string {
 			meta = styleMuted.Render(fmt.Sprintf("  t%d  %s", selTurns, fmtCount(selTok)))
 		}
 		titleText = rightHdrStyle.Render(rightHeader+"[ LOGS: "+selID+subLabel+" ]") +
-			kindBadge + meta + toggleHint + panelHint
+			kindBadge + meta + splitHint + panelHint
 	}
 	title := rightStyle.Render(titleText)
 
-	if inTools {
-		vpH := m.logVP.Height
-		if m.toolDetailTool != "" {
-			return title + "\n" + m.renderToolDetailView(selID, m.toolDetailTool, rightW, vpH)
-		}
-		return title + "\n" + m.renderToolsView(selID, rightW, vpH)
-	}
 	// Show PR link and state info row between header and log body.
 	var infoRow string
 	if selID != "" && m.buf != nil {
@@ -1828,310 +1972,6 @@ func findNavItem(navItems []leftItem, sessions []server.RunningRow, id string, s
 	return 0
 }
 
-// ── Tool activity view ────────────────────────────────────────────────────────
-
-// toolStat aggregates call counts and failure info for a single tool name.
-type toolStat struct {
-	name      string
-	count     int
-	failCount int
-	lastDesc  string
-	failMsgs  []string // up to 3 unique failure snippets
-}
-
-// buildToolStats scans log-buffer lines for the selected session and returns
-// per-tool call statistics, sorted by call count descending.
-func buildToolStats(lines []string) []toolStat {
-	stats := make(map[string]*toolStat)
-	order := []string{}
-	var lastTool string
-
-	for _, line := range lines {
-		e, ok := parseBufLine(line)
-		if !ok {
-			continue
-		}
-		switch e.Msg {
-		case "claude: action_detail", "codex: action_detail":
-			// Structured shell metadata — the paired action line already counted this call.
-			// Skip to avoid double-counting when tool= is present.
-
-		case "claude: action", "codex: action",
-			"claude: action_started", "codex: action_started":
-			if e.Tool == "" {
-				continue
-			}
-			if _, ok := stats[e.Tool]; !ok {
-				stats[e.Tool] = &toolStat{name: e.Tool}
-				order = append(order, e.Tool)
-			}
-			stats[e.Tool].count++
-			stats[e.Tool].lastDesc = e.Description
-			lastTool = e.Tool
-
-		case "claude: result error", "codex: result error":
-			if lastTool == "" {
-				continue
-			}
-			msg := e.Msg
-			stats[lastTool].failCount++
-			if len(stats[lastTool].failMsgs) < 3 {
-				stats[lastTool].failMsgs = append(stats[lastTool].failMsgs, msg)
-			}
-			lastTool = ""
-		}
-	}
-
-	result := make([]toolStat, 0, len(order))
-	for _, name := range order {
-		result = append(result, *stats[name])
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].count > result[j].count
-	})
-	return result
-}
-
-// renderToolsView renders the tools activity pane for the given session.
-// Width is rightW characters; height is the viewport height (bodyHeight - 2 for title/sep).
-func (m *Model) renderToolsView(identifier string, rightW, vpH int) string {
-	lines := m.buf.Get(identifier)
-	stats := buildToolStats(lines)
-
-	// Count totals.
-	var totalCalls, totalFails int
-	for _, s := range stats {
-		totalCalls += s.count
-		totalFails += s.failCount
-	}
-
-	rightStyle := lipgloss.NewStyle().Width(rightW).MaxWidth(rightW)
-	sep := rightStyle.Render(styleGray.Render(strings.Repeat("━", rightW)))
-
-	var sb strings.Builder
-
-	// Summary strip.
-	summaryParts := []string{
-		fmt.Sprintf("calls:%s", styleGreen.Render(fmt.Sprintf("%d", totalCalls))),
-	}
-	if totalFails > 0 {
-		summaryParts = append(summaryParts, fmt.Sprintf("fails:%s", styleRed.Render(fmt.Sprintf("%d", totalFails))))
-	}
-	sb.WriteString(sep + "\n")
-	sb.WriteString(rightStyle.Render(
-		styleMuted.Render("  "+strings.Join(summaryParts, "  ")),
-	) + "\n")
-	sb.WriteString(sep + "\n")
-
-	if len(stats) == 0 {
-		sb.WriteString(rightStyle.Render(
-			styleMuted.Render("  no tool calls recorded yet"),
-		) + "\n")
-		return sb.String()
-	}
-
-	// Column widths: # (2) + tool (dynamic) + count (6) + fail (5) + last (rest).
-	const colNum = 3
-	const colCount = 6
-	const colFail = 5
-	const gaps = 4 // spaces between columns
-	descW := max(8, rightW-colNum-colCount-colFail-gaps-2)
-	toolW := max(10, descW/2)
-	lastW := max(8, descW-toolW)
-
-	fmtRow := func(num, tool, count, fail, last string) string {
-		return rightStyle.Render(fmt.Sprintf("%-*s %-*s %*s %*s  %s",
-			colNum, num,
-			toolW, truncate(tool, toolW),
-			colCount, count,
-			colFail, fail,
-			truncate(last, lastW),
-		))
-	}
-
-	// Header row.
-	hdrStyle := styleMuted
-	sb.WriteString(hdrStyle.Render(fmtRow("#", "Tool", "Calls", "Fail", "Last input")) + "\n")
-	sb.WriteString(sep + "\n")
-
-	linesUsed := 5 // summary(1) + 2 seps + header + sep
-	var failed []toolStat
-
-	// Clamp toolCursor to valid range.
-	if m.toolCursor >= len(stats) {
-		m.toolCursor = max(0, len(stats)-1)
-	}
-
-	for i, s := range stats {
-		if linesUsed >= vpH-1 {
-			break
-		}
-		isCursor := m.activePanel == 1 && i == m.toolCursor
-		countStr := fmt.Sprintf("%d", s.count)
-		failStr := "─"
-		var rowStyle lipgloss.Style
-		if isCursor {
-			rowStyle = styleCyan.Bold(true)
-		} else if s.failCount > 0 {
-			rowStyle = styleYellow
-		} else {
-			rowStyle = toolStyle(s.name)
-		}
-		if s.failCount > 0 {
-			failStr = styleRed.Render(fmt.Sprintf("%d", s.failCount))
-			failed = append(failed, s)
-		}
-		num := fmt.Sprintf("%d.", i+1)
-		cursor := "  "
-		if isCursor {
-			cursor = "▶ "
-		}
-		row := rightStyle.Render(fmt.Sprintf("%s%-*s %-*s %*s %*s  %s",
-			cursor,
-			colNum, num,
-			toolW, truncate(s.name, toolW),
-			colCount, countStr,
-			colFail, failStr,
-			truncate(s.lastDesc, lastW),
-		))
-		sb.WriteString(rowStyle.Render(row) + "\n")
-		linesUsed++
-	}
-
-	// Failed calls section.
-	if len(failed) > 0 && linesUsed < vpH-1 {
-		sb.WriteString(sep + "\n")
-		sb.WriteString(styleRed.Render(fmt.Sprintf("  ✗ FAILED CALLS (%d)", totalFails)) + "\n")
-		linesUsed += 2
-		for _, s := range failed {
-			for _, msg := range s.failMsgs {
-				if linesUsed >= vpH-1 {
-					break
-				}
-				line := fmt.Sprintf("  %-*s  %s", toolW, s.name, truncate(msg, rightW-toolW-6))
-				sb.WriteString(styleRed.Faint(true).Render(rightStyle.Render(line)) + "\n")
-				linesUsed++
-			}
-		}
-	}
-
-	return sb.String()
-}
-
-// ── Tool call drill-down ─────────────────────────────────────────────────────
-
-// toolCall captures one invocation of a specific tool in the log stream.
-type toolCall struct {
-	seq    int
-	desc   string
-	failed bool
-	errMsg string
-}
-
-// buildToolCalls returns a chronological list of calls for toolName in the log lines.
-func buildToolCalls(lines []string, toolName string) []toolCall {
-	var calls []toolCall
-	var pending *toolCall
-	var lastTool string
-
-	for _, line := range lines {
-		e, ok := parseBufLine(line)
-		if !ok {
-			continue
-		}
-		switch e.Msg {
-		case "claude: action_detail", "codex: action_detail":
-			// Structured shell metadata — the paired action line already recorded this call.
-			// Skip to avoid creating a duplicate toolCall entry.
-
-		case "claude: action", "codex: action",
-			"claude: action_started", "codex: action_started":
-			if e.Tool == "" {
-				continue
-			}
-			// Commit any pending call (it completed without error).
-			if pending != nil {
-				calls = append(calls, *pending)
-				pending = nil
-			}
-			lastTool = e.Tool
-			if e.Tool == toolName {
-				pending = &toolCall{
-					seq:  len(calls) + 1,
-					desc: e.Description,
-				}
-			}
-		case "claude: result error", "codex: result error":
-			if lastTool == toolName && pending != nil {
-				pending.failed = true
-				pending.errMsg = e.Msg
-				calls = append(calls, *pending)
-				pending = nil
-			}
-		}
-	}
-	if pending != nil {
-		calls = append(calls, *pending)
-	}
-	return calls
-}
-
-// renderToolDetailView renders a scrollable list of individual calls for one tool.
-func (m *Model) renderToolDetailView(identifier, toolName string, rightW, vpH int) string {
-	calls := buildToolCalls(m.buf.Get(identifier), toolName)
-
-	rightStyle := lipgloss.NewStyle().Width(rightW).MaxWidth(rightW)
-	sep := rightStyle.Render(styleGray.Render(strings.Repeat("━", rightW)))
-
-	var sb strings.Builder
-	sb.WriteString(sep + "\n")
-
-	countLine := fmt.Sprintf("  %d calls", len(calls))
-	if len(calls) == 0 {
-		countLine = "  no calls recorded"
-	}
-	sb.WriteString(rightStyle.Render(toolStyle(toolName).Render(countLine)) + "\n")
-	sb.WriteString(sep + "\n")
-
-	if len(calls) == 0 {
-		return sb.String()
-	}
-
-	linesUsed := 3
-	// Clamp scroll offset.
-	if m.toolDetailScroll >= len(calls) {
-		m.toolDetailScroll = max(0, len(calls)-1)
-	}
-
-	for i := m.toolDetailScroll; i < len(calls) && linesUsed < vpH-2; i++ {
-		c := calls[i]
-		marker := styleGreen.Render("✓")
-		if c.failed {
-			marker = styleRed.Render("✗")
-		}
-		descW := rightW - 14
-		if descW < 8 {
-			descW = 8
-		}
-		row := fmt.Sprintf("  %s [%3d]  %s", marker, c.seq, truncate(c.desc, descW))
-		sb.WriteString(rightStyle.Render(row) + "\n")
-		linesUsed++
-
-		if c.failed && c.errMsg != "" && linesUsed < vpH-2 {
-			errRow := fmt.Sprintf("         %s", truncate(c.errMsg, rightW-10))
-			sb.WriteString(rightStyle.Render(styleRed.Faint(true).Render(errRow)) + "\n")
-			linesUsed++
-		}
-	}
-
-	// Scroll hint.
-	total := len(calls)
-	scrollInfo := fmt.Sprintf("  ↑/↓ scroll  %d-%d / %d",
-		m.toolDetailScroll+1, min(total, m.toolDetailScroll+vpH-5), total)
-	sb.WriteString(styleMuted.Render(scrollInfo) + "\n")
-
-	return sb.String()
-}
 
 // pickerSlugAt returns the slug for row i in the picker list.
 // Row 0 = "All issues" (""), row 1 = "No project" ("__no_project__"), row 2+ = project slugs.
@@ -2148,6 +1988,180 @@ func (m *Model) pickerSlugAt(i int) string {
 		}
 		return ""
 	}
+}
+
+// renderSplitDivider renders the vertical divider between logs and details panes.
+func (m *Model) renderSplitDivider() string {
+	bh := m.bodyHeight()
+	lines := make([]string, bh)
+	for i := range lines {
+		lines[i] = styleGray.Render("│")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderSplitDetails builds the split details pane content showing runtime info
+// and issue details for the selected session.
+func (m *Model) renderSplitDetails() string {
+	detailW := m.splitVP.Width
+	detailStyle := lipgloss.NewStyle().Width(detailW).MaxWidth(detailW)
+
+	selID, selKind := m.selectedSessionID()
+
+	// Header
+	detailHdrStyle := styleLabel
+	detailHeader := "◆─"
+	if m.activePanel == 2 {
+		detailHeader = "●─"
+		detailHdrStyle = styleGreen.Bold(true)
+	}
+	title := detailStyle.Render(detailHdrStyle.Render(detailHeader+"[ DETAILS ]") +
+		styleMuted.Render("  ↑/↓ scroll"))
+	sep := detailStyle.Render(styleGray.Render(strings.Repeat("━", detailW)))
+
+	bh := m.bodyHeight()
+	if selID == "" {
+		var lines []string
+		lines = append(lines, title, sep, detailStyle.Render(styleMuted.Render("  No session selected.")))
+		for len(lines) < bh {
+			lines = append(lines, detailStyle.Render(""))
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	// Build content lines for the viewport
+	var content []string
+	addContent := func(s string) { content = append(content, s) }
+
+	// Section 1: Runtime info
+	switch selKind {
+	case "running":
+		if item, ok := m.currentNavItem(); ok && item.issueIdx < len(m.sessions) {
+			r := m.sessions[item.issueIdx]
+			sl := strings.ToLower(r.State)
+			var stateRender string
+			switch {
+			case strings.Contains(sl, "running"), strings.Contains(sl, "progress"):
+				stateRender = styleGreen.Render("◉ " + strings.ToUpper(r.State))
+			case strings.Contains(sl, "review"), strings.Contains(sl, "done"):
+				stateRender = styleCyan.Render("✓ " + strings.ToUpper(r.State))
+			default:
+				stateRender = styleMuted.Render("· " + strings.ToUpper(r.State))
+			}
+			addContent(stateRender)
+			addContent("")
+			if prof := m.profileOverrides[r.Identifier]; prof != "" {
+				addContent(styleMuted.Render("Profile: ") + styleYellow.Render("⚙ "+prof))
+			}
+			addContent(styleMuted.Render("Turns: ") + fmt.Sprintf("%d", r.TurnCount))
+			addContent(styleMuted.Render("Tokens: ") + fmt.Sprintf("↑%s ↓%s ∑%s",
+				fmtCount(r.InputTokens), fmtCount(r.OutputTokens), fmtCount(r.InputTokens+r.OutputTokens)))
+			addContent(styleMuted.Render("Backend: ") + r.Backend)
+			if r.WorkerHost != "" {
+				addContent(styleMuted.Render("Worker: ") + styleCyan.Render(r.WorkerHost))
+			}
+			elapsed := time.Duration(r.ElapsedMs) * time.Millisecond
+			addContent(styleMuted.Render("Elapsed: ") + fmtDuration(elapsed))
+			subs := m.subagents[r.Identifier]
+			if len(subs) > 0 {
+				addContent("")
+				addContent(stylePurple.Render(fmt.Sprintf("Subagents (%d):", len(subs))))
+				for _, sub := range subs {
+					addContent(stylePurple.Faint(true).Render("  ↗ " + truncate(sub.description, detailW-6)))
+				}
+			}
+		}
+	case "paused":
+		addContent(styleRed.Render("⏸ PAUSED"))
+		addContent("")
+		addContent(styleMuted.Render("Press 'r' to resume"))
+		addContent(styleMuted.Render("Press 'D' to discard"))
+	case "history":
+		if m.historyCursor < len(m.history) {
+			hi := len(m.history) - 1 - m.historyCursor
+			h := m.history[hi]
+			var statusRender string
+			switch h.Status {
+			case "succeeded":
+				statusRender = styleGreen.Render("✓ SUCCEEDED")
+			case "failed":
+				statusRender = styleRed.Render("✗ FAILED")
+			default:
+				statusRender = styleMuted.Render("⊘ " + strings.ToUpper(h.Status))
+			}
+			addContent(statusRender)
+			addContent("")
+			addContent(styleMuted.Render("Turns: ") + fmt.Sprintf("%d", h.TurnCount))
+			addContent(styleMuted.Render("Tokens: ") + fmt.Sprintf("↑%s ↓%s ∑%s",
+				fmtCount(h.InputTokens), fmtCount(h.OutputTokens), fmtCount(h.TotalTokens)))
+			addContent(styleMuted.Render("Backend: ") + h.Backend)
+			if h.WorkerHost != "" {
+				addContent(styleMuted.Render("Worker: ") + styleCyan.Render(h.WorkerHost))
+			}
+			elapsed := time.Duration(h.ElapsedMs) * time.Millisecond
+			addContent(styleMuted.Render("Elapsed: ") + fmtDuration(elapsed))
+		}
+	}
+
+	// Section 2: Issue details (from tracker)
+	if m.splitIssueDetail != nil {
+		detail := m.splitIssueDetail
+		addContent("")
+		addContent(styleGray.Render(strings.Repeat("─", detailW)))
+		addContent("")
+
+		// Title
+		titleLines := wrapText(detail.Title, detailW-2)
+		for _, line := range titleLines {
+			addContent(styleCyan.Bold(true).Render(line))
+		}
+		addContent("")
+
+		// Priority
+		priText := "None"
+		switch detail.Priority {
+		case 1:
+			priText = styleRed.Render("Urgent")
+		case 2:
+			priText = styleYellow.Render("High")
+		case 3:
+			priText = styleMuted.Render("Medium")
+		case 4:
+			priText = "Low"
+		}
+		addContent(styleMuted.Render("Priority: ") + priText)
+
+		// Description
+		if detail.Description != "" {
+			addContent("")
+			addContent(styleMuted.Render("Description:"))
+			descLines := wrapText(detail.Description, detailW-2)
+			for _, line := range descLines {
+				addContent("  " + line)
+			}
+		}
+
+		// Comments
+		if len(detail.Comments) > 0 {
+			addContent("")
+			addContent(styleMuted.Render(fmt.Sprintf("Comments (%d):", len(detail.Comments))))
+			for _, c := range detail.Comments {
+				author := truncate(c.Author, 12)
+				bodyLines := wrapText(c.Body, detailW-4)
+				if len(bodyLines) > 0 {
+					addContent("  " + styleCyan.Render(author+": ") + bodyLines[0])
+					for _, bl := range bodyLines[1:] {
+						addContent("    " + bl)
+					}
+				}
+			}
+		}
+	}
+
+	// Set content into viewport
+	m.splitVP.SetContent(strings.Join(content, "\n"))
+
+	return title + "\n" + sep + "\n" + m.splitVP.View()
 }
 
 // applyPickerFilter converts the current picker selection into a project filter
@@ -2218,6 +2232,67 @@ func (m *Model) renderProjectPicker() string {
 				add(content)
 			}
 		}
+	}
+
+	for len(lines) < bh {
+		lines = append(lines, leftStyle.Render(""))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderProfilePicker replaces the left pane with the agent profile assignment picker.
+func (m *Model) renderProfilePicker() string {
+	bh := m.bodyHeight()
+	leftStyle := lipgloss.NewStyle().Width(leftPaneWidth).MaxWidth(leftPaneWidth)
+	var lines []string
+	add := func(content string) {
+		if len(lines) < bh {
+			lines = append(lines, leftStyle.Render(content))
+		}
+	}
+
+	add(stylePurple.Bold(true).Render("▌ ASSIGN PROFILE") + styleGray.Render("  ↑↓ select  enter confirm"))
+	add(styleGray.Render(strings.Repeat("─", leftPaneWidth)))
+	add(styleMuted.Render("  Target: ") + styleCyan.Render(m.profilePickerTarget))
+	add("")
+
+	snap := m.snap()
+	current := m.profileOverrides[m.profilePickerTarget]
+
+	for i, name := range m.profilePickerItems {
+		indicator := styleMuted.Render("○")
+		if name == current {
+			indicator = styleGreen.Render("●")
+		}
+		backend := ""
+		if def, ok := snap.ProfileDefs[name]; ok && def.Backend != "" {
+			backend = styleMuted.Render(" — " + def.Backend)
+		}
+		label := truncate(name, leftPaneWidth-10)
+		content := fmt.Sprintf("  %s %s%s", indicator, label, backend)
+		if i == m.profilePickerCursor {
+			padded := fmt.Sprintf("%-*s", leftPaneWidth, content)
+			if len(padded) > leftPaneWidth {
+				padded = padded[:leftPaneWidth]
+			}
+			add(styleReverse.Render(padded))
+		} else {
+			add(content)
+		}
+	}
+
+	// Separator + clear override row
+	add(styleGray.Render(strings.Repeat("─", leftPaneWidth)))
+	clearIdx := len(m.profilePickerItems)
+	clearContent := "  " + styleRed.Render("✕") + " " + styleMuted.Render("clear override")
+	if m.profilePickerCursor == clearIdx {
+		padded := fmt.Sprintf("%-*s", leftPaneWidth, clearContent)
+		if len(padded) > leftPaneWidth {
+			padded = padded[:leftPaneWidth]
+		}
+		add(styleReverse.Render(padded))
+	} else {
+		add(clearContent)
 	}
 
 	for len(lines) < bh {
@@ -2482,136 +2557,6 @@ func wrapText(text string, width int) []string {
 	}
 
 	return lines
-}
-
-// renderSessionDetails shows details of the selected running/paused/history session.
-func (m *Model) renderSessionDetails() string {
-	rightW := m.logVP.Width
-	rightStyle := lipgloss.NewStyle().Width(rightW).MaxWidth(rightW)
-	bh := m.bodyHeight()
-
-	selID, selKind := m.selectedSessionID()
-	if selID == "" {
-		var lines []string
-		add := func(content string) {
-			if len(lines) < bh {
-				lines = append(lines, rightStyle.Render(content))
-			}
-		}
-		add(styleLabel.Render("●─[ SESSION DETAILS ]") + " " + styleMuted.Render("d logs  t tools"))
-		add(styleGray.Render(strings.Repeat("━", rightW)))
-		add("")
-		add(styleMuted.Render("No session selected."))
-		add("")
-		add(styleMuted.Render("Use k/j or ↑/↓ to select an issue"))
-		add(styleMuted.Render("from the left panel."))
-		add("")
-		add(styleMuted.Render("Press 'd' to return to logs view."))
-		for len(lines) < bh {
-			lines = append(lines, rightStyle.Render(""))
-		}
-		return strings.Join(lines, "\n")
-	}
-
-	var lines []string
-	add := func(content string) {
-		if len(lines) < bh {
-			lines = append(lines, rightStyle.Render(content))
-		}
-	}
-
-	// Header
-	add(styleLabel.Render("●─[ SESSION DETAILS ]") + " " + styleMuted.Render("d logs  t tools"))
-	add(styleGray.Render(strings.Repeat("━", rightW)))
-	add("")
-
-	// Identifier
-	add(styleCyan.Bold(true).Render(selID))
-
-	// State based on session kind
-	switch selKind {
-	case "running":
-		item, ok := m.currentNavItem()
-		if ok && item.issueIdx < len(m.sessions) {
-			r := m.sessions[item.issueIdx]
-			add(styleMuted.Render("State: " + r.State + " (running)"))
-			add("")
-			add(styleMuted.Render("Turns: ") + fmt.Sprintf("%d", r.TurnCount))
-			add(styleMuted.Render("Tokens: ") + fmt.Sprintf("↑%d ↓%d ∑%d", r.InputTokens, r.OutputTokens, r.InputTokens+r.OutputTokens))
-			add(styleMuted.Render("Backend: ") + r.Backend)
-			if r.WorkerHost != "" {
-				add(styleMuted.Render("Worker: ") + r.WorkerHost)
-			}
-			// Per-agent subagent list.
-			subs := m.subagents[r.Identifier]
-			if len(subs) > 0 {
-				add("")
-				add(styleMuted.Render(fmt.Sprintf("Subagents (%d):", len(subs))))
-				for _, sub := range subs {
-					if len(lines) >= bh {
-						break
-					}
-					add(styleCyan.Render("  ↗ ") + truncate(sub.description, rightW-6))
-				}
-				add("")
-				add(styleMuted.Render("↑/↓ to select a subagent row in the left"))
-				add(styleMuted.Render("panel for filtered logs · enter to close"))
-			}
-		}
-	case "paused":
-		add(styleMuted.Render("State: paused"))
-		add("")
-		add(styleMuted.Render("Press 'r' to resume"))
-		add(styleMuted.Render("Press 'D' to discard"))
-	case "history":
-		if m.historyCursor < len(m.history) {
-			hi := len(m.history) - 1 - m.historyCursor
-			h := m.history[hi]
-			add(styleMuted.Render("Status: " + h.Status))
-			add("")
-			add(styleMuted.Render("Turns: ") + fmt.Sprintf("%d", h.TurnCount))
-			add(styleMuted.Render("Tokens: ") + fmt.Sprintf("↑%d ↓%d ∑%d", h.InputTokens, h.OutputTokens, h.TotalTokens))
-			if h.Title != "" {
-				add("")
-				add(styleMuted.Render("Title:"))
-				titleLines := wrapText(h.Title, rightW-2)
-				for _, line := range titleLines {
-					if len(lines) >= bh {
-						break
-					}
-					add("  " + line)
-				}
-			}
-			if h.Backend != "" {
-				add(styleMuted.Render("Backend: ") + h.Backend)
-			}
-			// Per-agent subagent list from log buffer (same fallback the timeline uses).
-			subs := m.subagents[h.Identifier]
-			if len(subs) == 0 && m.buf != nil {
-				subs = extractSubagents(m.buf.Get(h.Identifier))
-			}
-			if len(subs) > 0 {
-				add("")
-				add(styleMuted.Render(fmt.Sprintf("Subagents (%d):", len(subs))))
-				for _, sub := range subs {
-					if len(lines) >= bh {
-						break
-					}
-					add(styleCyan.Render("  ↗ ") + truncate(sub.description, rightW-6))
-				}
-			}
-		}
-	}
-
-	add("")
-	add(styleMuted.Render("View full details in web dashboard"))
-
-	// Fill remaining space
-	for len(lines) < bh {
-		lines = append(lines, rightStyle.Render(""))
-	}
-
-	return strings.Join(lines, "\n")
 }
 
 // ganttEntry is a unified view of a running, paused, or completed session for Gantt rendering.

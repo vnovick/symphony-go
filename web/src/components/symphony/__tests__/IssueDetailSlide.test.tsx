@@ -14,6 +14,7 @@ vi.mock('../../../queries/issues', () => ({
   useResumeIssue: vi.fn(),
   useTriggerAIReview: vi.fn(),
   useSetIssueProfile: vi.fn(),
+  useSetIssueBackend: vi.fn(),
   useProvideInput: vi.fn(),
   useDismissInput: vi.fn(),
   ISSUES_KEY: ['issues'],
@@ -30,6 +31,7 @@ const mockUseTerminateIssue = vi.mocked(issueQueries.useTerminateIssue);
 const mockUseResumeIssue = vi.mocked(issueQueries.useResumeIssue);
 const mockUseTriggerAIReview = vi.mocked(issueQueries.useTriggerAIReview);
 const mockUseSetIssueProfile = vi.mocked(issueQueries.useSetIssueProfile);
+const mockUseSetIssueBackend = vi.mocked(issueQueries.useSetIssueBackend);
 const mockUseProvideInput = vi.mocked(issueQueries.useProvideInput);
 const mockUseDismissInput = vi.mocked(issueQueries.useDismissInput);
 
@@ -78,6 +80,7 @@ function setupDefaultMocks(
   mockUseResumeIssue.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false } as any);
   mockUseTriggerAIReview.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false } as any);
   mockUseSetIssueProfile.mockReturnValue({ mutate: vi.fn(), isPending: false } as any);
+  mockUseSetIssueBackend.mockReturnValue({ mutate: vi.fn(), isPending: false } as any);
   mockUseProvideInput.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false } as any);
   mockUseDismissInput.mockReturnValue({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false } as any);
 

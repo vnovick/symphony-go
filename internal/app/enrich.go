@@ -48,6 +48,10 @@ func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg
 	if profileName, ok := snap.IssueProfiles[issue.Identifier]; ok && profileName != "" {
 		ti.AgentProfile = profileName
 	}
+	// Per-issue agent backend override.
+	if backendName, ok := snap.IssueBackends[issue.Identifier]; ok && backendName != "" {
+		ti.AgentBackend = backendName
+	}
 	// Orchestrator state
 	if re, ok := snap.Running[issue.ID]; ok {
 		ti.OrchestratorState = "running"

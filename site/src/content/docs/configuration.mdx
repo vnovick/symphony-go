@@ -1,0 +1,417 @@
+---
+title: Configuration
+description: Complete reference for the WORKFLOW.md configuration file — YAML front matter and Liquid prompt template.
+sidebar:
+  order: 2
+---
+
+Itervox is configured entirely through a single `WORKFLOW.md` file in your project directory. The file has two parts: a YAML front matter block (between `---` delimiters) that controls all runtime behaviour, and a Liquid template body that becomes the prompt sent to the agent for each issue.
+
+Run `itervox init` in your project directory to generate a starter file for Linear or GitHub.
+
+---
+
+## File format
+
+```markdown
+---
+tracker:
+  kind: github
+  api_key: $GITHUB_TOKEN
+  project_slug: owner/repo
+  active_states: ["todo"]
+  completion_state: "in-review"
+
+polling:
+  interval_ms: 60000
+
+agent:
+  max_turns: 60
+  max_concurrent_agents: 3
+  turn_timeout_ms: 3600000
+
+workspace:
+  root: ~/.symphony/workspaces/my-project
+
+hooks:
+  after_create: |
+    git clone git@github.com:owner/repo.git .
+  before_run: |
+    git fetch origin main && git checkout main && git reset --hard origin/main
+
+server:
+  port: 8090
+---
+
+You are an expert engineer working on the codebase.
+
+## Your issue
+
+**{{ issue.identifier }}: {{ issue.title }}**
+
+{% if issue.description %}
+{{ issue.description }}
+{% endif %}
+
+Issue URL: {{ issue.url }}
+
+{% if issue.comments %}
+## Comments
+{% for comment in issue.comments %}
+**{{ comment.author_name }}**: {{ comment.body }}
+{% endfor %}
+{% endif %}
+
+## Steps
+
+1. Explore the codebase relevant to this issue.
+2. Create a branch: `git checkout -b {{ issue.branch_name | default: issue.identifier | downcase }}`
+3. Implement the change.
+4. Run tests and lint.
+5. Commit and open a PR.
+```
+
+Everything after the closing `---` is the Liquid prompt template. See [Liquid template variables](#liquid-template-variables) for all available variables.
+
+---
+
+## tracker
+
+Controls which issue tracker Itervox polls and how issue states are mapped.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | **required** | Tracker backend. `"linear"` or `"github"`. |
+| `endpoint` | string | `https://api.linear.app/graphql` | GraphQL endpoint (Linear only). Omit for GitHub — the client uses the GitHub API automatically. |
+| `api_key` | string | **required** | API token. Use `$VAR_NAME` to read from an environment variable (recommended). |
+| `project_slug` | string | **required** | For Linear: the project slug from your Linear URL (e.g. `"ENG"`). For GitHub: `"owner/repo"`. |
+| `active_states` | string[] | `["Todo", "In Progress"]` | Issue states Itervox actively polls and dispatches agents for. |
+| `terminal_states` | string[] | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issue states that are complete. Issues in these states are not re-dispatched. |
+| `working_state` | string | `"In Progress"` | State Itervox transitions an issue to when an agent is dispatched. Empty string = no transition. |
+| `completion_state` | string | `""` | State Itervox transitions an issue to after the agent finishes successfully (e.g. `"In Review"`). Empty string = no transition. When set, the issue leaves `active_states` so it is not re-dispatched. |
+| `backlog_states` | string[] | `["Backlog"]` (Linear), `[]` (GitHub) | States shown as the leftmost column(s) on the Kanban board. Issues in backlog states are displayed but not dispatched. |
+| `failed_state` | string | `""` | State to move an issue to when `agent.max_retries` is exhausted. When empty, issues are paused in the dashboard instead of transitioning. |
+
+**GitHub note:** GitHub Issues does not have built-in workflow states. Itervox simulates states using labels. Create labels in your repository settings that match the values you configure (e.g. create a label named `todo`, another named `in-review`).
+
+```yaml
+# Linear example
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: ENG
+  active_states: ["Todo", "In Progress"]
+  terminal_states: ["Done", "Cancelled", "Duplicate"]
+  completion_state: "In Review"
+  backlog_states: ["Backlog"]
+  failed_state: "Failed"
+
+# GitHub example
+tracker:
+  kind: github
+  api_key: $GITHUB_TOKEN
+  project_slug: owner/repo
+  active_states: ["todo"]
+  terminal_states: ["done", "cancelled"]
+  completion_state: "in-review"
+```
+
+---
+
+## polling
+
+Controls how frequently Itervox checks the tracker for new or updated issues.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `interval_ms` | int | `30000` | Polling interval in milliseconds. |
+
+```yaml
+polling:
+  interval_ms: 60000  # check every minute
+```
+
+---
+
+## workspace
+
+Controls where Itervox creates per-issue working directories and how they are managed.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `root` | string | `~/.symphony/workspaces` | Directory where per-issue workspaces are created. Supports `~` expansion and `$VAR_NAME` env var references. |
+| `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted after an issue reaches `completion_state`, reclaiming disk space. Logs are retained. |
+| `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
+| `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
+| `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. |
+
+```yaml
+workspace:
+  root: ~/.symphony/workspaces/my-project
+  auto_clear: true
+  worktree: true
+  clone_url: git@github.com:owner/repo.git
+  base_branch: main
+```
+
+---
+
+## agent
+
+Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, retry behaviour, and advanced features like SSH dispatch and agent teams.
+
+### Core fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `command` | string | `"claude"` | CLI command used to launch the agent. Can include flags (e.g. `"claude --model claude-opus-4-6"`). |
+| `backend` | string | `""` | Explicitly sets the runner backend (`"claude"` or `"codex"`). Only needed when `command` is a wrapper script and Itervox cannot infer the backend from the command name. |
+| `max_concurrent_agents` | int | `10` | Maximum number of agent workers running simultaneously across all issues. |
+| `max_concurrent_agents_by_state` | map | `{}` | Per-state concurrency limits that override `max_concurrent_agents`. Keys are lowercase state names. See example below. |
+| `max_retries` | int | `5` | Maximum retry attempts before an issue is moved to `tracker.failed_state` (or paused if `failed_state` is empty). `0` means unlimited retries. |
+| `max_retry_backoff_ms` | int | `300000` | Cap on exponential retry back-off (5 minutes). Back-off progresses as `10s × 2^(attempt-1)`, capped at this value. |
+| `max_turns` | int | `20` | Maximum number of agent turns per session. |
+
+### Timeout fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `turn_timeout_ms` | int | `3600000` | Hard wall-clock limit for an entire agent session (all turns combined). When exceeded, the subprocess is killed and the issue is retried. `0` disables the timeout. |
+| `read_timeout_ms` | int | `30000` | Per-read timeout on the subprocess stdout pipe (30 seconds). If no bytes arrive within this window, the subprocess is killed. Catches OS-level pipe hangs before the stall detector fires. |
+| `stall_timeout_ms` | int | `300000` | Orchestrator-level inactivity timeout (5 minutes). If no SSE events are produced within this window, the worker context is cancelled and the issue is retried. Operates on the parsed event stream and detects semantic stalls (e.g. agent looping without progress). Set to `0` or less to disable. |
+
+### Behaviour fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `agent_mode` | string | `""` | Agent collaboration model. In all modes, if an issue has a profile assigned, that profile's prompt is appended. `""` (solo): agent runs alone. `"subagents"`: agent may use its native helper/subagent tool. `"teams"`: additionally injects a sub-agent roster so the agent knows which specialists it can delegate to by name. |
+| `inline_input` | bool | `false` | When `true`, agent input-required signals are posted as tracker comments; the user replies in the tracker and moves the issue back to an active state to continue. When `false` (default), the dashboard shows a reply UI that posts the response as a tracker comment before resuming. |
+| `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
+| `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
+| `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and prompt. Enables the AI Review button in the dashboard. |
+| `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. |
+
+```yaml
+agent:
+  reviewer_profile: code-reviewer   # use the "code-reviewer" profile for AI reviews
+  auto_review: true                 # automatically review after each successful run
+  profiles:
+    code-reviewer:
+      command: claude --model claude-opus-4-6
+      prompt: >
+        You are a code reviewer for issue {{ issue.identifier }}.
+        Run `gh pr diff` to read the PR changes, then review for correctness,
+        test coverage, and security issues. Fix problems directly and push.
+```
+
+> **Backwards compatibility:** `enable_agent_teams: true` is still accepted and automatically converts to `agent_mode: teams`.
+
+### SSH dispatch
+
+Itervox can distribute agent work across multiple remote hosts via SSH. Each host runs the agent CLI in a separate SSH session.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `ssh_hosts` | string[] | `[]` | List of SSH hosts in `"host"` or `"host:port"` format. When empty, agents run locally. |
+| `dispatch_strategy` | string | `"round-robin"` | How issues are routed to SSH hosts. `"round-robin"` cycles through hosts in order. `"least-loaded"` sends each new issue to the host with the fewest active workers. Ignored when `ssh_hosts` is empty. |
+
+```yaml
+agent:
+  ssh_hosts:
+    - build-host-1.example.com
+    - build-host-2.example.com:2222
+  dispatch_strategy: least-loaded
+```
+
+### Available models
+
+The `available_models` field stores the list of models available for each backend. This is auto-populated by `symphony init` (which queries `claude --list-models` / `codex --list-models`) and used by the web dashboard's profile editor to suggest models in the dropdown.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `available_models` | map | `{}` | Map of backend name (`"claude"`, `"codex"`) to a list of model options. Each entry has `id` (model ID string) and `label` (human-readable name). |
+
+```yaml
+agent:
+  available_models:
+    claude:
+      - { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5 - Fast" }
+      - { id: "claude-sonnet-4-6", label: "Sonnet 4.6 - Balanced" }
+      - { id: "claude-opus-4-6", label: "Opus 4.6 - Powerful" }
+    codex:
+      - { id: "gpt-5.3-codex", label: "GPT-5.3-Codex - Frontier coding" }
+      - { id: "gpt-5.2-codex", label: "GPT-5.2-Codex - Long-horizon agentic coding" }
+```
+
+To refresh the model list after new models become available, run:
+
+```bash
+symphony refresh-models --workflow WORKFLOW.md
+```
+
+If `available_models` is empty or missing, the dashboard falls back to a built-in default list.
+
+---
+
+### Agent profiles
+
+Named profiles let you configure alternative agent commands selectable per-issue from the web dashboard. Each profile must specify a `command`.
+
+| Field | Type | Description |
+|---|---|---|
+| `command` | string | CLI command for this profile (e.g. `"claude --model claude-haiku-4-5-20251001"`). |
+| `prompt` | string | Role description rendered through the Liquid template engine (supports `{{ issue.* }}` variables) and appended to the workflow prompt. Works in all agent modes — not just teams. See [Agent Profiles guide](/guides/agent-profiles/#liquid-variables-in-profile-prompts) for available variables. |
+| `backend` | string | Explicit backend override for this profile (same as the top-level `backend` field). |
+
+```yaml
+agent:
+  command: claude
+  max_concurrent_agents: 5
+  max_turns: 60
+  turn_timeout_ms: 3600000
+  read_timeout_ms: 120000
+  stall_timeout_ms: 300000
+
+  max_concurrent_agents_by_state:
+    "in progress": 3
+    "in review": 2
+
+  profiles:
+    fast:
+      command: claude --model claude-haiku-4-5-20251001
+      prompt: You are a fast triage agent. Focus on quick, minimal fixes.
+    thorough:
+      command: claude --model claude-opus-4-6
+      prompt: You are a thorough senior engineer. Prioritise correctness and test coverage.
+```
+
+---
+
+## hooks
+
+Shell commands run at lifecycle points in each issue's workspace. All hooks run in the issue's workspace directory.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `after_create` | string | `""` | Shell command run after the workspace directory is created, before any agent runs. Typically used to clone the repository. |
+| `before_run` | string | `""` | Shell command run before each agent session starts. Typically used to sync the branch (`git fetch`, `git reset`). |
+| `after_run` | string | `""` | Shell command run after each agent session completes (success or failure). |
+| `before_remove` | string | `""` | Shell command run before the workspace directory is deleted (when `workspace.auto_clear: true` or on manual removal). |
+| `timeout_ms` | int | `60000` | Maximum time allowed for any single hook to complete (60 seconds). |
+
+Multi-line shell scripts are supported using YAML block scalars:
+
+```yaml
+hooks:
+  after_create: |
+    git clone git@github.com:owner/repo.git .
+    npm install
+  before_run: |
+    git fetch origin main
+    git checkout main
+    git reset --hard origin/main
+  timeout_ms: 120000
+```
+
+---
+
+## server
+
+Controls the built-in HTTP server that serves the web dashboard and REST API.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `host` | string | `"127.0.0.1"` | Interface the server listens on. Change to `"0.0.0.0"` to expose on all interfaces. |
+| `port` | int | auto-assigned | TCP port. When omitted, Itervox picks an available port and prints it at startup. |
+
+```yaml
+server:
+  host: 127.0.0.1
+  port: 8090
+```
+
+---
+
+## Secret resolution
+
+Any string field value that matches the pattern `$VAR_NAME` (a dollar sign followed by a valid environment variable name) is resolved to the value of that environment variable at startup. This is the recommended way to supply API keys and tokens.
+
+```yaml
+tracker:
+  api_key: $LINEAR_API_KEY     # reads process env LINEAR_API_KEY
+workspace:
+  root: $ITERVOX_WORKSPACE    # reads process env ITERVOX_WORKSPACE
+```
+
+**`.env` file loading:** Itervox automatically loads environment variables from `.env` files before reading `WORKFLOW.md`. The search order is:
+
+1. `.symphony/.env` (relative to the current working directory)
+2. `.env` (relative to the current working directory)
+
+Only the first file found is loaded. Existing environment variables (already set in the shell) are never overwritten. The `.symphony/.env` file is created and git-ignored automatically by `itervox init`.
+
+A typical `.symphony/.env` looks like:
+
+```bash
+LINEAR_API_KEY=lin_api_xxxxxxxxxxxx
+GITHUB_TOKEN=ghp_xxxxxxxxxxxx
+```
+
+---
+
+## Liquid template variables
+
+The body of `WORKFLOW.md` (everything after the closing `---`) is a [Liquid](https://shopify.github.io/liquid/) template. Itervox renders it once per issue dispatch to produce the agent's prompt.
+
+### Issue variables
+
+| Variable | Type | Description |
+|---|---|---|
+| `issue.identifier` | string | Tracker-specific issue ID (e.g. `"ENG-42"` for Linear, `"#123"` for GitHub). |
+| `issue.title` | string | Issue title. |
+| `issue.description` | string | Issue body/description. May be empty — use `{% if issue.description %}` to guard. |
+| `issue.url` | string | Full URL to the issue in the tracker. |
+| `issue.branch_name` | string | Suggested git branch name derived from the issue (e.g. `"eng-42-fix-login-bug"`). May be empty for GitHub issues. |
+| `issue.labels` | string[] | Labels attached to the issue. Iterable with `{% for label in issue.labels %}`. |
+| `issue.priority` | string | Priority label (Linear: `"urgent"`, `"high"`, `"medium"`, `"low"`, `"no priority"`; GitHub: empty string). |
+| `issue.comments` | object[] | Comments on the issue. Each comment has `author_name`, `body`, and `created_at` fields. |
+| `id` | string | Internal tracker issue ID. |
+| `state` | string | Current issue state (e.g. `"Todo"`, `"In Progress"`). |
+| `blocked_by` | object[] | List of blocking issues. Each entry has `id`, `identifier`, and `state` fields. |
+| `created_at` | string | Issue creation timestamp (ISO 8601). |
+| `updated_at` | string | Issue last update timestamp (ISO 8601). |
+| `attempt` | int\|null | Current retry attempt number. `null` on the first attempt. |
+
+### Example template
+
+```liquid
+You are an expert engineer working on this project.
+
+## Issue {{ issue.identifier }}: {{ issue.title }}
+
+{% if issue.priority %}
+Priority: {{ issue.priority }}
+{% endif %}
+
+{% if issue.description %}
+{{ issue.description }}
+{% endif %}
+
+{% if issue.labels.size > 0 %}
+Labels: {{ issue.labels | join: ", " }}
+{% endif %}
+
+{% if issue.comments %}
+## Discussion
+{% for comment in issue.comments %}
+**{{ comment.author_name }}**: {{ comment.body }}
+{% endfor %}
+{% endif %}
+
+Issue URL: {{ issue.url }}
+
+---
+
+Create a branch named `{{ issue.branch_name | default: issue.identifier | downcase }}`,
+implement the change, run tests, then open a PR that closes {{ issue.url }}.
+```

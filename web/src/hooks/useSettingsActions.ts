@@ -119,6 +119,17 @@ const actions = {
       { delta },
       'Failed to update worker count.',
     ),
+
+  setReviewerConfig: async (
+    profile: string,
+    autoReview: boolean,
+  ): Promise<boolean> =>
+    settingsFetch(
+      '/api/v1/settings/reviewer',
+      'PUT',
+      { profile, auto_review: autoReview },
+      'Failed to update reviewer settings.',
+    ),
 };
 
 export function useSettingsActions() {

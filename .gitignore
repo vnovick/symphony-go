@@ -26,3 +26,8 @@ planning/
 docs/superpowers/
 coverage.out
 coverage.html
+
+# Site
+site/node_modules/
+site/dist/
+site/.astro/

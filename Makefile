@@ -6,6 +6,10 @@ export GOTOOLCHAIN := go1.25.8
 
 all: build verify
 
+# IMPORTANT: Always use `make build` instead of bare `go build ./cmd/symphony`.
+# The Go binary embeds web/dist via //go:embed. If web/dist is missing, the binary
+# compiles but panics at runtime with "embed: failed to sub web/dist".
+# `make build` runs web-build first to ensure the frontend assets exist.
 build: web-build
 	go build ./...
 

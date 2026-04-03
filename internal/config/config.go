@@ -132,7 +132,17 @@ type AgentConfig struct {
 	DispatchStrategy string
 	// ReviewerPrompt is the Liquid template used when a reviewer worker is
 	// dispatched (e.g. via the AI Review button). Falls back to DefaultReviewerPrompt.
+	// Deprecated: prefer ReviewerProfile which uses the profile's own prompt.
 	ReviewerPrompt string
+	// ReviewerProfile is the name of the agent profile used for code review.
+	// When set, the reviewer uses this profile's command, backend, and prompt
+	// instead of the legacy ReviewerPrompt field. The reviewer runs as a
+	// regular worker in the queue with Kind="reviewer".
+	ReviewerProfile string
+	// AutoReview, when true, automatically dispatches a reviewer worker
+	// using ReviewerProfile after each successful worker completion.
+	// Requires ReviewerProfile to be set. Default: false.
+	AutoReview bool
 	// Profiles is an optional map of named agent profiles. Each profile can
 	// override the default agent Command. Profiles can be selected per-issue
 	// from the web UI.
@@ -160,6 +170,18 @@ type AgentConfig struct {
 	// When empty, Symphony auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
 	// falling back to "origin/main" if detection fails.
 	BaseBranch string
+	// AvailableModels maps backend names ("claude", "codex") to model options
+	// discovered at init time or via the refresh-models command. The dashboard
+	// profile editor uses these for the model dropdown. When empty, the frontend
+	// falls back to a built-in default list.
+	AvailableModels map[string][]ModelOption
+}
+
+// ModelOption represents an available model for a backend. Matches the
+// agent.ModelOption type but lives here to avoid import cycles.
+type ModelOption struct {
+	ID    string `json:"id" yaml:"id"`
+	Label string `json:"label" yaml:"label"`
 }
 
 // HooksConfig holds lifecycle hook settings.
@@ -259,10 +281,13 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.SSHHosts = strSliceField(agent, "ssh_hosts", nil)
 	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
+	cfg.Agent.ReviewerProfile = strField(agent, "reviewer_profile", "")
+	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
 	cfg.Agent.Profiles = parseAgentProfiles(mapField(agent, "profiles"))
+	cfg.Agent.AvailableModels = parseAvailableModels(mapField(agent, "available_models"))
 	agentMode := strField(agent, "agent_mode", "")
 	if agentMode == "" && boolField(agent, "enable_agent_teams", false) {
 		// Backward compat: enable_agent_teams: true → "teams"
@@ -385,6 +410,50 @@ func parseAgentProfiles(raw map[string]any) map[string]AgentProfile {
 		return nil
 	}
 	return profiles
+}
+
+// parseAvailableModels parses the agent.available_models YAML field.
+// Expected format:
+//
+//	available_models:
+//	  claude:
+//	    - { id: "claude-sonnet-4-6", label: "Sonnet 4.6" }
+//	  codex:
+//	    - { id: "gpt-5.2-codex", label: "GPT-5.2 Codex" }
+func parseAvailableModels(raw map[string]any) map[string][]ModelOption {
+	if len(raw) == 0 {
+		return nil
+	}
+	result := make(map[string][]ModelOption, len(raw))
+	for backend, v := range raw {
+		items, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		models := make([]ModelOption, 0, len(items))
+		for _, item := range items {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			id, _ := m["id"].(string)
+			label, _ := m["label"].(string)
+			if id == "" {
+				continue
+			}
+			if label == "" {
+				label = id
+			}
+			models = append(models, ModelOption{ID: id, Label: label})
+		}
+		if len(models) > 0 {
+			result[backend] = models
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // --- helpers ---

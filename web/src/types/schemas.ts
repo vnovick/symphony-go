@@ -28,6 +28,7 @@ export const RunningRowSchema = z.object({
   sessionId: z.string().optional(), // omitempty — absent until session starts
   workerHost: z.string().optional(), // omitempty — absent for local execution
   backend: z.string().optional(), // omitempty — absent when unknown
+  kind: z.string().optional(), // omitempty — "worker" (default) | "reviewer"
   elapsedMs: z.number(),
   startedAt: z.string(),
 });
@@ -47,6 +48,7 @@ export const HistoryRowSchema = z.object({
   backend: z.string().optional(),
   sessionId: z.string().optional(),
   appSessionId: z.string().optional(),
+  kind: z.string().optional(), // omitempty — "worker" (default) | "reviewer"
 });
 
 export const RetryRowSchema = z.object({
@@ -81,6 +83,11 @@ export const ProfileDefSchema = z.object({
   backend: z.string().optional(),
 });
 
+export const ModelOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+});
+
 export const StateSnapshotSchema = z.object({
   generatedAt: z.string(),
   pollIntervalMs: z.number().optional(), // omitempty — matches Go StateSnapshot.PollIntervalMs
@@ -96,6 +103,9 @@ export const StateSnapshotSchema = z.object({
   activeProjectFilter: z.array(z.string()).optional(),
   availableProfiles: z.array(z.string()).optional(),
   profileDefs: z.record(z.string(), ProfileDefSchema).optional(),
+  availableModels: z.record(z.string(), z.array(ModelOptionSchema)).optional(),
+  reviewerProfile: z.string().optional(),
+  autoReview: z.boolean().optional(),
   agentMode: z.string().optional(),
   activeStates: z.array(z.string()).optional(),
   terminalStates: z.array(z.string()).optional(),
@@ -157,6 +167,7 @@ export const TrackerIssueSchema = z.object({
   comments: z.array(CommentRowSchema).optional(),
   ineligibleReason: z.string().optional(),
   agentProfile: z.string().optional(),
+  agentBackend: z.string().optional(),
 });
 
 // Inferred TypeScript types — re-exported from symphony.ts for backward compatibility.

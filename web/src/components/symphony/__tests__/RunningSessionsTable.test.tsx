@@ -16,6 +16,7 @@ vi.mock('../../../queries/issues', () => ({
   useTerminateIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useResumeIssue: () => ({ mutate: vi.fn(), isPending: false }),
   useSetIssueProfile: () => ({ mutate: vi.fn(), isPending: false }),
+  useSetIssueBackend: () => ({ mutate: vi.fn(), isPending: false }),
   useTriggerAIReview: () => ({ mutate: vi.fn(), isPending: false }),
   useIssues: () => ({ data: [] }),
 }));

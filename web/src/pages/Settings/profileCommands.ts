@@ -15,9 +15,11 @@ export interface ProfileCommandDraft {
 }
 
 export const CLAUDE_MODELS = [
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 - Fast' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 - Fast, cost-effective' },
+  { id: 'claude-sonnet-4-5-20251001', label: 'Sonnet 4.5 - Previous gen balanced' },
   { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6 - Balanced' },
-  { id: 'claude-opus-4-6', label: 'Opus 4.6 - Powerful' },
+  { id: 'claude-opus-4-5-20251001', label: 'Opus 4.5 - Previous gen powerful' },
+  { id: 'claude-opus-4-6', label: 'Opus 4.6 - Most powerful' },
 ] satisfies ModelOption[];
 
 export const CODEX_MODELS = [
@@ -54,7 +56,13 @@ export function commandToBackend(
   return inferBackendFromCommand(cmd) ?? 'claude';
 }
 
-export function modelsForBackend(backend: SupportedBackend): ModelOption[] {
+export function modelsForBackend(
+  backend: SupportedBackend,
+  dynamicModels?: Record<string, ModelOption[]>,
+): ModelOption[] {
+  if (dynamicModels?.[backend]?.length) {
+    return dynamicModels[backend];
+  }
   return backend === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
 }
 

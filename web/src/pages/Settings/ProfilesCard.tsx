@@ -38,9 +38,10 @@ interface ProfilesCardProps {
   profileDefs: Record<string, ProfileDef>;
   onUpsert: (name: string, command: string, backend?: string, prompt?: string) => Promise<boolean>;
   onDelete: (name: string) => Promise<boolean>;
+  availableModels?: Record<string, { id: string; label: string }[]>;
 }
 
-export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardProps) {
+export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels }: ProfilesCardProps) {
   const [uiState, setUiState] = useState({ adding: false, deleteError: '' });
   const { adding, deleteError } = uiState;
   const [quickAddSaving, setQuickAddSaving] = useState<string | null>(null);
@@ -194,6 +195,7 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
                   def={def}
                   onEdit={handleEdit}
                   onDelete={handleDelete}
+                  availableModels={availableModels}
                 />
               ))}
 
@@ -245,6 +247,7 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete }: ProfilesCardPr
                       onPromptChange={(value) => {
                         addForm.setValue('prompt', value);
                       }}
+                      dynamicModels={availableModels}
                     />
                     {addForm.formState.errors.command && (
                       <p role="alert" className="text-xs text-theme-danger">

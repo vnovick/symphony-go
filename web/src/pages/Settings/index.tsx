@@ -7,11 +7,12 @@ import { TrackerStatesCard } from './TrackerStatesCard';
 import { WorkspaceCard } from './WorkspaceCard';
 import { ProjectFilterCard } from './ProjectFilterCard';
 import { SSHHostsCard } from './SSHHostsCard';
+import { ReviewerCard } from './ReviewerCard';
 import { CapacityCard } from './CapacityCard';
 import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
 import { useClearAllLogs, useClearAllWorkspaces } from '../../queries/issues';
 import { useQueryClient } from '@tanstack/react-query';
-import { EMPTY_PROFILE_DEFS, EMPTY_STATES } from '../../utils/constants';
+import { EMPTY_PROFILE_DEFS, EMPTY_PROFILES, EMPTY_STATES } from '../../utils/constants';
 
 export default function Settings() {
   const { activeStates, terminalStates, completionState, autoClearWorkspace } = useSymphonyStore(
@@ -23,12 +24,17 @@ export default function Settings() {
     })),
   );
   const profileDefs = useSymphonyStore((s) => s.snapshot?.profileDefs ?? EMPTY_PROFILE_DEFS);
+  const availableModels = useSymphonyStore((s) => s.snapshot?.availableModels);
+  const availableProfiles = useSymphonyStore((s) => s.snapshot?.availableProfiles ?? EMPTY_PROFILES);
+  const reviewerProfile = useSymphonyStore((s) => s.snapshot?.reviewerProfile ?? '');
+  const autoReview = useSymphonyStore((s) => s.snapshot?.autoReview ?? false);
   const {
     upsertProfile,
     deleteProfile,
     updateTrackerStates,
     setAutoClearWorkspace,
     setProjectFilter,
+    setReviewerConfig,
   } = useSettingsActions();
   const queryClient = useQueryClient();
   const clearAllLogs = useClearAllLogs();
@@ -72,6 +78,23 @@ export default function Settings() {
             profileDefs={profileDefs}
             onUpsert={upsertProfile}
             onDelete={deleteProfile}
+            availableModels={availableModels}
+          />
+        </section>
+
+        {/* ── Code Review Agent ────────────────────────────────────────────── */}
+        <section aria-labelledby="section-reviewer">
+          <h2
+            id="section-reviewer"
+            className="mb-3 text-xs font-semibold tracking-widest uppercase"
+          >
+            Code Review Agent
+          </h2>
+          <ReviewerCard
+            reviewerProfile={reviewerProfile}
+            autoReview={autoReview}
+            availableProfiles={availableProfiles}
+            onSave={setReviewerConfig}
           />
         </section>
 

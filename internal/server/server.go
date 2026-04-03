@@ -33,6 +33,7 @@ type RunningRow struct {
 	SessionID    string    `json:"sessionId,omitempty"`
 	WorkerHost   string    `json:"workerHost,omitempty"`
 	Backend      string    `json:"backend,omitempty"`
+	Kind         string    `json:"kind,omitempty"` // "worker" (default) | "reviewer"
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -51,6 +52,7 @@ type HistoryRow struct {
 	Backend      string    `json:"backend,omitempty"`
 	SessionID    string    `json:"sessionId,omitempty"`
 	AppSessionID string    `json:"appSessionId,omitempty"`
+	Kind         string    `json:"kind,omitempty"` // "worker" (default) | "reviewer"
 }
 
 // RateLimitInfo holds the last observed API rate limit snapshot.
@@ -112,7 +114,11 @@ type OrchestratorClient interface {
 	SetWorkers(n int)
 	BumpWorkers(delta int) int
 	SetIssueProfile(identifier, profile string)
+	SetIssueBackend(identifier, backend string)
 	ProfileDefs() map[string]ProfileDef
+	AvailableModels() map[string][]ModelOption
+	ReviewerConfig() (profile string, autoReview bool)
+	SetReviewerConfig(profile string, autoReview bool) error
 	UpsertProfile(name string, def ProfileDef) error
 	DeleteProfile(name string) error
 	SetAgentMode(mode string) error
@@ -148,7 +154,11 @@ func (noopClient) UpdateIssueState(context.Context, string, string) error       
 func (noopClient) SetWorkers(int)                                                  {}
 func (noopClient) BumpWorkers(int) int                                             { return 0 }
 func (noopClient) SetIssueProfile(string, string)                                 {}
+func (noopClient) SetIssueBackend(string, string)                                 {}
 func (noopClient) ProfileDefs() map[string]ProfileDef                             { return nil }
+func (noopClient) AvailableModels() map[string][]ModelOption                       { return nil }
+func (noopClient) ReviewerConfig() (string, bool)                                  { return "", false }
+func (noopClient) SetReviewerConfig(string, bool) error                            { return nil }
 func (noopClient) UpsertProfile(string, ProfileDef) error                         { return errNotConfigured }
 func (noopClient) DeleteProfile(string) error                                     { return errNotConfigured }
 func (noopClient) SetAgentMode(string) error                                      { return errNotConfigured }
@@ -181,7 +191,11 @@ type FuncClient struct {
 	SetWorkersFn            func(int)
 	BumpWorkersFn           func(int) int
 	SetIssueProfileFn       func(string, string)
+	SetIssueBackendFn       func(string, string)
 	ProfileDefsFn           func() map[string]ProfileDef
+	AvailableModelsFn       func() map[string][]ModelOption
+	ReviewerConfigFn        func() (string, bool)
+	SetReviewerConfigFn     func(string, bool) error
 	UpsertProfileFn         func(string, ProfileDef) error
 	DeleteProfileFn         func(string) error
 	SetAgentModeFn          func(string) error
@@ -289,9 +303,32 @@ func (c *FuncClient) SetIssueProfile(id, profile string) {
 		c.SetIssueProfileFn(id, profile)
 	}
 }
+func (c *FuncClient) SetIssueBackend(id, backend string) {
+	if c.SetIssueBackendFn != nil {
+		c.SetIssueBackendFn(id, backend)
+	}
+}
 func (c *FuncClient) ProfileDefs() map[string]ProfileDef {
 	if c.ProfileDefsFn != nil {
 		return c.ProfileDefsFn()
+	}
+	return nil
+}
+func (c *FuncClient) AvailableModels() map[string][]ModelOption {
+	if c.AvailableModelsFn != nil {
+		return c.AvailableModelsFn()
+	}
+	return nil
+}
+func (c *FuncClient) ReviewerConfig() (string, bool) {
+	if c.ReviewerConfigFn != nil {
+		return c.ReviewerConfigFn()
+	}
+	return "", false
+}
+func (c *FuncClient) SetReviewerConfig(profile string, autoReview bool) error {
+	if c.SetReviewerConfigFn != nil {
+		return c.SetReviewerConfigFn(profile, autoReview)
 	}
 	return nil
 }
@@ -379,7 +416,10 @@ type StateSnapshot struct {
 	// Empty/absent means no profiles are configured.
 	AvailableProfiles []string `json:"availableProfiles,omitempty"`
 	// ProfileDefs is the map of named agent profile definitions from WORKFLOW.md.
-	ProfileDefs map[string]ProfileDef `json:"profileDefs,omitempty"`
+	ProfileDefs     map[string]ProfileDef      `json:"profileDefs,omitempty"`
+	AvailableModels map[string][]ModelOption   `json:"availableModels,omitempty"`
+	ReviewerProfile string                     `json:"reviewerProfile,omitempty"`
+	AutoReview      bool                       `json:"autoReview,omitempty"`
 	// AgentMode is the active agent collaboration mode.
 	// "" (off/solo): agent runs alone.
 	// "subagents":   agent may spawn helpers via its native delegation tool.
@@ -444,6 +484,12 @@ type ProfileDef struct {
 	Backend string `json:"backend,omitempty"`
 }
 
+// ModelOption represents an available model for a backend (mirrors config.ModelOption for JSON).
+type ModelOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
 // CommentRow is one comment entry in a TrackerIssue response.
 type CommentRow struct {
 	Author    string `json:"author"`
@@ -473,6 +519,8 @@ type TrackerIssue struct {
 	IneligibleReason string       `json:"ineligibleReason,omitempty"`
 	// AgentProfile is the name of the per-issue agent profile override, if any.
 	AgentProfile string `json:"agentProfile,omitempty"`
+	// AgentBackend is the per-issue backend override, if any ("claude" or "codex").
+	AgentBackend string `json:"agentBackend,omitempty"`
 }
 
 // IssueLogEntry is one parsed log event for /api/v1/issues/{id}/logs.
@@ -664,6 +712,7 @@ func (s *Server) routes() {
 		r.Post("/issues/{identifier}/ai-review", s.handleAIReview)
 		r.Patch("/issues/{identifier}/state", s.handleUpdateIssueState)
 		r.Post("/issues/{identifier}/profile", s.handleSetIssueProfile)
+		r.Post("/issues/{identifier}/backend", s.handleSetIssueBackend)
 		r.Post("/issues/{identifier}/provide-input", s.handleProvideInput)
 		r.Post("/issues/{identifier}/dismiss-input", s.handleDismissInput)
 		r.Post("/settings/inline-input", s.handleSetInlineInput)
@@ -676,6 +725,9 @@ func (s *Server) routes() {
 		r.Post("/settings/agent-mode", s.handleSetAgentMode)
 		r.Delete("/workspaces", s.handleClearAllWorkspaces)
 		r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
+		r.Get("/settings/models", s.handleListModels)
+		r.Get("/settings/reviewer", s.handleGetReviewer)
+		r.Put("/settings/reviewer", s.handleSetReviewer)
 		r.Get("/settings/profiles", s.handleListProfiles)
 		r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
 		r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)

@@ -48,7 +48,8 @@ type Orchestrator struct {
 	// cfgMu guards cfg fields mutated at runtime from HTTP handler goroutines:
 	// cfg.Agent.AgentMode, cfg.Agent.MaxConcurrentAgents, cfg.Agent.Profiles,
 	// cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState,
-	// cfg.Workspace.AutoClearWorkspace, cfg.Agent.SSHHosts, cfg.Agent.DispatchStrategy.
+	// cfg.Workspace.AutoClearWorkspace, cfg.Agent.SSHHosts, cfg.Agent.DispatchStrategy,
+	// cfg.Agent.ReviewerProfile, cfg.Agent.AutoReview.
 	// All other cfg fields are read-only after startup and need no lock.
 	cfgMu sync.RWMutex
 
@@ -93,6 +94,11 @@ type Orchestrator struct {
 	// RWMutex allows concurrent Snapshot() calls without serialising each other.
 	issueProfilesMu sync.RWMutex
 	issueProfiles   map[string]string // identifier → profile name
+
+	// issueBackendsMu guards issueBackends, which is written by SetIssueBackend
+	// (any goroutine) and read by dispatch (event loop goroutine) and Snapshot.
+	issueBackendsMu sync.RWMutex
+	issueBackends   map[string]string // identifier → "claude"|"codex"
 
 	// agentLogDir, when non-empty, is passed to RunTurn as CLAUDE_CODE_LOG_DIR
 	// so Claude Code writes full session logs (including sub-agents) to disk.
@@ -141,6 +147,7 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 		userCancelledIDs:  make(map[string]struct{}),
 		userTerminatedIDs: make(map[string]struct{}),
 		issueProfiles:     make(map[string]string),
+		issueBackends:     make(map[string]string),
 		sshHostDescs:      make(map[string]string),
 	}
 }
@@ -275,6 +282,27 @@ func (o *Orchestrator) InlineInputCfg() bool {
 	o.cfgMu.RLock()
 	defer o.cfgMu.RUnlock()
 	return o.cfg.Agent.InlineInput
+}
+
+// AvailableModelsCfg returns the available models from the config.
+// Read-only after startup — no lock needed.
+func (o *Orchestrator) AvailableModelsCfg() map[string][]config.ModelOption {
+	return o.cfg.Agent.AvailableModels
+}
+
+// ReviewerCfg returns the reviewer profile name and auto-review flag under cfgMu.
+func (o *Orchestrator) ReviewerCfg() (profile string, autoReview bool) {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Agent.ReviewerProfile, o.cfg.Agent.AutoReview
+}
+
+// SetReviewerCfg sets the reviewer profile name and auto-review flag under cfgMu.
+func (o *Orchestrator) SetReviewerCfg(profile string, autoReview bool) {
+	o.cfgMu.Lock()
+	o.cfg.Agent.ReviewerProfile = profile
+	o.cfg.Agent.AutoReview = autoReview
+	o.cfgMu.Unlock()
 }
 
 // ProfilesCfg returns a shallow copy of cfg.Agent.Profiles under cfgMu.

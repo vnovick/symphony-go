@@ -1,31 +1,58 @@
-# Press 'd' to activate the session-details view (renderSessionDetails).
-run
-key d
+run tick
 ----
-TEA WINDOW SIZE: {100 30}
+TEA WINDOW SIZE: {160 30}
 -- view:
-╔═[ SYM//PHONY ]═══════════════════════════════════════════════════════════════════════════════════╗␤
+╔═[ ITER//VOX ]════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗␤
 ║ AGENTS ▸ 0/5   TOKENS ▸ ↑0 ↓0 ∑0   RETRY ▸ 0␤
-●─[ ISSUES · history ]  h:toggle              ║●─[ SESSION DETAILS ] d logs  t tools                ␤
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━║━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
-  x pause  r resume  D discard                ║                                                     ␤
-▶ PROJ-1  t0     0 [◉ RUNNING]                ║PROJ-1                                               ␤
-  ⏱ 0s                                        ║State: Running (running)                             ␤
-                                              ║                                                     ␤
-                                              ║Turns: 0                                             ␤
-                                              ║Tokens: ↑0 ↓0 ∑0                                     ␤
-                                              ║Backend:                                             ␤
-                                              ║                                                     ␤
-                                              ║View full details in web dashboard                   ␤
-                                              ║                                                     ␤
-                                              ║                                                     ␤
-                                              ║                                                     ␤
-                                              ║                                                     ␤
-                                              ║                                                     ␤
-                                              ║                                                     ␤
-                                              ║                                                     ␤
-◆─[ TIMELINE ]  tab to focus━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
-► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████ 2562047h47m16s␤
-                0s                                   1281023h53m38s                       2562047h47m1␤
-╚══════════════════════════════════════════════════════════════════════════════════════════════════╝␤
-↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • t tools view • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o open PR in browser • w open web UI • q quit␤
+●─[ ISSUES · history ]  h:toggle              ║◆─[ LOGS: PROJ-1 ]  s:details                                                                                    ␤
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━║  [◉ RUNNING]                                                                                                    ␤
+  x pause  r resume  D discard                ║━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
+▶ PROJ-1  t0     0 [◉ RUNNING]                ║                                                                                                                 ␤
+  ⏱ 0s                                        ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+◆─[ TIMELINE ]  tab to focus━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
+► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 2562047h47m16s␤
+                0s                                                                 1281023h53m38s                                                     2562047h47m1␤
+╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝␤
+↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o open PR in browser • w open web UI • a assign profile • s split details • q quit␤
+
+run key:s
+----
+-- view:
+╔═[ ITER//VOX ]════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗␤
+║ AGENTS ▸ 0/5   TOKENS ▸ ↑0 ↓0 ∑0   RETRY ▸ 0␤
+●─[ ISSUES · history ]  h:toggle              ║◆─[ LOGS: PROJ-1 ]  s:details                                                                                    ␤
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━║  [◉ RUNNING]                                                                                                    ␤
+  x pause  r resume  D discard                ║━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
+▶ PROJ-1  t0     0 [◉ RUNNING]                ║                                                                                                                 ␤
+  ⏱ 0s                                        ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+                                              ║                                                                                                                 ␤
+◆─[ TIMELINE ]  tab to focus━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━␤
+► PROJ-1         t0 · 0███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 2562047h47m16s␤
+                0s                                                                 1281023h53m38s                                                     2562047h47m1␤
+╚══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝␤
+↑ prev • ↓ next • tab focus panel • enter drill down • esc back • k log page up • j log page dn • x pause • r resume paused • D discard paused • + more workers • - fewer workers • b backlog • d/enter dispatch/details • p project filter • o open PR in browser • w open web UI • a assign profile • s split details • q quit␤

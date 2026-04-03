@@ -17,6 +17,7 @@ import {
   useUpdateIssueState,
   useSetIssueProfile,
 } from '../../queries/issues';
+import { useSettingsActions } from '../../hooks/useSettingsActions';
 
 import { BoardView } from './components/BoardView';
 import { ListView } from './components/ListView';
@@ -30,7 +31,7 @@ const EMPTY_TERMINAL_STATES = EMPTY_STATES;
 
 export default function Dashboard() {
   const { data: issues = [] } = useIssues();
-  const { hasSnapshot, availableProfiles, backlogStates, activeStates, terminalStates, completionState, profileDefs, defaultBackend, running, runHistory } = useSymphonyStore(
+  const { hasSnapshot, availableProfiles, backlogStates, activeStates, terminalStates, completionState, profileDefs, availableModels, defaultBackend, running, runHistory } = useSymphonyStore(
     useShallow((s) => ({
       hasSnapshot: s.snapshot !== null,
       availableProfiles: s.snapshot?.availableProfiles ?? EMPTY_PROFILES,
@@ -39,6 +40,7 @@ export default function Dashboard() {
       terminalStates: s.snapshot?.terminalStates ?? EMPTY_TERMINAL_STATES,
       completionState: s.snapshot?.completionState ?? '',
       profileDefs: s.snapshot?.profileDefs,
+      availableModels: s.snapshot?.availableModels,
       defaultBackend: s.snapshot?.defaultBackend,
       running: s.snapshot?.running ?? EMPTY_RUNNING,
       runHistory: s.snapshot?.history ?? EMPTY_HISTORY,
@@ -74,6 +76,12 @@ export default function Dashboard() {
 
   const [loading, setLoading] = useState(false);
   const [apiOffline, setApiOffline] = useState(false);
+  const handleIssueSelect = useCallback(
+    (identifier: string) => {
+      setSelectedIdentifier(identifier);
+    },
+    [setSelectedIdentifier],
+  );
 
   useEffect(() => {
     if (hasSnapshot) {
@@ -163,6 +171,14 @@ export default function Dashboard() {
       setIssueProfileMutation.mutate({ identifier, profile });
     },
     [setIssueProfileMutation],
+  );
+
+  const { upsertProfile } = useSettingsActions();
+  const handleEditProfile = useCallback(
+    async (name: string, def: { command: string; backend?: string; prompt?: string }) => {
+      await upsertProfile(name, def.command, def.backend, def.prompt);
+    },
+    [upsertProfile],
   );
 
   return (
@@ -303,7 +319,7 @@ export default function Dashboard() {
             {viewMode === 'board' && (
               <BoardView
                 issues={filtered}
-                onSelect={setSelectedIdentifier}
+                onSelect={handleIssueSelect}
                 onStateChange={handleStateChange}
                 availableProfiles={availableProfiles}
                 onProfileChange={handleProfileChange}
@@ -312,7 +328,7 @@ export default function Dashboard() {
             {viewMode === 'list' && (
               <ListView
                 issues={filtered}
-                onSelect={setSelectedIdentifier}
+                onSelect={handleIssueSelect}
                 availableProfiles={availableProfiles}
                 profileDefs={profileDefs}
                 runningBackendByIdentifier={runningBackendByIdentifier}
@@ -328,8 +344,10 @@ export default function Dashboard() {
                   backlogStates={backlogStates}
                   availableProfiles={availableProfiles}
                   profileDefs={profileDefs}
+                  availableModels={availableModels}
                   onProfileChange={handleProfileChange}
-                  onSelect={setSelectedIdentifier}
+                  onSelect={handleIssueSelect}
+                  onEditProfile={handleEditProfile}
                 />
               </div>
             )}
@@ -338,6 +356,7 @@ export default function Dashboard() {
 
         <NarrativeFeed />
       </div>
+
     </>
   );
 }

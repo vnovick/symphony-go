@@ -23,8 +23,10 @@ interface AgentQueueViewProps {
   backlogStates: string[];
   availableProfiles: string[];
   profileDefs?: Record<string, ProfileDef>;
+  availableModels?: Record<string, { id: string; label: string }[]>;
   onProfileChange: (identifier: string, profile: string) => void;
   onSelect: (id: string) => void;
+  onEditProfile?: (name: string, def: ProfileDef) => Promise<void>;
 }
 
 export default function AgentQueueView({
@@ -32,8 +34,10 @@ export default function AgentQueueView({
   backlogStates,
   availableProfiles,
   profileDefs,
+  availableModels,
   onProfileChange,
   onSelect,
+  onEditProfile,
 }: AgentQueueViewProps) {
   const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -115,23 +119,28 @@ export default function AgentQueueView({
         onDragEnd={onDragEnd}
       >
         <div className="flex gap-3 overflow-x-auto pb-2 min-h-[200px]">
-          {columns.map((col) => (
-            <BoardColumn
-              key={col.id}
-              state={col.id}
-              label={col.label}
-              issues={col.issues}
-              isOver={overId === col.id}
-              draggingId={activeSourceCol === col.id ? activeIssue?.identifier : undefined}
-              isCardOutside={activeSourceCol === col.id && overId !== null && overId !== col.id}
-              onSelect={onSelect}
-              onInfoClick={col.id !== UNASSIGNED ? () => { setInfoProfile(col.id); } : undefined}
-            />
-          ))}
+          {columns.map((col) => {
+            const isUnassigned = col.id === UNASSIGNED;
+            return (
+              <BoardColumn
+                key={col.id}
+                state={col.id}
+                label={col.label}
+                issues={col.issues}
+                isOver={overId === col.id}
+                draggingId={activeSourceCol === col.id ? activeIssue?.identifier : undefined}
+                isCardOutside={activeSourceCol === col.id && overId !== null && overId !== col.id}
+                onSelect={onSelect}
+                isUnassigned={isUnassigned}
+                columnProfileDef={!isUnassigned ? profileDefs?.[col.id] : undefined}
+                onHeaderClick={!isUnassigned ? () => { setInfoProfile(col.id); } : undefined}
+              />
+            );
+          })}
         </div>
         <DragOverlay dropAnimation={null}>
           {activeIssue && (
-            <div className="w-[250px]">
+            <div className="w-[280px]">
               <IssueCard issue={activeIssue} isDragging onSelect={() => {}} />
             </div>
           )}
@@ -142,6 +151,8 @@ export default function AgentQueueView({
         profileName={infoProfile}
         profileDef={infoDef}
         onClose={() => { setInfoProfile(null); }}
+        onSave={onEditProfile}
+        availableModels={availableModels}
       />
     </>
   );

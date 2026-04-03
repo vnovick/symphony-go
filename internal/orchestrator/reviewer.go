@@ -14,47 +14,35 @@ import (
 	"github.com/vnovick/symphony-go/internal/workspace"
 )
 
-// DispatchReviewer fetches the issue with the given identifier from the tracker
-// and starts a reviewer worker goroutine. The reviewer uses the ReviewerPrompt
-// template from the config (falling back to DefaultReviewerPrompt).
-// Returns an error if the issue cannot be found; otherwise returns nil immediately
-// (the reviewer runs asynchronously in the background).
+// DispatchReviewer sends a reviewer dispatch event to the event loop for the
+// given issue identifier. The reviewer runs as a regular worker with
+// Kind="reviewer" using the configured ReviewerProfile (or the specified profile).
+// Returns an error if no reviewer profile is configured.
 // Safe to call from any goroutine.
 func (o *Orchestrator) DispatchReviewer(identifier string) error {
-	var ctx context.Context
-	if p := o.runCtx.Load(); p != nil {
-		ctx = *p
-	} else {
-		ctx = context.Background() // fallback if called before Run (tests, etc.)
-	}
 	o.cfgMu.RLock()
-	allStates := append(append([]string{}, o.cfg.Tracker.ActiveStates...), o.cfg.Tracker.TerminalStates...)
-	if o.cfg.Tracker.CompletionState != "" {
-		allStates = append(allStates, o.cfg.Tracker.CompletionState)
-	}
+	profile := o.cfg.Agent.ReviewerProfile
 	o.cfgMu.RUnlock()
-	issues, err := o.tracker.FetchIssuesByStates(ctx, allStates)
-	if err != nil {
-		return fmt.Errorf("reviewer: fetch issues failed: %w", err)
+
+	if profile == "" {
+		return fmt.Errorf("reviewer: no reviewer_profile configured")
 	}
-	var found *domain.Issue
-	for i := range issues {
-		if issues[i].Identifier == identifier {
-			found = &issues[i]
-			break
-		}
+
+	select {
+	case o.events <- OrchestratorEvent{
+		Type:            EventDispatchReviewer,
+		Identifier:      identifier,
+		ReviewerProfile: profile,
+	}:
+		return nil
+	default:
+		return fmt.Errorf("reviewer: event channel full")
 	}
-	if found == nil {
-		return fmt.Errorf("reviewer: issue %s not found", identifier)
-	}
-	o.reviewerWg.Add(1)
-	go o.runReviewerWorker(ctx, *found)
-	return nil
 }
 
-// runReviewerWorker runs a single reviewer agent session for the given issue.
-// Unlike runWorker it does not register in the orchestrator state machine or
-// attempt retries — it is a fire-and-forget background job.
+// Deprecated: runReviewerWorker is the legacy fire-and-forget reviewer.
+// New code uses dispatchReviewerForIssue which enters the regular worker queue.
+// This function is kept for reference and will be removed in a future cleanup.
 func (o *Orchestrator) runReviewerWorker(ctx context.Context, issue domain.Issue) {
 	defer o.reviewerWg.Done()
 	startedAt := time.Now()

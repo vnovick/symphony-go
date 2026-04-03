@@ -22,6 +22,7 @@ import {
   useSetIssueProfile,
   useProvideInput,
   useDismissInput,
+  useTriggerAIReview,
   ISSUES_KEY,
 } from '../../queries/issues';
 import { stateBadgeColor, EMPTY_PROFILE_LABEL, EMPTY_PROFILES, proseClass } from '../../utils/format';
@@ -44,6 +45,11 @@ export default function IssueDetailSlide() {
   const setIssueProfileMutation = useSetIssueProfile();
   const provideInputMutation = useProvideInput();
   const dismissInputMutation = useDismissInput();
+  const triggerAIReviewMutation = useTriggerAIReview();
+  const reviewerProfile = useSymphonyStore((s) => s.snapshot?.reviewerProfile ?? '');
+  const defaultBackend = useSymphonyStore((s) => s.snapshot?.defaultBackend ?? 'claude');
+  const profileDefs = useSymphonyStore((s) => s.snapshot?.profileDefs);
+  const runningRows = useSymphonyStore((s) => s.snapshot?.running);
   const [replyText, setReplyText] = useState('');
 
   const close = useCallback(() => {
@@ -78,6 +84,21 @@ export default function IssueDetailSlide() {
           <Badge color={issue.orchestratorState === 'running' ? 'success' : issue.orchestratorState === 'retrying' ? 'warning' : 'light'} size="sm">
             {issue.orchestratorState}
           </Badge>
+          {/* Backend badge (read-only — backend is determined by profile) */}
+          {(() => {
+            const runningBackend = runningRows?.find((r) => r.identifier === issue.identifier)?.backend;
+            const profileHint = issue.agentProfile && profileDefs?.[issue.agentProfile]
+              ? (profileDefs[issue.agentProfile].backend || profileDefs[issue.agentProfile].command || '')
+              : '';
+            const backend = runningBackend
+              || (profileHint && (/codex/i.test(profileHint) ? 'codex' : /claude/i.test(profileHint) ? 'claude' : ''))
+              || defaultBackend;
+            return (
+              <span className="ml-auto rounded-full px-2 py-0.5 text-[10px] font-medium bg-theme-bg-soft text-theme-text-secondary">
+                {backend}
+              </span>
+            );
+          })()}
         </div>
         <p className="text-xl font-semibold leading-tight text-theme-text">
           {issue.title}
@@ -86,16 +107,29 @@ export default function IssueDetailSlide() {
 
       {/* Scrollable body */}
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-        {issue.url && (
-          <a
-            href={issue.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm hover:underline text-theme-accent"
-          >
-            View in tracker →
-          </a>
-        )}
+        <div className="flex items-center gap-3">
+          {issue.url && (
+            <a
+              href={issue.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm hover:underline text-theme-accent"
+            >
+              View in tracker →
+            </a>
+          )}
+          {reviewerProfile && issue.orchestratorState !== 'running' && (
+            <button
+              onClick={() => { triggerAIReviewMutation.mutate(issue.identifier); }}
+              disabled={triggerAIReviewMutation.isPending}
+              className="rounded-[var(--radius-sm)] px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-80"
+              style={{ background: 'rgba(168,85,247,0.12)', borderColor: 'rgba(168,85,247,0.2)', color: 'rgb(168,85,247)' }}
+              title={`Dispatch reviewer (${reviewerProfile} profile)`}
+            >
+              {triggerAIReviewMutation.isPending ? 'Reviewing…' : '🔍 Review'}
+            </button>
+          )}
+        </div>
 
         {/* Priority + Labels */}
         {(issue.priority != null || (issue.labels && issue.labels.length > 0)) && (
@@ -322,7 +356,17 @@ export default function IssueDetailSlide() {
         <div
           className="flex-shrink-0 flex items-center justify-between gap-3 border-t px-5 py-4 border-theme-line"
         >
-          {/* AI Review button removed — feature not yet ready for production */}
+          {reviewerProfile && issue.orchestratorState !== 'running' && (
+            <button
+              onClick={() => { triggerAIReviewMutation.mutate(issue.identifier); }}
+              disabled={triggerAIReviewMutation.isPending}
+              className="rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-colors hover:opacity-80"
+              style={{ background: 'rgba(168,85,247,0.12)', borderColor: 'rgba(168,85,247,0.2)', color: 'rgb(168,85,247)' }}
+              title={`Dispatch reviewer (${reviewerProfile} profile)`}
+            >
+              {triggerAIReviewMutation.isPending ? 'Reviewing…' : '🔍 Review'}
+            </button>
+          )}
 
           <div className="ml-auto flex items-center gap-2">
             {/* Paused state */}

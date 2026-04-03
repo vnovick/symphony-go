@@ -58,6 +58,7 @@ export default function RetryQueueTable() {
           <div
             role="button"
             tabIndex={0}
+            aria-label={`Toggle details for retrying issue ${row.identifier}`}
             onClick={() => { toggle(row.identifier); }}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(row.identifier); }}
             className="flex flex-wrap items-center gap-2 px-4 py-3 cursor-pointer transition-colors hover:bg-[var(--bg-soft)]"
@@ -74,6 +75,7 @@ export default function RetryQueueTable() {
             <span
               role="button"
               tabIndex={0}
+              aria-label={`View details for retrying issue ${row.identifier}`}
               className="font-mono text-xs font-semibold text-theme-accent cursor-pointer hover:underline"
               onClick={(e) => { e.stopPropagation(); setSelectedIdentifier(row.identifier); }}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setSelectedIdentifier(row.identifier); } }}

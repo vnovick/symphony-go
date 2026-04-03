@@ -48,6 +48,34 @@ func Render(tmpl string, issue domain.Issue, attempt *int) (string, error) {
 	return string(out), nil
 }
 
+// RenderProfilePrompt renders a profile prompt through the Liquid engine with
+// the same issue bindings as Render. If the prompt contains no Liquid syntax
+// it passes through unchanged. Returns the input as-is on parse/render errors
+// so a plain-text prompt still works.
+func RenderProfilePrompt(promptText string, issue domain.Issue, attempt *int) string {
+	if strings.TrimSpace(promptText) == "" {
+		return ""
+	}
+
+	tpl, err := liquidEngine.ParseTemplate([]byte(promptText))
+	if err != nil {
+		// Not valid Liquid — return as plain text (backward-compatible).
+		return promptText
+	}
+
+	bindings := map[string]any{
+		"issue":   issueToMap(issue),
+		"attempt": attemptValue(attempt),
+	}
+
+	out, err := tpl.Render(bindings)
+	if err != nil {
+		return promptText
+	}
+
+	return string(out)
+}
+
 func attemptValue(attempt *int) any {
 	if attempt == nil {
 		return nil

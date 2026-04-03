@@ -36,6 +36,21 @@ func (o *Orchestrator) Snapshot() State {
 	}
 	o.issueProfilesMu.RUnlock()
 
+	o.issueBackendsMu.RLock()
+	if len(o.issueBackends) > 0 {
+		merged := make(map[string]string, len(snap.IssueBackends)+len(o.issueBackends))
+		maps.Copy(merged, snap.IssueBackends)
+		for k, v := range o.issueBackends {
+			if v == "" {
+				delete(merged, k)
+			} else {
+				merged[k] = v
+			}
+		}
+		snap.IssueBackends = merged
+	}
+	o.issueBackendsMu.RUnlock()
+
 	return snap
 }
 
@@ -382,6 +397,7 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.RetryAttempts = copyRetryMap(s.RetryAttempts)
 	snap.PausedIdentifiers = copyStringMap(s.PausedIdentifiers)
 	snap.IssueProfiles = copyStringMap(s.IssueProfiles)
+	snap.IssueBackends = copyStringMap(s.IssueBackends)
 	snap.PausedOpenPRs = copyStringMap(s.PausedOpenPRs)
 	snap.ForceReanalyze = copyStructMap(s.ForceReanalyze)
 	snap.PrevActiveIdentifiers = copyStructMap(s.PrevActiveIdentifiers)

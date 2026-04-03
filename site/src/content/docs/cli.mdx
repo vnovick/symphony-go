@@ -1,0 +1,215 @@
+---
+title: CLI Reference
+description: All Itervox CLI commands, flags, and environment variables.
+sidebar:
+  order: 6
+---
+
+## Usage
+
+```
+itervox [flags]
+itervox <command> [flags]
+```
+
+When no command is given, `itervox` starts the daemon (run mode).
+
+> **Note:** Binary is currently named `symphony`. A rename to `itervox` is planned.
+
+---
+
+## `itervox` — Start the daemon
+
+Reads `WORKFLOW.md`, connects to your issue tracker, and begins orchestrating agent workers.
+
+### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-workflow` | string | `WORKFLOW.md` | Path to your `WORKFLOW.md` configuration file |
+| `-logs-dir` | string | `~/.symphony/logs/<kind>/<project>` | Directory for rotating log files |
+| `-verbose` | bool | `false` | Enable DEBUG-level logging (includes agent subprocess output) |
+| `-shutdown-grace` | duration | `30s` | Grace period for active workers on `SIGINT`/`SIGTERM` before force exit |
+
+### Examples
+
+```bash
+# Start with defaults (WORKFLOW.md in the current directory)
+itervox
+
+# Use a custom WORKFLOW.md location
+itervox -workflow path/to/WORKFLOW.md
+
+# Enable verbose logging and a longer shutdown grace period
+itervox -verbose -shutdown-grace 60s
+
+# Write logs to a specific directory
+itervox -logs-dir /var/log/itervox
+```
+
+---
+
+## `itervox init` — Generate WORKFLOW.md
+
+Scans the repository and generates a `WORKFLOW.md` starter file pre-populated with detected project metadata.
+
+### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--tracker` | string | _(required)_ | Issue tracker: `linear` or `github` |
+| `--runner` | string | `claude` | Agent runner backend: `claude` or `codex` |
+| `--output` | string | `WORKFLOW.md` | Output file path |
+| `--dir` | string | `.` | Directory to scan for repo metadata |
+| `--force` | bool | `false` | Overwrite output file if it already exists |
+
+### Auto-detection
+
+`itervox init` inspects the target directory and fills in the generated `WORKFLOW.md` with discovered values:
+
+- **Git remote** — reads `origin` remote URL to derive the GitHub owner/repo slug and SSH clone URL
+- **Default branch** — detects `main` or `master` from the local git configuration
+- **Tech stacks** — detects Go, Node.js, Rust, Python, Elixir, and Ruby by the presence of language-specific manifest files (`go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml` / `requirements.txt`, `mix.exs`, `Gemfile`)
+- **Package managers** — inferred from lock files alongside stack detection (`pnpm-lock.yaml`, `yarn.lock`, `package-lock.json`, etc.)
+- **CLAUDE.md** — if a `CLAUDE.md` file is present in the scanned directory, the generated prompt template references it automatically
+- **Available models** — queries the selected runner CLI (e.g. `claude --list-models`) to discover available models and writes them to `agent.available_models` in the generated file. Falls back to a built-in default list if the CLI does not support model listing.
+
+After writing `WORKFLOW.md`, `itervox init` also creates `.symphony/.env` (with a placeholder API key for the chosen tracker) and `.symphony/.gitignore` if they do not already exist.
+
+### Example output
+
+```
+itervox init: scanning .
+  git remote : git@github.com:acme/backend.git
+  branch     : main
+  runner     : claude
+  CLAUDE.md  : found — prompt will reference it
+  stack      : Go (go test -race ./..., golangci-lint run)
+itervox init: wrote WORKFLOW.md
+itervox init: wrote .symphony/.env
+```
+
+### Examples
+
+```bash
+# Generate WORKFLOW.md for a GitHub project using Claude
+itervox init --tracker github
+
+# Generate WORKFLOW.md for a Linear project using Codex
+itervox init --tracker linear --runner codex
+
+# Scan a subdirectory and write to a custom path
+itervox init --tracker github --dir ./myrepo --output myrepo/WORKFLOW.md
+
+# Overwrite an existing WORKFLOW.md
+itervox init --tracker github --force
+```
+
+---
+
+## `itervox clear` — Remove workspace directories
+
+Removes git worktree workspace directories that Itervox created under the workspace root configured in `WORKFLOW.md`.
+
+### Flags
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `-workflow` | string | `WORKFLOW.md` | Path to `WORKFLOW.md` (used to locate `workspace.root`) |
+
+### Arguments
+
+```
+itervox clear [identifier ...]
+```
+
+Pass one or more issue identifiers (e.g. `ENG-42`, `123`) to remove only those workspaces. Omit all identifiers to remove every workspace under the workspace root.
+
+### Examples
+
+```bash
+# Remove all workspaces
+itervox clear
+
+# Remove workspaces for specific issues
+itervox clear ENG-42 ENG-99
+
+# Use a non-default WORKFLOW.md location
+itervox clear -workflow path/to/WORKFLOW.md ENG-42
+```
+
+---
+
+## `itervox --version` — Print version
+
+Prints the binary version, commit hash, and build date, then exits.
+
+```bash
+itervox --version
+# symphony 0.0.3 (commit: abc1234, built: 2025-03-15)
+```
+
+---
+
+## `itervox help` — Print usage
+
+Prints usage information and exits. All of the following are equivalent:
+
+```bash
+itervox help
+itervox --help
+itervox -help
+itervox -h
+```
+
+---
+
+## Environment variables
+
+### Tracker credentials
+
+| Variable | Required for | Description |
+|----------|-------------|-------------|
+| `LINEAR_API_KEY` | Linear tracker | Personal API key from your Linear workspace settings |
+| `GITHUB_TOKEN` | GitHub tracker | Personal access token (or fine-grained token) with `repo` scope |
+
+### Runtime options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SYMPHONY_DRY_RUN` | `""` | Set to `"1"` to enable dry-run mode. The orchestrator logs dispatch decisions but does **not** start agent workers. Useful for verifying configuration and dispatch logic without consuming API tokens. |
+| `SYMPHONY_API_TOKEN` | `""` | When set, enables bearer-token authentication on all `/api/` routes (except `/api/v1/health`). Requests must include the header `Authorization: Bearer <token>`. Recommended when binding the server to a non-loopback address (`server.host: 0.0.0.0`). |
+
+### Auto-loading
+
+Itervox loads environment variables automatically at startup from the first file found in this order:
+
+1. `.symphony/.env` (recommended — already gitignored by `itervox init`)
+2. `.env`
+
+Existing process environment variables are **never overwritten** by these files. Both files are optional; if neither exists the process environment is used as-is.
+
+---
+
+## Logging
+
+**Location:** `~/.symphony/logs/<tracker_kind>/<project_slug>/symphony.log`
+
+The path is derived from the `tracker.kind` and `tracker.project_slug` fields in `WORKFLOW.md`. You can override it with the `-logs-dir` flag.
+
+**Rotation:**
+
+| Setting | Value |
+|---------|-------|
+| Max file size | 10 MB |
+| Max backup files | 5 |
+| Compression | gzip |
+
+**Levels:**
+
+| Level | When active |
+|-------|-------------|
+| `INFO` | Default — startup events, worker lifecycle, errors |
+| `DEBUG` | With `-verbose` — includes agent subprocess output and detailed trace events |
+
+Logs are written simultaneously to stderr and the rotating file so you can tail both in real time.

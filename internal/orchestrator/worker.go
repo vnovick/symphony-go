@@ -80,6 +80,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// Detect open PR (best-effort). On success, use the PR branch so the worktree
 	// checks out the existing branch instead of creating a new one.
 	var prCtx *prdetector.PRContext
+	var detectedPRURL string // PR URL discovered during this run (pre-existing or newly created)
 	if !skipPRCheck {
 		prCtx, _ = prdetector.Detect(ctx, issue)
 		if prCtx != nil && prCtx.Branch == "" {
@@ -91,6 +92,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		if prCtx != nil {
 			branchName = prCtx.Branch
+			detectedPRURL = prCtx.URL
 			slog.Info("worker: open PR detected, using PR branch",
 				"issue_identifier", issue.Identifier, "branch", prCtx.Branch, "pr_url", prCtx.URL)
 			if o.logBuf != nil {
@@ -212,7 +214,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	var allTextBlocks []string                                  // accumulate all Claude text blocks for the final tracker comment
 	var cumulativeInput, cumulativeCached, cumulativeOutput int // accumulate tokens across turns for dashboard display
 	var prevResultText string                                   // detect repeated identical responses (Codex resume loop)
-	for turn := 1; turn <= maxTurns; turn++ {
+	startedAt := time.Now()
+	turn := 1
+	for ; turn <= maxTurns; turn++ {
 		// Enrich issue with comments before rendering the first-turn prompt.
 		if turn == 1 {
 			if detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID); err != nil {
@@ -223,13 +227,23 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 		}
 
-		// Render prompt
+		// Render prompt — reviewer workers use the reviewer_prompt template
+		// instead of the main WORKFLOW.md body.
 		var attemptPtr *int
 		if attempt > 0 {
 			a := attempt
 			attemptPtr = &a
 		}
-		renderedPrompt, err := prompt.Render(o.cfg.PromptTemplate, issue, attemptPtr)
+		o.cfgMu.RLock()
+		isReviewer := profileName != "" && profileName == o.cfg.Agent.ReviewerProfile
+		reviewerTmpl := o.cfg.Agent.ReviewerPrompt
+		o.cfgMu.RUnlock()
+
+		promptTemplate := o.cfg.PromptTemplate
+		if isReviewer && reviewerTmpl != "" {
+			promptTemplate = reviewerTmpl
+		}
+		renderedPrompt, err := prompt.Render(promptTemplate, issue, attemptPtr)
 		if err != nil {
 			slog.Warn("worker: prompt render failed",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
@@ -263,7 +277,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 		if profileName != "" {
 			if profile, ok := profilesSnap[profileName]; ok && profile.Prompt != "" {
-				renderedPrompt += "\n\n" + profile.Prompt
+				renderedPrompt += "\n\n" + prompt.RenderProfilePrompt(profile.Prompt, issue, attemptPtr)
 			}
 		}
 		// In teams mode, also append sub-agent roster context so the active backend
@@ -560,6 +574,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// pre-run guard (now the workspace is on the newly-created branch).
 	if wsPath != "" && prCtx == nil {
 		if prURL := workspace.FindOpenPRURL(ctx, wsPath); prURL != "" {
+			detectedPRURL = prURL
 			// Dedup: check if we already posted a PR comment for this URL.
 			prComment := fmt.Sprintf("🔗 Pull request created: %s", prURL)
 			alreadyPosted := false
@@ -696,6 +711,23 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
+	// Log a completion summary with token usage so it appears in the log file
+	// and stderr (charmbracelet/log). This is the main human-visible record of
+	// a successful run — includes turns, tokens, and elapsed time.
+	elapsed := time.Since(startedAt)
+	completionArgs := []any{
+		"issue_identifier", issue.Identifier,
+		"status", "succeeded",
+		"turns", turn - 1,
+		"input_tokens", cumulativeInput,
+		"output_tokens", cumulativeOutput,
+		"elapsed", elapsed.Round(time.Second).String(),
+	}
+	if detectedPRURL != "" {
+		completionArgs = append(completionArgs, "pr_url", detectedPRURL)
+	}
+	slog.Info("worker: completed", completionArgs...)
+
 	// Release the log buffer for this issue to free memory (after the completion
 	// state transition so any transition errors are visible in the TUI log pane).
 	if o.logBuf != nil {
@@ -704,7 +736,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	// Pass branchName so the auto-clear handler uses the actual worktree branch
 	// (which may be prCtx.Branch on a PR-continuation run, not issue.BranchName).
-	o.sendExitWithBranch(ctx, issue, attempt, TerminalSucceeded, nil, branchName)
+	o.sendExitWithBranch(ctx, issue, attempt, TerminalSucceeded, nil, branchName, detectedPRURL)
 }
 
 // hookLogFn returns a function suitable for workspace.RunHook's logFn parameter.
@@ -800,16 +832,17 @@ func (o *Orchestrator) runWorkerWithResume(ctx context.Context, issue domain.Iss
 }
 
 func (o *Orchestrator) sendExit(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error) {
-	o.sendExitWithBranch(ctx, issue, attempt, reason, err, "")
+	o.sendExitWithBranch(ctx, issue, attempt, reason, err, "", "")
 }
 
-func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string) {
+func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error, branchName string, prURL string) {
 	ev := OrchestratorEvent{
 		Type:    EventWorkerExited,
 		IssueID: issue.ID,
 		RunEntry: &RunEntry{
 			Issue:          issue,
 			BranchName:     branchName,
+			PRURL:          prURL,
 			TerminalReason: reason,
 			RetryAttempt:   &attempt,
 		},

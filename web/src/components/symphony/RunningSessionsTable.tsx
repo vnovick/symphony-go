@@ -13,9 +13,9 @@ import {
 } from '../../queries/issues';
 import { fmtMs, stateBadgeColor } from '../../utils/format';
 import Badge from '../ui/badge/Badge';
-import { EMPTY_PROFILE_LABEL } from '../../utils/format';
 import { EMPTY_RUNNING, EMPTY_PAUSED, EMPTY_PROFILES } from '../../utils/constants';
 import { SessionAccordion } from './SessionAccordion';
+import { AgentProfileSelector } from './selectors';
 const EMPTY_PAUSED_WITH_PR: Record<string, string> = {};
 
 
@@ -74,7 +74,6 @@ export default function RunningSessionsTable() {
       ),
     [issues],
   );
-
   const expandedId = useUIStore((s) => s.expandedRunningId);
   const setExpandedId = useUIStore((s) => s.setExpandedRunningId);
   const expandedPausedId = useUIStore((s) => s.expandedPausedId);
@@ -137,10 +136,11 @@ export default function RunningSessionsTable() {
           <div
             role="button"
             tabIndex={0}
+            aria-label={`Toggle details for ${row.identifier}`}
             onClick={() => { toggle(row.identifier); }}
             onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggle(row.identifier); }}
             className="grid items-center px-4 py-[14px] cursor-pointer transition-colors hover:bg-[var(--bg-soft)] select-none"
-            style={{ gridTemplateColumns: '24px 100px 80px 56px 1fr 72px auto', gap: '14px' }}
+            style={{ gridTemplateColumns: '24px 100px minmax(80px, auto) 56px 1fr 72px auto', gap: '14px' }}
           >
             {/* Chevron */}
             <span
@@ -158,18 +158,25 @@ export default function RunningSessionsTable() {
             <span
               role="button"
               tabIndex={0}
+              aria-label={`View details for ${row.identifier}`}
               className="font-mono text-sm font-semibold cursor-pointer hover:underline truncate text-theme-accent"
-              
               onClick={(e) => { e.stopPropagation(); setSelectedIdentifier(row.identifier); }}
               onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setSelectedIdentifier(row.identifier); } }}
             >
               {row.identifier}
             </span>
 
-            {/* State badge */}
-            <Badge color={stateBadgeColor(row.state)} size="sm">
-              {row.state}
-            </Badge>
+            {/* Kind + State badge */}
+            <div className="flex items-center gap-1 whitespace-nowrap">
+              {row.kind === 'reviewer' && (
+                <span className="rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase bg-purple-500/15 text-purple-400">
+                  Review
+                </span>
+              )}
+              <Badge color={stateBadgeColor(row.state)} size="sm">
+                {row.state}
+              </Badge>
+            </div>
 
             {/* Turn count */}
             <span className="text-sm text-theme-text-secondary">
@@ -245,6 +252,7 @@ export default function RunningSessionsTable() {
                   <div
                     role="button"
                     tabIndex={0}
+                    aria-label={`Toggle details for paused issue ${identifier}`}
                     onClick={() => { togglePaused(identifier); }}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') togglePaused(identifier); }}
                     className="flex flex-wrap items-center gap-2 px-4 py-3 cursor-pointer transition-colors hover:bg-[var(--bg-soft)]"
@@ -261,6 +269,7 @@ export default function RunningSessionsTable() {
                     <span
                       role="button"
                       tabIndex={0}
+                      aria-label={`View details for paused issue ${identifier}`}
                       className="font-mono text-sm font-semibold cursor-pointer hover:underline text-theme-warning"
                       onClick={(e) => { e.stopPropagation(); setSelectedIdentifier(identifier); }}
                       onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); setSelectedIdentifier(identifier); } }}
@@ -275,7 +284,7 @@ export default function RunningSessionsTable() {
                       </span>
                     )}
 
-                    {/* PR + profile badges */}
+                    {/* PR badge */}
                     <div className="flex items-center gap-2 ml-auto" onClick={(e) => { e.stopPropagation(); }}>
                       {prURL && (
                         <a
@@ -288,23 +297,15 @@ export default function RunningSessionsTable() {
                           PR
                         </a>
                       )}
-                      {availableProfiles.length > 0 && (
-                        <select
-                          value={profileMap[identifier] ?? ''}
-                          onChange={(e) => { setIssueProfileMutation.mutate({ identifier, profile: e.target.value }); }}
-                          onClick={(e) => { e.stopPropagation(); }}
-                          className="rounded border border-theme-line bg-theme-panel-strong text-theme-text px-1.5 py-0.5 text-[10px] focus:outline-none flex-shrink-0"
-                        >
-                          <option value="">{EMPTY_PROFILE_LABEL}</option>
-                          {availableProfiles.map((p) => (
-                            <option key={p} value={p}>{p}</option>
-                          ))}
-                        </select>
-                      )}
                     </div>
 
                     {/* Actions — wrap on mobile */}
-                    <div className="flex flex-shrink-0 gap-1.5 w-full sm:w-auto sm:ml-0 mt-1 sm:mt-0" onClick={(e) => { e.stopPropagation(); }}>
+                    <div className="flex flex-shrink-0 gap-1.5 w-full sm:w-auto sm:ml-0 mt-1 sm:mt-0 items-center" onClick={(e) => { e.stopPropagation(); }}>
+                      <AgentProfileSelector
+                        value={profileMap[identifier] ?? ''}
+                        availableProfiles={availableProfiles}
+                        onChange={(profile) => { setIssueProfileMutation.mutate({ identifier, profile }); }}
+                      />
                       <button
                         onClick={() => { resumeIssueMutation.mutate(identifier); }}
                         className="btn-action-resume inline-flex items-center rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs font-medium transition-all"

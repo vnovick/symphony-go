@@ -152,6 +152,37 @@ export function useSetIssueProfile() {
   });
 }
 
+export function useSetIssueBackend() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    onMutate: async ({ identifier, backend }: { identifier: string; backend: string }) => {
+      await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
+      const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
+      if (prevIssues) {
+        queryClient.setQueryData<TrackerIssue[]>(
+          ISSUES_KEY,
+          prevIssues.map((i) =>
+            i.identifier === identifier ? { ...i, agentBackend: backend || undefined } : i,
+          ),
+        );
+      }
+      return { prevIssues };
+    },
+    mutationFn: async ({ identifier, backend }: { identifier: string; backend: string }) => {
+      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/backend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backend }),
+      });
+      if (!res.ok) throw new Error(`setIssueBackend failed: ${String(res.status)}`);
+    },
+    onError: makeRollbackHandler(queryClient),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+    },
+  });
+}
+
 export function useCancelIssue() {
   const queryClient = useQueryClient();
   return useMutation({

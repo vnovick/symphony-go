@@ -690,6 +690,22 @@ func (s *Server) handleSetIssueProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "identifier": identifier, "profile": body.Profile})
 }
 
+// handleSetIssueBackend sets (or clears) the per-issue backend override.
+// POST /api/v1/issues/{identifier}/backend
+// Body: {"backend": "codex"} to set; {"backend": ""} to reset to default.
+func (s *Server) handleSetIssueBackend(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	var body struct {
+		Backend string `json:"backend"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	s.client.SetIssueBackend(identifier, body.Backend)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "identifier": identifier, "backend": body.Backend})
+}
+
 func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	var body struct {
@@ -763,6 +779,45 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
 	defs := s.client.ProfileDefs()
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": defs})
+}
+
+// handleListModels returns available models from the WORKFLOW.md config.
+// GET /api/v1/settings/models
+// handleGetReviewer returns the reviewer configuration.
+// GET /api/v1/settings/reviewer
+func (s *Server) handleGetReviewer(w http.ResponseWriter, _ *http.Request) {
+	profile, autoReview := s.client.ReviewerConfig()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"profile":     profile,
+		"auto_review": autoReview,
+	})
+}
+
+// handleSetReviewer updates the reviewer configuration.
+// PUT /api/v1/settings/reviewer
+// Body: {"profile": "reviewer", "auto_review": true}
+func (s *Server) handleSetReviewer(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Profile    string `json:"profile"`
+		AutoReview bool   `json:"auto_review"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if err := s.client.SetReviewerConfig(body.Profile, body.AutoReview); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleListModels(w http.ResponseWriter, _ *http.Request) {
+	models := s.client.AvailableModels()
+	if models == nil {
+		models = make(map[string][]ModelOption)
+	}
+	writeJSON(w, http.StatusOK, models)
 }
 
 // handleUpsertProfile creates or updates a named agent profile.
