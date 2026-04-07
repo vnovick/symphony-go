@@ -31,10 +31,22 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   expandedRunningId: null,
   expandedPausedId: null,
 
-  setDashboardViewMode: (dashboardViewMode) => set({ dashboardViewMode }),
-  setDashboardSearch: (dashboardSearch) => set({ dashboardSearch }),
-  setDashboardStateFilter: (dashboardStateFilter) => set({ dashboardStateFilter }),
-  setDashboardSearchVisible: (dashboardSearchVisible) => set({ dashboardSearchVisible }),
-  setExpandedRunningId: (expandedRunningId) => set({ expandedRunningId }),
-  setExpandedPausedId: (expandedPausedId) => set({ expandedPausedId }),
+  setDashboardViewMode: (dashboardViewMode) => {
+    set({ dashboardViewMode });
+  },
+  setDashboardSearch: (dashboardSearch) => {
+    set({ dashboardSearch });
+  },
+  setDashboardStateFilter: (dashboardStateFilter) => {
+    set({ dashboardStateFilter });
+  },
+  setDashboardSearchVisible: (dashboardSearchVisible) => {
+    set({ dashboardSearchVisible });
+  },
+  setExpandedRunningId: (expandedRunningId) => {
+    set({ expandedRunningId });
+  },
+  setExpandedPausedId: (expandedPausedId) => {
+    set({ expandedPausedId });
+  },
 }));

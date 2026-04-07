@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, startTransition } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useSymphonyStore } from '../store/symphonyStore';
+import { useItervoxStore } from '../store/itervoxStore';
 import { MobileMenuButton } from '../components/ui/MobileMenuButton';
 
 const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
-  const sseConnected = useSymphonyStore((s) => s.sseConnected);
-  const { running, paused, retrying, maxAgents, agentMode, hasSnapshot } = useSymphonyStore(
+  const sseConnected = useItervoxStore((s) => s.sseConnected);
+  const { running, paused, retrying, maxAgents, agentMode, hasSnapshot } = useItervoxStore(
     useShallow((s) => ({
       running: s.snapshot?.running.length ?? 0,
       paused: s.snapshot?.paused.length ?? 0,
@@ -22,7 +22,9 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
   // After 6 s without a snapshot, flip from "Connecting" to "Disconnected"
   useEffect(() => {
     if (hasSnapshot || sseConnected) {
-      setTimedOut(false);
+      startTransition(() => {
+        setTimedOut(false);
+      });
       return;
     }
     const t = setTimeout(() => {
@@ -42,9 +44,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
         : 'Connecting\u2026';
 
   return (
-    <header
-      className="sticky top-0 z-30 flex items-center gap-3 px-4 py-2 border-b text-sm bg-theme-bg-soft border-theme-line"
-    >
+    <header className="bg-theme-bg-soft border-theme-line sticky top-0 z-30 flex items-center gap-3 border-b px-4 py-2 text-sm">
       {/* Mobile menu button */}
       {onMenuClick && <MobileMenuButton onClick={onMenuClick} />}
 
@@ -52,9 +52,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
       <span className="flex items-center gap-2">
         <span className="relative flex h-2.5 w-2.5">
           {running > 0 && (
-            <span
-              className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 bg-theme-success"
-            />
+            <span className="bg-theme-success absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" />
           )}
           <span
             className={`relative inline-flex h-2.5 w-2.5 rounded-full ${sseConnected ? 'bg-theme-success' : 'bg-theme-danger'}`}
@@ -64,39 +62,33 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
       </span>
 
       {/* Orchestrator state */}
-      <span
-        className="font-mono text-xs px-2 py-0.5 rounded bg-theme-bg-elevated text-theme-text-secondary"
-      >
+      <span className="bg-theme-bg-elevated text-theme-text-secondary rounded px-2 py-0.5 font-mono text-xs">
         {orchestratorState}
       </span>
 
       {/* Running count */}
       {running > 0 && (
-        <span className="flex items-center gap-1.5 text-theme-success">
+        <span className="text-theme-success flex items-center gap-1.5">
           <strong>{running}</strong>
           <span className="text-theme-text-secondary">running</span>
         </span>
       )}
 
       {paused > 0 && (
-        <span
-          className="text-xs px-2 py-0.5 rounded-full bg-theme-danger-soft text-theme-danger"
-        >
+        <span className="bg-theme-danger-soft text-theme-danger rounded-full px-2 py-0.5 text-xs">
           {paused} paused
         </span>
       )}
 
       {retrying > 0 && (
-        <span
-          className="text-xs px-2 py-0.5 rounded-full bg-theme-warning-soft text-theme-warning"
-        >
+        <span className="bg-theme-warning-soft text-theme-warning rounded-full px-2 py-0.5 text-xs">
           ↻ {retrying} retrying
         </span>
       )}
 
       {agentMode === 'subagents' && (
         <span
-          className="text-xs px-2 py-0.5 rounded-full"
+          className="rounded-full px-2 py-0.5 text-xs"
           style={{ background: 'var(--accent-soft)', color: 'var(--purple)' }}
         >
           sub-agents
@@ -105,34 +97,23 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
 
       {/* Capacity bar — hidden on mobile */}
       {maxAgents > 0 && (
-        <span className="hidden md:flex items-center gap-2 ml-2">
-          <span className="text-xs text-theme-muted">
-            capacity
-          </span>
-          <span
-            className="h-1.5 w-20 overflow-hidden rounded-full bg-theme-bg-elevated"
-          >
+        <span className="ml-2 hidden items-center gap-2 md:flex">
+          <span className="text-theme-muted text-xs">capacity</span>
+          <span className="bg-theme-bg-elevated h-1.5 w-20 overflow-hidden rounded-full">
             <span
-              className="h-full rounded-full transition-all block"
+              className="block h-full rounded-full transition-all"
               style={{
                 width: `${String(pct)}%`,
                 background:
-                  pct >= 90
-                    ? 'var(--danger)'
-                    : pct >= 60
-                      ? 'var(--warning)'
-                      : 'var(--success)',
+                  pct >= 90 ? 'var(--danger)' : pct >= 60 ? 'var(--warning)' : 'var(--success)',
               }}
             />
           </span>
-          <span
-            className="font-mono text-xs text-theme-text-secondary"
-          >
+          <span className="text-theme-text-secondary font-mono text-xs">
             {running}/{maxAgents}
           </span>
         </span>
       )}
-
     </header>
   );
 };

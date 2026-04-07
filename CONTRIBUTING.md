@@ -1,4 +1,4 @@
-# Contributing to Symphony
+# Contributing to Itervox
 
 Thank you for your interest in contributing. This document covers how to get the project running locally, how the codebase is structured, and the conventions used throughout.
 
@@ -16,8 +16,8 @@ Thank you for your interest in contributing. This document covers how to get the
 ### Clone and build
 
 ```bash
-git clone https://github.com/vnovick/symphony-go
-cd symphony-go
+git clone https://github.com/vnovick/itervox
+cd itervox
 lefthook install        # wires pre-commit and pre-push hooks
 go build ./...
 go test -race ./...
@@ -27,16 +27,16 @@ All tests should pass with no external dependencies. Tests that hit real APIs ar
 
 ### Frontend setup (web dashboard)
 
-The web dashboard is a Vite app that proxies API calls to a running `symphony` process. To work on the frontend you need two things running at the same time:
+The web dashboard is a Vite app that proxies API calls to a running `itervox` process. To work on the frontend you need two things running at the same time:
 
 **Terminal 1 — build and run the Go binary from a project that has a `WORKFLOW.md`:**
 
 ```bash
-# In symphony-go — build the binary
-go build -o symphony ./cmd/symphony
+# In itervox — build the binary
+go build -o itervox ./cmd/itervox
 
 # In your project repo (must have a WORKFLOW.md with server.port set)
-/path/to/symphony-go/symphony   # picks up WORKFLOW.md in the current directory automatically
+/path/to/itervox/itervox   # picks up WORKFLOW.md in the current directory automatically
 ```
 
 Make sure `server.port` is set in that project's `WORKFLOW.md`:
@@ -81,15 +81,15 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to localhost:8090
 | `make lint-go` | `golangci-lint run ./...` |
 | `make web-build` | `pnpm install --frozen-lockfile && pnpm build` in `web/` |
 | `make web-test` | `pnpm install --frozen-lockfile && pnpm test` in `web/` |
-| `make clean` | Remove `symphony` binary and coverage files |
+| `make clean` | Remove `itervox` binary and coverage files |
 
 ---
 
 ## Project Structure
 
 ```
-symphony-go/
-├── cmd/symphony/         # CLI entry point — wires all packages together
+itervox/
+├── cmd/itervox/         # CLI entry point — wires all packages together
 │   └── main.go
 ├── internal/
 │   ├── workflow/         # WORKFLOW.md parser, content-hash file watcher, and `PatchIntField` for in-place field updates
@@ -128,7 +128,7 @@ workflow
                     └── agent
                           └── orchestrator
                                 └── server
-                                      └── cmd/symphony
+                                      └── cmd/itervox
 ```
 
 ---
@@ -377,17 +377,15 @@ test(workspace): cover symlink escape rejection
 
 Please include:
 
-- Symphony version (`symphony --version` or the commit hash)
+- itervox version (`itervox --version` or the commit hash)
 - Tracker kind (`linear` or `github`)
 - A minimal `WORKFLOW.md` that reproduces the problem (redact API keys)
 - The full error output or log lines
 
-Open issues at: https://github.com/vnovick/symphony-go/issues
+Open issues at: https://github.com/vnovick/itervox/issues
 
 ---
 
 ## Spec Conformance
 
-Symphony aims for full conformance with the [Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md). The design document at `docs/superpowers/specs/2026-03-12-symphony-go-design.md` maps every spec section to the Go implementation. If you're adding a feature or fixing spec-divergent behaviour, note the relevant spec section in your PR.
-
-The validation matrix in §17 of the spec maps directly to test cases in each package. New spec-required behaviours should have a corresponding test named after the behaviour they verify.
+itervox is built on top of full conformance with the [Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md). 

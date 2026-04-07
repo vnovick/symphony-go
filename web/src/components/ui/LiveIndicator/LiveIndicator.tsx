@@ -29,11 +29,7 @@ export function LiveIndicator({ status, size = 'md', label }: LiveIndicatorProps
   const showPulse = PULSE_STATUS.has(status);
 
   return (
-    <span
-      className="inline-flex items-center gap-1.5"
-      data-status={status}
-      data-size={size}
-    >
+    <span className="inline-flex items-center gap-1.5" data-status={status} data-size={size}>
       <span className={`relative flex ${sizeClass}`}>
         {showPulse && (
           <span

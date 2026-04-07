@@ -23,7 +23,11 @@ describe('toTermLine', () => {
 
   it('appends detail info for action events when detail is present', () => {
     const entryWithDetail: IssueLogEntry = {
-      level: 'INFO', event: 'action', message: 'Bash — sleep 10', tool: 'Bash', time: '12:00:00',
+      level: 'INFO',
+      event: 'action',
+      message: 'Bash — sleep 10',
+      tool: 'Bash',
+      time: '12:00:00',
       detail: JSON.stringify({ exit_code: 0, output_size: 512 }),
     };
     const line = toTermLine(entryWithDetail);
@@ -32,7 +36,11 @@ describe('toTermLine', () => {
 
   it('omits detail when status is success', () => {
     const entryWithDetail: IssueLogEntry = {
-      level: 'INFO', event: 'action', message: 'Write — file.ts', tool: 'Write', time: '12:00:00',
+      level: 'INFO',
+      event: 'action',
+      message: 'Write — file.ts',
+      tool: 'Write',
+      time: '12:00:00',
       detail: JSON.stringify({ exit_code: 0, status: 'success' }),
     };
     const line = toTermLine(entryWithDetail);

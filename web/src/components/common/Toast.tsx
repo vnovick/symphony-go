@@ -1,9 +1,23 @@
 import { useToastStore } from '../../store/toastStore';
 
 function toastStyle(variant: string | undefined) {
-  if (variant === 'error') return { borderColor: 'var(--danger-soft)', background: 'var(--danger-soft)', color: 'var(--danger)' };
-  if (variant === 'success') return { borderColor: 'var(--success-soft)', background: 'var(--success-soft)', color: 'var(--success)' };
-  return { borderColor: 'var(--accent-soft)', background: 'var(--accent-soft)', color: 'var(--accent-strong)' };
+  if (variant === 'error')
+    return {
+      borderColor: 'var(--danger-soft)',
+      background: 'var(--danger-soft)',
+      color: 'var(--danger)',
+    };
+  if (variant === 'success')
+    return {
+      borderColor: 'var(--success-soft)',
+      background: 'var(--success-soft)',
+      color: 'var(--success)',
+    };
+  return {
+    borderColor: 'var(--accent-soft)',
+    background: 'var(--accent-soft)',
+    color: 'var(--accent-strong)',
+  };
 }
 
 /** Renders auto-dismissing toast notifications anchored to the bottom-right corner. */
@@ -19,12 +33,14 @@ export default function Toast() {
         <div
           key={t.id}
           role="alert"
-          className="flex min-w-[240px] max-w-sm items-start gap-3 rounded-[var(--radius-md)] border px-4 py-3 text-sm shadow-lg"
+          className="flex max-w-sm min-w-[240px] items-start gap-3 rounded-[var(--radius-md)] border px-4 py-3 text-sm shadow-lg"
           style={toastStyle(t.variant)}
         >
           <span className="flex-1">{t.message}</span>
           <button
-            onClick={() => { removeToast(t.id); }}
+            onClick={() => {
+              removeToast(t.id);
+            }}
             aria-label="Dismiss notification"
             className="shrink-0 opacity-60 transition-opacity hover:opacity-100"
           >

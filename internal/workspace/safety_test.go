@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/workspace"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 func TestSanitizeKeyAlphanumericPassthrough(t *testing.T) {

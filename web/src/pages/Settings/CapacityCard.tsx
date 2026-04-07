@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { useSymphonyStore } from '../../store/symphonyStore';
+import { useItervoxStore } from '../../store/itervoxStore';
 import { useSettingsActions } from '../../hooks/useSettingsActions';
 
 export function CapacityCard() {
-  const maxConcurrentAgents = useSymphonyStore((s) => s.snapshot?.maxConcurrentAgents ?? 0);
+  const maxConcurrentAgents = useItervoxStore((s) => s.snapshot?.maxConcurrentAgents ?? 0);
   const { bumpWorkers } = useSettingsActions();
   const [adjusting, setAdjusting] = useState(false);
 
@@ -15,21 +15,19 @@ export function CapacityCard() {
   };
 
   return (
-    <div
-      className="rounded-lg border p-4 border-theme-line bg-theme-panel"
-    >
+    <div className="border-theme-line bg-theme-panel rounded-lg border p-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm font-medium text-theme-text">
-            Max concurrent agents
-          </p>
-          <p className="mt-0.5 text-xs text-theme-muted">
+          <p className="text-theme-text text-sm font-medium">Max concurrent agents</p>
+          <p className="text-theme-muted mt-0.5 text-xs">
             Maximum number of agents that can run at the same time across all hosts.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+        <div className="ml-4 flex flex-shrink-0 items-center gap-2">
           <button
-            onClick={() => { void handleBump(-1); }}
+            onClick={() => {
+              void handleBump(-1);
+            }}
             disabled={adjusting || maxConcurrentAgents <= 1}
             aria-label="Decrease max concurrent agents"
             style={{
@@ -51,13 +49,15 @@ export function CapacityCard() {
             −
           </button>
           <span
-            className="font-mono text-base font-semibold tabular-nums text-theme-text"
+            className="text-theme-text font-mono text-base font-semibold tabular-nums"
             style={{ minWidth: 24, textAlign: 'center' }}
           >
             {maxConcurrentAgents}
           </span>
           <button
-            onClick={() => { void handleBump(1); }}
+            onClick={() => {
+              void handleBump(1);
+            }}
             disabled={adjusting}
             aria-label="Increase max concurrent agents"
             style={{

@@ -1,13 +1,13 @@
 ---
 tracker:
   kind: github
-  api_key: $GITHUB_TOKEN            # export GITHUB_TOKEN=ghp_...
-  project_slug: owner/repo          # e.g. vnovick/StoriesAI
+  api_key: $GITHUB_TOKEN # export GITHUB_TOKEN=ghp_...
+  project_slug: owner/repo # e.g. vnovick/StoriesAI
   # GitHub uses labels to simulate workflow states.
   # Create labels with these exact names in your repo settings.
-  active_states: ["todo"]           # label names (lowercase)
+  active_states: ["todo"] # label names (lowercase)
   terminal_states: ["done", "cancelled"]
-  completion_state: "in-review"     # label added when PR is created
+  completion_state: "in-review" # label added when PR is created
 
 polling:
   interval_ms: 60000
@@ -21,7 +21,7 @@ agent:
   # backend: codex                  # optional when command is a wrapper script
 
 workspace:
-  root: ~/.symphony/workspaces/my-project
+  root: ~/.itervox/workspaces/my-project
 
 hooks:
   after_create: |
@@ -48,6 +48,7 @@ You are an expert engineer working on the codebase.
 Issue URL: {{ issue.url }}
 
 {% if issue.comments %}
+
 ## Comments
 
 {% for comment in issue.comments %}

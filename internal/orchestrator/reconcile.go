@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/logbuffer"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // ReconcileStalls checks all running sessions for stall timeout violations.
@@ -77,7 +77,8 @@ func ReconcileStalls(state State, cfg *config.Config, now time.Time, events chan
 			}
 			select {
 			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id, RunEntry: &stalledEntry}:
-			default:
+			case <-time.After(100 * time.Millisecond):
+				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
 		}
 	}
@@ -131,7 +132,8 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 			delete(state.Claimed, id)
 			select {
 			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id}:
-			default:
+			case <-time.After(100 * time.Millisecond):
+				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
 			continue
 		}
@@ -156,7 +158,8 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 					TerminalReason: TerminalCanceledByReconciliation,
 				},
 			}:
-			default:
+			case <-time.After(100 * time.Millisecond):
+				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
 		} else if isActiveState(refreshedState, state) {
 			entry.Issue.State = refreshedState
@@ -174,10 +177,10 @@ func ReconcileTrackerStates(ctx context.Context, state State, tr tracker.Tracker
 			delete(state.Claimed, id)
 			select {
 			case events <- OrchestratorEvent{Type: EventWorkerExited, IssueID: id}:
-			default:
+			case <-time.After(100 * time.Millisecond):
+				slog.Warn("orchestrator: event send timed out in reconcile", "issue_id", id)
 			}
 		}
 	}
 	return state
 }
-

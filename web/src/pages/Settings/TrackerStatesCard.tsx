@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { SAVE_OK_BANNER_MS } from '../../utils/timings';
-import { TagInput } from '../../components/symphony/TagInput';
+import { TagInput } from '../../components/itervox/TagInput';
 
 // ─── Zod schema ──────────────────────────────────────────────────────────────
 
@@ -13,10 +13,10 @@ export const trackerStatesSchema = z
     terminalStates: z.array(z.string().min(1)),
     completionState: z.string(),
   })
-  .refine(
-    (d) => !d.activeStates.some((s) => d.terminalStates.includes(s)),
-    { message: 'Active and terminal states must not overlap.', path: ['terminalStates'] },
-  );
+  .refine((d) => !d.activeStates.some((s) => d.terminalStates.includes(s)), {
+    message: 'Active and terminal states must not overlap.',
+    path: ['terminalStates'],
+  });
 
 export type TrackerStatesFormValues = z.infer<typeof trackerStatesSchema>;
 
@@ -93,32 +93,35 @@ export function TrackerStatesCard({
   };
 
   return (
-    <div
-      className="overflow-hidden rounded-[var(--radius-md)] border border-theme-line bg-theme-bg-elevated"
-    >
-      <div className="border-b px-5 py-4 border-theme-line bg-theme-panel-strong">
-        <h2 className="text-sm font-semibold text-theme-text">
-          Tracker States
-        </h2>
-        <p className="mt-0.5 text-xs text-theme-text-secondary">
+    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
+      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
+        <h2 className="text-theme-text text-sm font-semibold">Tracker States</h2>
+        <p className="text-theme-text-secondary mt-0.5 text-xs">
           Configure which states the orchestrator picks up (Active), marks as done (Terminal), and
           transitions to on completion. Changes are written back to WORKFLOW.md.
         </p>
       </div>
 
-      <form onSubmit={(e) => { void handleSubmit(doSubmit)(e); }} className="space-y-5 px-5 py-5">
+      <form
+        onSubmit={(e) => {
+          void handleSubmit(doSubmit)(e);
+        }}
+        className="space-y-5 px-5 py-5"
+      >
         <div>
           <label className="mb-2 block text-xs font-medium tracking-wider uppercase">
             Active States
           </label>
           <TagInput
             chips={activeStates}
-            onChange={(chips) => { setValue('activeStates', chips, { shouldValidate: true }); }}
+            onChange={(chips) => {
+              setValue('activeStates', chips, { shouldValidate: true });
+            }}
             chipClassName="bg-[var(--accent-soft)] text-[var(--accent-strong)]"
             addButtonClassName="bg-[var(--accent-soft)] text-[var(--accent-strong)] hover:opacity-80"
           />
           {errors.activeStates && (
-            <p role="alert" className="mt-1 text-xs text-theme-danger">
+            <p role="alert" className="text-theme-danger mt-1 text-xs">
               {errors.activeStates.message}
             </p>
           )}
@@ -130,12 +133,14 @@ export function TrackerStatesCard({
           </label>
           <TagInput
             chips={terminalStates}
-            onChange={(chips) => { setValue('terminalStates', chips, { shouldValidate: true }); }}
+            onChange={(chips) => {
+              setValue('terminalStates', chips, { shouldValidate: true });
+            }}
             chipClassName="bg-[var(--bg-soft)] text-[var(--text-secondary)]"
             addButtonClassName="bg-[var(--bg-soft)] text-[var(--text-secondary)] hover:opacity-80"
           />
           {errors.terminalStates && (
-            <p role="alert" className="mt-1 text-xs text-theme-danger">
+            <p role="alert" className="text-theme-danger mt-1 text-xs">
               {errors.terminalStates.message}
             </p>
           )}
@@ -148,10 +153,10 @@ export function TrackerStatesCard({
           <input
             type="text"
             placeholder="e.g. In Review (leave empty to skip)"
-            className="w-64 rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none border-theme-line bg-theme-panel-strong text-theme-text"
+            className="border-theme-line bg-theme-panel-strong text-theme-text w-64 rounded-[var(--radius-sm)] border px-3 py-2 text-[13px] focus:outline-none"
             {...register('completionState')}
           />
-          <p className="mt-1 text-xs text-theme-muted">
+          <p className="text-theme-muted mt-1 text-xs">
             The state the agent moves an issue to when it finishes successfully. Has to be 1:1 with
             a tracker state.
           </p>
@@ -161,20 +166,12 @@ export function TrackerStatesCard({
           <button
             type="submit"
             disabled={isSubmitting}
-            className="rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 bg-theme-accent"
+            className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
           >
             {isSubmitting ? 'Saving…' : 'Save Changes'}
           </button>
-          {saveOk && (
-            <span className="text-sm text-theme-success">
-              Saved successfully.
-            </span>
-          )}
-          {saveError && (
-            <span className="text-sm text-theme-danger">
-              {saveError}
-            </span>
-          )}
+          {saveOk && <span className="text-theme-success text-sm">Saved successfully.</span>}
+          {saveError && <span className="text-theme-danger text-sm">{saveError}</span>}
         </div>
       </form>
     </div>

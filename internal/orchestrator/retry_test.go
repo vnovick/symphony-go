@@ -7,10 +7,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 func TestBackoffMsContinuation(t *testing.T) {

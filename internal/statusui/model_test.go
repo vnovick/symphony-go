@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/server"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/server"
 )
 
 // logLine builds a JSON log buffer line matching the format written by formatBufLine.
@@ -443,12 +443,12 @@ func TestBuildNavItems_MultipleSessions(t *testing.T) {
 func TestToolStyle_DoesNotPanic(t *testing.T) {
 	// toolStyle is called during every TUI render; verify it handles all categories.
 	names := []string{
-		"bash", "shell", "execute", "sh",          // amber — shell
-		"read", "write", "edit", "glob", "ls",     // green — file
-		"webfetch", "fetch", "http", "navigate",   // cyan — web
-		"task", "agent", "dispatch", "subagent",   // purple — AI orchestration
-		"grep", "search", "find",                  // sky — search
-		"unknown_tool",                            // muted — default
+		"bash", "shell", "execute", "sh", // amber — shell
+		"read", "write", "edit", "glob", "ls", // green — file
+		"webfetch", "fetch", "http", "navigate", // cyan — web
+		"task", "agent", "dispatch", "subagent", // purple — AI orchestration
+		"grep", "search", "find", // sky — search
+		"unknown_tool", // muted — default
 	}
 	for _, name := range names {
 		assert.NotPanics(t, func() {
@@ -497,4 +497,3 @@ func TestIsBacklogState_EmptyConfig(t *testing.T) {
 	m := Model{cfg: Config{}}
 	assert.False(t, m.isBacklogState("Backlog"))
 }
-

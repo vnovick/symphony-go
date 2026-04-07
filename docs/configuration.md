@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Symphony is configured via a `WORKFLOW.md` file in your project root (or wherever you point `--workflow`). The file contains a YAML front matter block followed by a free-form agent prompt.
+Itervox is configured via a `WORKFLOW.md` file in your project root (or wherever you point `--workflow`). The file contains a YAML front matter block followed by a free-form agent prompt.
 
 ## File format
 
@@ -43,7 +43,7 @@ and passed to the agent on every turn.
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `command` | string | no | `claude` | The agent command to run (e.g. `claude`, `/path/to/agent`) |
-| `backend` | string | no | `""` | Explicit backend override when `command` is a wrapper script or alias. Accepted values: `claude`, `codex`. When empty, Symphony infers the backend from the command name. |
+| `backend` | string | no | `""` | Explicit backend override when `command` is a wrapper script or alias. Accepted values: `claude`, `codex`. When empty, Itervox infers the backend from the command name. |
 | `max_concurrent_agents` | int | no | `10` | Maximum number of issues processed in parallel |
 | `max_concurrent_agents_by_state` | map[string]int | no | `{}` | Per-state concurrency caps. State keys are normalized to lowercase. Example: `{"in progress": 3}` |
 | `max_turns` | int | no | `20` | Maximum agent turns per issue before aborting |
@@ -116,14 +116,14 @@ server:
 
 ```yaml
 workspace:
-  root: ~/.symphony/workspaces   # default
+  root: ~/.itervox/workspaces   # default
   auto_clear_workspace: false    # set true to delete workspace after task succeeds
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | `~/.symphony/workspaces` | Root directory for per-issue workspaces. Supports `~` and `$ENV_VAR` expansion. |
-| `auto_clear_workspace` | bool | `false` | When `true`, the workspace directory is deleted after a task reaches the completion state. Togglable at runtime from the Settings page without restarting Symphony. |
+| `root` | string | `~/.itervox/workspaces` | Root directory for per-issue workspaces. Supports `~` and `$ENV_VAR` expansion. |
+| `auto_clear_workspace` | bool | `false` | When `true`, the workspace directory is deleted after a task reaches the completion state. Togglable at runtime from the Settings page without restarting Itervox. |
 
 Each issue gets an isolated subdirectory under `root` that persists across runs.
 

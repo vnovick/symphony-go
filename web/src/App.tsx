@@ -1,12 +1,12 @@
 import { BrowserRouter as Router, Routes, Route, Outlet } from 'react-router';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useSymphonySSE } from './hooks/useSymphonySSE';
+import { useItervoxSSE } from './hooks/useItervoxSSE';
 import { useLogStream } from './hooks/useLogStream';
-import { useSymphonyStore } from './store/symphonyStore';
+import { useItervoxStore } from './store/itervoxStore';
 import { ISSUES_KEY } from './queries/issues';
 import { logIdentifiersKey } from './queries/logs';
-import IssueDetailSlide from './components/symphony/IssueDetailSlide';
+import IssueDetailSlide from './components/itervox/IssueDetailSlide';
 import Toast from './components/common/Toast';
 import { PageErrorBoundary } from './components/common/PageErrorBoundary';
 import { NavLink } from './components/layout/NavLink';
@@ -24,18 +24,16 @@ const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
 function PageLoader() {
   return (
     <div className="flex h-64 items-center justify-center">
-      <div
-        className="h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent"
-      />
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent" />
     </div>
   );
 }
 
 const NAV_ITEMS = [
-  { to: '/',        icon: '◫', label: 'Dashboard' },
-  { to: '/timeline',icon: '◷', label: 'Timeline'  },
-  { to: '/logs',    icon: '⌨', label: 'Logs'      },
-  { to: '/settings',icon: '⚙', label: 'Settings'  },
+  { to: '/', icon: '◫', label: 'Dashboard' },
+  { to: '/timeline', icon: '◷', label: 'Timeline' },
+  { to: '/logs', icon: '⌨', label: 'Logs' },
+  { to: '/settings', icon: '⚙', label: 'Settings' },
 ] as const;
 
 function SidebarContent() {
@@ -43,15 +41,15 @@ function SidebarContent() {
     <>
       {/* Logo mark */}
       <div
-        className="w-10 h-10 rounded-[var(--radius-md)] mb-2 flex items-center justify-center text-white font-bold text-base"
+        className="mb-2 flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] text-base font-bold text-white"
         style={{ background: 'var(--gradient-accent)', boxShadow: 'var(--shadow-glow)' }}
-        aria-label="Symphony"
+        aria-label="Itervox"
       >
         S
       </div>
 
       {/* Nav links */}
-      <nav className="flex flex-col gap-1 flex-1">
+      <nav className="flex flex-1 flex-col gap-1">
         {NAV_ITEMS.map((item) => (
           <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />
         ))}
@@ -69,7 +67,9 @@ function AppShell() {
 
   useFocusTrap(drawerRef, mobileNavOpen);
 
-  const closeMobileNav = useCallback(() => { setMobileNavOpen(false); }, []);
+  const closeMobileNav = useCallback(() => {
+    setMobileNavOpen(false);
+  }, []);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -79,15 +79,15 @@ function AppShell() {
       }
     };
     document.addEventListener('keydown', handleKeyDown);
-    return () => { document.removeEventListener('keydown', handleKeyDown); };
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
   }, [mobileNavOpen, closeMobileNav]);
 
   return (
-    <div className="min-h-screen flex">
+    <div className="flex min-h-screen">
       {/* Desktop sidebar — hidden on mobile */}
-      <aside
-        className="hidden md:flex fixed left-0 top-0 bottom-0 w-16 flex-col items-center py-4 gap-2 border-r z-40 bg-theme-bg-soft border-theme-line"
-      >
+      <aside className="bg-theme-bg-soft border-theme-line fixed top-0 bottom-0 left-0 z-40 hidden w-16 flex-col items-center gap-2 border-r py-4 md:flex">
         <SidebarContent />
       </aside>
 
@@ -97,8 +97,8 @@ function AppShell() {
         role="dialog"
         aria-modal="true"
         aria-label="Navigation"
-        className={`md:hidden fixed inset-0 z-50 transition-opacity duration-200 ${
-          mobileNavOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        className={`fixed inset-0 z-50 transition-opacity duration-200 md:hidden ${
+          mobileNavOpen ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'
         }`}
       >
         <div
@@ -108,10 +108,12 @@ function AppShell() {
           role="button"
           tabIndex={0}
           onClick={closeMobileNav}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') closeMobileNav(); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') closeMobileNav();
+          }}
         />
         <aside
-          className={`absolute left-0 top-0 bottom-0 w-16 flex flex-col items-center py-4 gap-2 border-r bg-theme-bg-soft border-theme-line transition-transform duration-200 ${
+          className={`bg-theme-bg-soft border-theme-line absolute top-0 bottom-0 left-0 flex w-16 flex-col items-center gap-2 border-r py-4 transition-transform duration-200 ${
             mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
           }`}
         >
@@ -119,8 +121,12 @@ function AppShell() {
         </aside>
       </div>
 
-      <main className="md:ml-16 flex-1 min-w-0 flex flex-col">
-        <AppHeader onMenuClick={() => { setMobileNavOpen(true); }} />
+      <main className="flex min-w-0 flex-1 flex-col md:ml-16">
+        <AppHeader
+          onMenuClick={() => {
+            setMobileNavOpen(true);
+          }}
+        />
         <div className="flex-1 p-3 md:p-6">
           <Outlet />
         </div>
@@ -139,7 +145,7 @@ function useSnapshotInvalidation() {
   const queryClient = useQueryClient();
   // Subscribe to a minimal derived value to avoid invalidating on every SSE tick.
   // The fingerprint only changes when the count of active sessions changes.
-  const fingerprint = useSymphonyStore((s) => {
+  const fingerprint = useItervoxStore((s) => {
     const snap = s.snapshot;
     if (!snap) return null;
     return `${String(snap.running.length)}:${String(snap.paused.length)}:${String(snap.retrying.length)}`;
@@ -157,12 +163,12 @@ function useSnapshotInvalidation() {
 }
 
 function AppWithSSE() {
-  useSymphonySSE();
+  useItervoxSSE();
   useLogStream();
   useSnapshotInvalidation();
   useMultiTabWarning();
 
-  const refreshSnapshot = useSymphonyStore((s) => s.refreshSnapshot);
+  const refreshSnapshot = useItervoxStore((s) => s.refreshSnapshot);
   useEffect(() => {
     void refreshSnapshot();
   }, [refreshSnapshot]);

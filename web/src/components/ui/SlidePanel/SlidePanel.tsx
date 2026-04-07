@@ -3,7 +3,7 @@ import { useEffect, useId, type ReactNode } from 'react';
 type Direction = 'left' | 'right' | 'bottom';
 
 interface SlidePanelProps {
-  open: boolean;
+  isOpen: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
@@ -16,29 +16,37 @@ const PANEL_CLASS: Record<Direction, string> = {
   bottom: 'inset-x-0 bottom-0 h-auto max-h-[90vh]',
 };
 
-export function SlidePanel({ open, onClose, title, children, direction = 'right' }: SlidePanelProps) {
+export function SlidePanel({
+  isOpen,
+  onClose,
+  title,
+  children,
+  direction = 'right',
+}: SlidePanelProps) {
   const titleId = useId();
 
   useEffect(() => {
-    if (!open) return;
+    if (!isOpen) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
-  }, [open, onClose]);
+    return () => {
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [isOpen, onClose]);
 
   // Lock body scroll while open
   useEffect(() => {
-    if (!open) return;
+    if (!isOpen) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = prev;
     };
-  }, [open]);
+  }, [isOpen]);
 
-  if (!open) return null;
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex">
@@ -55,23 +63,21 @@ export function SlidePanel({ open, onClose, title, children, direction = 'right'
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className={`absolute flex flex-col overflow-hidden ${PANEL_CLASS[direction]} bg-theme-panel border-l border-theme-line`}
+        className={`absolute flex flex-col overflow-hidden ${PANEL_CLASS[direction]} bg-theme-panel border-theme-line border-l`}
       >
-        <div
-          className="flex items-center justify-between px-4 py-3 border-b border-theme-line"
-        >
-          <h2 id={titleId} className="font-semibold text-theme-text">
+        <div className="border-theme-line flex items-center justify-between border-b px-4 py-3">
+          <h2 id={titleId} className="text-theme-text font-semibold">
             {title}
           </h2>
           <button
             onClick={onClose}
             aria-label="Close panel"
-            className="flex items-center justify-center w-8 h-8 rounded-lg transition-colors text-theme-text-secondary"
+            className="text-theme-text-secondary flex h-8 w-8 items-center justify-center rounded-lg transition-colors"
           >
             ✕
           </button>
         </div>
-        <div className="flex-1 min-h-0 flex flex-col">{children}</div>
+        <div className="flex min-h-0 flex-1 flex-col">{children}</div>
       </div>
     </div>
   );

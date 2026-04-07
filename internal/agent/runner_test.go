@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/agent/agenttest"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/agent/agenttest"
 )
 
 func TestRunTurnFirstTurnBuildsPromptFlag(t *testing.T) {
@@ -79,10 +79,10 @@ func TestRunTurnTokensAccumulated(t *testing.T) {
 
 func TestApplyEventSystem(t *testing.T) {
 	tests := []struct {
-		name      string
-		initial   agent.TurnResult
-		ev        agent.StreamEvent
-		wantSID   string
+		name    string
+		initial agent.TurnResult
+		ev      agent.StreamEvent
+		wantSID string
 	}{
 		{
 			name:    "sets SessionID when empty",
@@ -107,12 +107,12 @@ func TestApplyEventSystem(t *testing.T) {
 
 func TestApplyEventAssistantTokenAccumulation(t *testing.T) {
 	tests := []struct {
-		name              string
-		events            []agent.StreamEvent
-		wantInput         int
-		wantCachedInput   int
-		wantOutput        int
-		wantTotal         int
+		name            string
+		events          []agent.StreamEvent
+		wantInput       int
+		wantCachedInput int
+		wantOutput      int
+		wantTotal       int
 	}{
 		{
 			name: "single assistant event accumulates tokens",
@@ -189,10 +189,10 @@ func TestApplyEventAssistantTokenAccumulation(t *testing.T) {
 
 func TestApplyEventAssistantTextBlocks(t *testing.T) {
 	tests := []struct {
-		name           string
-		events         []agent.StreamEvent
-		wantLastText   string
-		wantAllBlocks  []string
+		name          string
+		events        []agent.StreamEvent
+		wantLastText  string
+		wantAllBlocks []string
 	}{
 		{
 			name: "single event with text appends to AllTextBlocks and sets LastText",
@@ -253,17 +253,17 @@ func TestApplyEventAssistantTextBlocks(t *testing.T) {
 
 func TestApplyEventResult(t *testing.T) {
 	tests := []struct {
-		name             string
-		initial          agent.TurnResult
-		ev               agent.StreamEvent
-		wantFailed       bool
-		wantFailureText  string
-		wantResultText   string
-		wantInputReq     bool
-		wantInput        int
-		wantOutput       int
-		wantTotal        int
-		wantSID          string
+		name            string
+		initial         agent.TurnResult
+		ev              agent.StreamEvent
+		wantFailed      bool
+		wantFailureText string
+		wantResultText  string
+		wantInputReq    bool
+		wantInput       int
+		wantOutput      int
+		wantTotal       int
+		wantSID         string
 	}{
 		{
 			name: "success result accumulates tokens and sets ResultText",
@@ -307,7 +307,7 @@ func TestApplyEventResult(t *testing.T) {
 			wantFailureText: "waiting for input",
 		},
 		{
-			name: "result does not overwrite empty SessionID when ev.SessionID is empty",
+			name:    "result does not overwrite empty SessionID when ev.SessionID is empty",
 			initial: agent.TurnResult{SessionID: "existing"},
 			ev: agent.StreamEvent{
 				Type:      agent.EventResult,

@@ -31,7 +31,7 @@ agent:
   turn_timeout_ms: 3600000
 
 workspace:
-  root: ~/.symphony/workspaces/my-project
+  root: ~/.itervox/workspaces/my-project
 
 hooks:
   after_create: |
@@ -139,7 +139,7 @@ Controls where Itervox creates per-issue working directories and how they are ma
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `root` | string | `~/.symphony/workspaces` | Directory where per-issue workspaces are created. Supports `~` expansion and `$VAR_NAME` env var references. |
+| `root` | string | `~/.itervox/workspaces` | Directory where per-issue workspaces are created. Supports `~` expansion and `$VAR_NAME` env var references. |
 | `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted after an issue reaches `completion_state`, reclaiming disk space. Logs are retained. |
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
@@ -147,7 +147,7 @@ Controls where Itervox creates per-issue working directories and how they are ma
 
 ```yaml
 workspace:
-  root: ~/.symphony/workspaces/my-project
+  root: ~/.itervox/workspaces/my-project
   auto_clear: true
   worktree: true
   clone_url: git@github.com:owner/repo.git
@@ -225,7 +225,7 @@ agent:
 
 ### Available models
 
-The `available_models` field stores the list of models available for each backend. This is auto-populated by `symphony init` (which queries `claude --list-models` / `codex --list-models`) and used by the web dashboard's profile editor to suggest models in the dropdown.
+The `available_models` field stores the list of models available for each backend. This is auto-populated by `itervox init` (which queries `claude --list-models` / `codex --list-models`) and used by the web dashboard's profile editor to suggest models in the dropdown.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -246,7 +246,7 @@ agent:
 To refresh the model list after new models become available, run:
 
 ```bash
-symphony refresh-models --workflow WORKFLOW.md
+itervox refresh-models --workflow WORKFLOW.md
 ```
 
 If `available_models` is empty or missing, the dashboard falls back to a built-in default list.
@@ -345,12 +345,12 @@ workspace:
 
 **`.env` file loading:** Itervox automatically loads environment variables from `.env` files before reading `WORKFLOW.md`. The search order is:
 
-1. `.symphony/.env` (relative to the current working directory)
+1. `.itervox/.env` (relative to the current working directory)
 2. `.env` (relative to the current working directory)
 
-Only the first file found is loaded. Existing environment variables (already set in the shell) are never overwritten. The `.symphony/.env` file is created and git-ignored automatically by `itervox init`.
+Only the first file found is loaded. Existing environment variables (already set in the shell) are never overwritten. The `.itervox/.env` file is created and git-ignored automatically by `itervox init`.
 
-A typical `.symphony/.env` looks like:
+A typical `.itervox/.env` looks like:
 
 ```bash
 LINEAR_API_KEY=lin_api_xxxxxxxxxxxx

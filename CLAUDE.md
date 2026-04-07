@@ -1,8 +1,8 @@
-# CLAUDE.md — symphony-go
+# CLAUDE.md — itervox
 
 ## What this project is
 
-**Symphony Go** is a long-running daemon (Go 1.25.8) that implements the
+**Itervox** is a long-running daemon (Go 1.25.8) that implements the
 [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md).
 It polls Linear or GitHub Issues, spawns Claude Code or Codex agents per issue, and
 provides a live Kanban web dashboard (React/Vite) and a Bubbletea terminal UI.
@@ -32,7 +32,7 @@ cd web && pnpm install --frozen-lockfile && pnpm test
 pnpm build   # production bundle
 
 # Dev workflow: Go binary (in a project directory with WORKFLOW.md) + Vite
-go build -o symphony ./cmd/symphony
+go build -o itervox ./cmd/itervox
 cd web && pnpm dev   # HMR at localhost:5173, proxies /api/* to localhost:8090
 ```
 
@@ -116,7 +116,7 @@ statusui (Bubbletea TUI — imports domain)
 
 templates (WORKFLOW.md scaffolding)
 
-cmd/symphony (wires everything)
+cmd/itervox (wires everything)
 ```
 
 ---
@@ -124,9 +124,9 @@ cmd/symphony (wires everything)
 ## Frontend architecture
 
 - **Vite + React 19 + TypeScript + TailwindCSS**
-- **State**: Zustand (`symphonyStore` for snapshot, `toastStore` for notifications, `uiStore` for view mode/filters)
+- **State**: Zustand (`itervoxStore` for snapshot, `toastStore` for notifications, `uiStore` for view mode/filters)
 - **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`)
-- **Real-time**: SSE (`useSymphonySSE`) for snapshot updates; `useLogStream` for log lines
+- **Real-time**: SSE (`useItervoxSSE`) for snapshot updates; `useLogStream` for log lines
 - **Routing**: React Router v7 (file-based lazy pages)
 - **DnD**: dnd-kit (`PointerSensor` + `KeyboardSensor` registered on all boards)
 - **Schema validation**: Zod at SSE parse boundary and query results
@@ -135,12 +135,12 @@ cmd/symphony (wires everything)
 
 | File | Purpose |
 |---|---|
-| `web/src/store/symphonyStore.ts` | SSE snapshot, `patchSnapshot`, `refreshSnapshot` |
+| `web/src/store/itervoxStore.ts` | SSE snapshot, `patchSnapshot`, `refreshSnapshot` |
 | `web/src/store/toastStore.ts` | Toast queue with auto-dismiss timers |
 | `web/src/queries/issues.ts` | All issue mutations with optimistic updates + rollback |
 | `web/src/queries/logs.ts` | Log fetch + sublog queries |
 | `web/src/queries/projects.ts` | Project list query |
-| `web/src/hooks/useSymphonySSE.ts` | SSE connection with exponential backoff |
+| `web/src/hooks/useItervoxSSE.ts` | SSE connection with exponential backoff |
 | `web/src/hooks/useSettingsActions.ts` | Settings mutations — PUT/POST/DELETE with toast error surface |
 | `web/src/store/uiStore.ts` | View mode, search, filters, accordion expansion |
 | `web/src/types/schemas.ts` | Canonical Zod schemas (source of truth) |
@@ -219,7 +219,7 @@ Before claiming a component is missing an accessibility attribute:
 
 ### TypeScript / React
 
-- Components in `web/src/components/symphony/` — reusable
+- Components in `web/src/components/itervox/` — reusable
 - Pages in `web/src/pages/<Name>/index.tsx` — route-level
 - Mutation hooks in `web/src/queries/issues.ts` with optimistic updates + rollback
 - Always use `useToastStore.getState()` inside effects/callbacks (not hook calls)

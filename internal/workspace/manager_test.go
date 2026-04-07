@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/workspace"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 func testManager(t *testing.T) (*workspace.Manager, string) {

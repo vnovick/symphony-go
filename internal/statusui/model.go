@@ -32,9 +32,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/logbuffer"
-	"github.com/vnovick/symphony-go/internal/server"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/server"
 )
 
 // Config holds optional display configuration passed from main.
@@ -347,7 +347,7 @@ type leftItem struct {
 	label       string // description for subagent rows
 }
 
-// Model is the root bubbletea model for the Symphony status UI.
+// Model is the root bubbletea model for the Itervox status UI.
 type Model struct {
 	snap        func() server.StateSnapshot
 	buf         *logbuffer.Buffer
@@ -431,15 +431,15 @@ func New(snap func() server.StateSnapshot, buf *logbuffer.Buffer, cfg Config, ca
 		cfg.MaxAgents = 10
 	}
 	return Model{
-		snap:      snap,
-		buf:       buf,
-		cancelFn:  cancelFn,
-		cfg:       cfg,
-		keys:      defaultKeys(),
-		help:      help.New(),
-		lastText:  make(map[string]string),
-		subagents: make(map[string][]subagentInfo),
-		collapsed: make(map[string]bool),
+		snap:             snap,
+		buf:              buf,
+		cancelFn:         cancelFn,
+		cfg:              cfg,
+		keys:             defaultKeys(),
+		help:             help.New(),
+		lastText:         make(map[string]string),
+		subagents:        make(map[string][]subagentInfo),
+		collapsed:        make(map[string]bool),
 		pickerSel:        make(map[string]bool),
 		profileOverrides: make(map[string]string),
 	}
@@ -1301,7 +1301,7 @@ func (m *Model) renderViewportLines(viewLines []string, identifier, emptyMsg str
 // View implements tea.Model and renders the full TUI layout.
 func (m Model) View() string {
 	if !m.ready {
-		return "Initializing Symphony...\n"
+		return "Initializing Itervox...\n"
 	}
 	s := m.snap()
 
@@ -1313,7 +1313,7 @@ func (m Model) View() string {
 	}
 
 	// ── Angular sci-fi header ────────────────────────────────
-	// Top bar: ╔═[ SYMPHONY ]═══...═╗
+	// Top bar: ╔═[ ITERVOX ]═══...═╗
 	innerW := max(0, m.width-2)
 	title := "[ ITER//VOX ]"
 	ruleLen := max(0, innerW-len(title)-1)
@@ -1380,12 +1380,10 @@ func (m Model) View() string {
 			styleMuted.Render("  w:open") + "\n")
 	}
 
-	// GitHub tracker warning: remind user to select project filter
-	if m.cfg.TrackerKind == "github" && len(s.ActiveProjectFilter) == 0 {
+	// GitHub tracker info: states are mapped to issue labels
+	if m.cfg.TrackerKind == "github" {
 		hdr.WriteString(styleGray.Render("║ ") +
-			styleYellow.Render("⚠ GitHub: press ") +
-			styleCyan.Render("p") +
-			styleYellow.Render(" to select a project, or states are labels") + "\n")
+			styleMuted.Render("ⓘ GitHub: issue states mapped to labels") + "\n")
 	}
 
 	statusMsg := m.killMsg
@@ -1908,7 +1906,6 @@ func colorLine(line string) string {
 	}
 }
 
-
 // extractSubagents scans log lines and returns one subagentInfo per
 // "INFO claude: subagent" or "INFO codex: subagent" boundary found. Lines between consecutive
 // subagent markers (or to end-of-slice) belong to that subagent.
@@ -1971,7 +1968,6 @@ func findNavItem(navItems []leftItem, sessions []server.RunningRow, id string, s
 	}
 	return 0
 }
-
 
 // pickerSlugAt returns the slug for row i in the picker list.
 // Row 0 = "All issues" (""), row 1 = "No project" ("__no_project__"), row 2+ = project slugs.

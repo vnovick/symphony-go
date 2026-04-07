@@ -344,7 +344,7 @@ func copyRunningMap(m map[string]*RunEntry) map[string]*RunEntry {
 			cp[k] = nil
 			continue
 		}
-		e := *v           // copy struct value
+		e := *v              // copy struct value
 		e.WorkerCancel = nil // not safe to share across goroutines
 		cp[k] = &e
 	}

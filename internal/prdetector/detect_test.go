@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/prdetector"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/prdetector"
 )
 
 func TestParsePRURLs_FindsURLs(t *testing.T) {

@@ -1,4 +1,4 @@
-// Catwalk golden-file tests for Symphony's statusui Model.
+// Catwalk golden-file tests for Itervox's statusui Model.
 //
 // Catwalk drives the full Update→View pipeline by sending tea.Msg objects and
 // capturing View() output into testdata/ golden files. On first run (or after a
@@ -17,8 +17,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/knz/catwalk"
 
-	"github.com/vnovick/symphony-go/internal/logbuffer"
-	"github.com/vnovick/symphony-go/internal/server"
+	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/server"
 )
 
 // ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ func newCatwalkModel() Model {
 	return m
 }
 
-// catwalkUpdater handles custom test-file commands that inject Symphony-specific
+// catwalkUpdater handles custom test-file commands that inject Itervox-specific
 // tea.Msg objects which have no catwalk built-in equivalent.
 //
 // Supported commands (used in testdata/* files):

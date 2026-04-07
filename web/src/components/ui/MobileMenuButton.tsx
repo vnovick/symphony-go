@@ -11,7 +11,7 @@ export const MobileMenuButton = memo(function MobileMenuButton({ onClick }: Mobi
   return (
     <button
       onClick={onClick}
-      className="md:hidden flex h-8 w-8 items-center justify-center rounded-lg text-theme-text-secondary hover:text-theme-text transition-colors"
+      className="text-theme-text-secondary hover:text-theme-text flex h-8 w-8 items-center justify-center rounded-lg transition-colors md:hidden"
       aria-label="Open navigation"
       data-testid="mobile-menu-button"
     >

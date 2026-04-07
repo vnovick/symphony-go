@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -179,7 +179,7 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, issues)
 }
 
-// handleLogs streams the symphony log file as Server-Sent Events.
+// handleLogs streams the itervox log file as Server-Sent Events.
 // On connect it sends the last 16 KB of the file, then tails for new lines.
 // Each SSE event is: event: log\ndata: <one log line>\n\n
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {

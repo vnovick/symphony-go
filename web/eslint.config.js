@@ -37,9 +37,9 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['**/types/symphony'],
+              group: ['**/types/itervox'],
               message:
-                "Import from '../types/schemas' or '../types/symphony-types' instead — types/symphony.ts is @deprecated.",
+                "Import from '../types/schemas' or '../types/itervox-types' instead — types/itervox.ts is @deprecated.",
             },
           ],
         },

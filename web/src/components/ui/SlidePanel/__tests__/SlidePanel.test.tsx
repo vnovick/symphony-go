@@ -5,7 +5,7 @@ import { SlidePanel } from '../SlidePanel';
 describe('SlidePanel', () => {
   it('does not render content when closed', () => {
     render(
-      <SlidePanel open={false} onClose={() => undefined} title="Test">
+      <SlidePanel isOpen={false} onClose={() => undefined} title="Test">
         <p>Content</p>
       </SlidePanel>,
     );
@@ -14,7 +14,7 @@ describe('SlidePanel', () => {
 
   it('renders content when open', () => {
     render(
-      <SlidePanel open={true} onClose={() => undefined} title="Test">
+      <SlidePanel isOpen={true} onClose={() => undefined} title="Test">
         <p>Content</p>
       </SlidePanel>,
     );
@@ -23,7 +23,7 @@ describe('SlidePanel', () => {
 
   it('renders the title', () => {
     render(
-      <SlidePanel open={true} onClose={() => undefined} title="My Panel">
+      <SlidePanel isOpen={true} onClose={() => undefined} title="My Panel">
         <p>x</p>
       </SlidePanel>,
     );
@@ -33,7 +33,7 @@ describe('SlidePanel', () => {
   it('calls onClose when overlay is clicked', () => {
     const onClose = vi.fn();
     render(
-      <SlidePanel open={true} onClose={onClose} title="T">
+      <SlidePanel isOpen={true} onClose={onClose} title="T">
         <p>x</p>
       </SlidePanel>,
     );
@@ -44,7 +44,7 @@ describe('SlidePanel', () => {
   it('calls onClose when Escape key is pressed', () => {
     const onClose = vi.fn();
     render(
-      <SlidePanel open={true} onClose={onClose} title="T">
+      <SlidePanel isOpen={true} onClose={onClose} title="T">
         <p>x</p>
       </SlidePanel>,
     );
@@ -54,7 +54,7 @@ describe('SlidePanel', () => {
 
   it('has aria-modal attribute', () => {
     render(
-      <SlidePanel open={true} onClose={() => undefined} title="T">
+      <SlidePanel isOpen={true} onClose={() => undefined} title="T">
         <p>x</p>
       </SlidePanel>,
     );
@@ -63,13 +63,14 @@ describe('SlidePanel', () => {
 
   it('has aria-labelledby pointing to title', () => {
     render(
-      <SlidePanel open={true} onClose={() => undefined} title="T">
+      <SlidePanel isOpen={true} onClose={() => undefined} title="T">
         <p>x</p>
       </SlidePanel>,
     );
     const dialog = screen.getByRole('dialog');
     const labelId = dialog.getAttribute('aria-labelledby');
     expect(labelId).toBeTruthy();
-    expect(document.getElementById(labelId!)).toHaveTextContent('T');
+    if (!labelId) throw new Error('aria-labelledby not set');
+    expect(document.getElementById(labelId)).toHaveTextContent('T');
   });
 });

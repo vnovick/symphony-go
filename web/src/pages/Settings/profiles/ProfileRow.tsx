@@ -72,10 +72,8 @@ export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: Pro
 
   if (editing) {
     return (
-      <tr className="border-b border-theme-line bg-theme-bg-soft">
-        <td className="px-4 py-3 align-top font-mono text-sm text-theme-text">
-          {name}
-        </td>
+      <tr className="border-theme-line bg-theme-bg-soft border-b">
+        <td className="text-theme-text px-4 py-3 align-top font-mono text-sm">{name}</td>
         <td className="space-y-2 px-4 py-3">
           <ProfileEditorFields
             backend={backend}
@@ -90,7 +88,9 @@ export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: Pro
             }}
             onModelChange={(value) => {
               setValue('model', value);
-              setValue('command', applyModelSelection(command, backend, value), { shouldValidate: true });
+              setValue('command', applyModelSelection(command, backend, value), {
+                shouldValidate: true,
+              });
             }}
             onCommandChange={(value) => {
               setValue('command', value, { shouldValidate: true });
@@ -104,22 +104,24 @@ export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: Pro
             dynamicModels={availableModels}
           />
           {errors.command && (
-            <p role="alert" className="text-xs text-theme-danger">
+            <p role="alert" className="text-theme-danger text-xs">
               {errors.command.message}
             </p>
           )}
         </td>
         <td className="px-4 py-3 text-right align-top whitespace-nowrap">
           <button
-            onClick={() => { void onSubmit(); }}
+            onClick={() => {
+              void onSubmit();
+            }}
             disabled={isSubmitting}
-            className="mr-2 rounded-[var(--radius-sm)] px-3 py-1 text-sm text-white transition-colors disabled:opacity-50 bg-theme-accent"
+            className="bg-theme-accent mr-2 rounded-[var(--radius-sm)] px-3 py-1 text-sm text-white transition-colors disabled:opacity-50"
           >
             {isSubmitting ? 'Saving…' : 'Save'}
           </button>
           <button
             onClick={handleCancel}
-            className="rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80 border-theme-line text-theme-text-secondary"
+            className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80"
           >
             Cancel
           </button>
@@ -132,10 +134,8 @@ export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: Pro
   const inferredModel = commandToModel(def.command);
 
   return (
-    <tr className="border-b border-theme-line">
-      <td className="px-4 py-3 font-mono text-sm text-theme-text">
-        {name}
-      </td>
+    <tr className="border-theme-line border-b">
+      <td className="text-theme-text px-4 py-3 font-mono text-sm">{name}</td>
       <td className="px-4 py-3">
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2">
@@ -145,16 +145,13 @@ export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: Pro
               {backendLabel(inferredBackend)}
             </span>
             {inferredModel && (
-              <span className="font-mono text-xs text-theme-text-secondary">
+              <span className="text-theme-text-secondary font-mono text-xs">
                 {modelLabel(inferredBackend, inferredModel)}
               </span>
             )}
           </div>
           {def.prompt && (
-            <p
-              className="max-w-[400px] truncate text-xs"
-              title={def.prompt}
-            >
+            <p className="max-w-[400px] truncate text-xs" title={def.prompt}>
               {def.prompt.slice(0, 120)}
             </p>
           )}
@@ -163,9 +160,7 @@ export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: Pro
       <td className="px-4 py-3 text-right whitespace-nowrap">
         {confirmDelete ? (
           <>
-            <span className="mr-2 text-xs text-theme-muted">
-              Delete?
-            </span>
+            <span className="text-theme-muted mr-2 text-xs">Delete?</span>
             <button
               onClick={async () => {
                 setDeleting(true);
@@ -174,13 +169,15 @@ export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: Pro
                 setConfirmDelete(false);
               }}
               disabled={deleting}
-              className="mr-1 rounded-[var(--radius-sm)] px-2 py-1 text-xs font-medium text-white transition-colors disabled:opacity-50 bg-theme-danger"
+              className="bg-theme-danger mr-1 rounded-[var(--radius-sm)] px-2 py-1 text-xs font-medium text-white transition-colors disabled:opacity-50"
             >
               {deleting ? '…' : 'Yes'}
             </button>
             <button
-              onClick={() => { setConfirmDelete(false); }}
-              className="rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80 border-theme-line text-theme-text-secondary"
+              onClick={() => {
+                setConfirmDelete(false);
+              }}
+              className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80"
             >
               No
             </button>
@@ -188,14 +185,18 @@ export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: Pro
         ) : (
           <>
             <button
-              onClick={() => { setEditing(true); }}
-              className="mr-1 rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80 border-theme-line text-theme-text-secondary"
+              onClick={() => {
+                setEditing(true);
+              }}
+              className="border-theme-line text-theme-text-secondary mr-1 rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80"
             >
               Edit
             </button>
             <button
-              onClick={() => { setConfirmDelete(true); }}
-              className="rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80 border-theme-danger text-theme-danger"
+              onClick={() => {
+                setConfirmDelete(true);
+              }}
+              className="border-theme-danger text-theme-danger rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80"
             >
               Delete
             </button>

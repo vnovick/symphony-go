@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/config"
+	"github.com/vnovick/itervox/internal/config"
 )
 
 func validWorkflowPath(t *testing.T) string {

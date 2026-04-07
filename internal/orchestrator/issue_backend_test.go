@@ -3,26 +3,26 @@ package orchestrator
 import (
 	"testing"
 
-	"github.com/vnovick/symphony-go/internal/config"
+	"github.com/vnovick/itervox/internal/config"
 )
 
 func TestSetIssueBackend_RoundTrip(t *testing.T) {
 	o := New(&config.Config{}, nil, nil, nil)
 
 	// Initially empty
-	if got := o.getIssueBackend("PROJ-1"); got != "" {
+	if got := o.Snapshot().IssueBackends["PROJ-1"]; got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
 
 	// Set codex
 	o.SetIssueBackend("PROJ-1", "codex")
-	if got := o.getIssueBackend("PROJ-1"); got != "codex" {
+	if got := o.Snapshot().IssueBackends["PROJ-1"]; got != "codex" {
 		t.Fatalf("expected codex, got %q", got)
 	}
 
 	// Clear
 	o.SetIssueBackend("PROJ-1", "")
-	if got := o.getIssueBackend("PROJ-1"); got != "" {
+	if got := o.Snapshot().IssueBackends["PROJ-1"]; got != "" {
 		t.Fatalf("expected empty after clear, got %q", got)
 	}
 }
@@ -48,7 +48,7 @@ func TestGetIssueBackend_OverridesProfile(t *testing.T) {
 	o.SetIssueBackend("PROJ-1", "codex")
 
 	// The per-issue backend should win
-	if got := o.getIssueBackend("PROJ-1"); got != "codex" {
+	if got := o.Snapshot().IssueBackends["PROJ-1"]; got != "codex" {
 		t.Fatalf("expected codex override, got %q", got)
 	}
 }

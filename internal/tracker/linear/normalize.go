@@ -3,8 +3,8 @@ package linear
 import (
 	"strings"
 
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 const pageSize = 50

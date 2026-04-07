@@ -52,13 +52,15 @@ function ModelInput({
           </option>
         ))}
         <option value="__custom__">Custom model ID…</option>
-        </select>
+      </select>
       {!isKnownModel && (
         <input
           value={value}
-          onChange={(e) => { onChange(e.target.value); }}
+          onChange={(e) => {
+            onChange(e.target.value);
+          }}
           placeholder="Enter custom model ID"
-          className={`${selectCls} font-mono text-xs mt-1`}
+          className={`${selectCls} mt-1 font-mono text-xs`}
         />
       )}
     </>
@@ -138,10 +140,15 @@ export function ProfileEditorFields({
   return (
     <>
       <BackendSelect value={backend} onChange={onBackendChange} />
-      <ModelInput backend={backend} value={model} onChange={onModelChange} dynamicModels={dynamicModels} />
+      <ModelInput
+        backend={backend}
+        value={model}
+        onChange={onModelChange}
+        dynamicModels={dynamicModels}
+      />
       <CommandInput value={command} backend={backend} onChange={onCommandChange} />
       {isCustomCommand && (
-        <p className="text-[10px] text-theme-muted">
+        <p className="text-theme-muted text-[10px]">
           Custom command detected — model selection may not apply.
         </p>
       )}
@@ -154,11 +161,11 @@ export function ProfileEditorFields({
         className={textareaCls}
         rows={3}
       />
-      <details className="text-[10px] text-theme-muted">
-        <summary className="cursor-pointer hover:text-theme-text-secondary transition-colors">
+      <details className="text-theme-muted text-[10px]">
+        <summary className="hover:text-theme-text-secondary cursor-pointer transition-colors">
           Available template variables
         </summary>
-        <div className="mt-1 space-y-0.5 font-mono pl-2 border-l-2 border-theme-line ml-1">
+        <div className="border-theme-line mt-1 ml-1 space-y-0.5 border-l-2 pl-2 font-mono">
           <p>{'{{ issue.identifier }}'} — Issue ID (e.g. ENG-42)</p>
           <p>{'{{ issue.title }}'} — Issue title</p>
           <p>{'{{ issue.description }}'} — Issue body</p>

@@ -5,7 +5,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/vnovick/symphony-go/internal/agent"
+	"github.com/vnovick/itervox/internal/agent"
 )
 
 // FakeRunner is a test double that replays scripted StreamEvents without

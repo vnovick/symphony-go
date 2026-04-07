@@ -1,4 +1,4 @@
-# Symphony Go — REST API Reference
+# Itervox — REST API Reference
 
 Base URL: `http://localhost:8090/api/v1`
 

@@ -12,9 +12,9 @@ import {
   type DragOverEvent,
 } from '@dnd-kit/core';
 import { useShallow } from 'zustand/react/shallow';
-import IssueCard from '../../../components/symphony/IssueCard';
-import BoardColumn from '../../../components/symphony/BoardColumn';
-import { useSymphonyStore } from '../../../store/symphonyStore';
+import IssueCard from '../../../components/itervox/IssueCard';
+import BoardColumn from '../../../components/itervox/BoardColumn';
+import { useItervoxStore } from '../../../store/itervoxStore';
 import type { TrackerIssue } from '../../../types/schemas';
 import { EMPTY_RUNNING, EMPTY_HISTORY, EMPTY_STATES } from '../../../utils/constants';
 
@@ -43,7 +43,7 @@ export function BoardView({
     activeStates,
     completionState,
     terminalStates,
-  } = useSymphonyStore(
+  } = useItervoxStore(
     useShallow((s) => ({
       snapshotLoaded: s.snapshot !== null,
       profileDefs: s.snapshot?.profileDefs,
@@ -59,10 +59,7 @@ export function BoardView({
   const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
 
-  const backlogStateSet = useMemo(
-    () => new Set(backlogStates),
-    [backlogStates],
-  );
+  const backlogStateSet = useMemo(() => new Set(backlogStates), [backlogStates]);
 
   const runningBackendByIdentifier = useMemo(() => {
     const map: Record<string, string> = {};
@@ -91,7 +88,7 @@ export function BoardView({
 
   const handleDispatch = useCallback(
     (identifier: string) => {
-      if (firstActiveState) void onStateChange(identifier, firstActiveState);
+      if (firstActiveState) onStateChange(identifier, firstActiveState);
     },
     [onStateChange, firstActiveState],
   );
@@ -137,15 +134,11 @@ export function BoardView({
     const newState = String(over.id);
     const current = issues.find((i) => i.identifier === identifier);
     if (!current || current.state === newState) return;
-    void onStateChange(identifier, newState);
+    onStateChange(identifier, newState);
   };
 
   if (!snapshotLoaded) {
-    return (
-      <div className="py-8 text-center text-sm text-theme-muted">
-        Loading…
-      </div>
-    );
+    return <div className="text-theme-muted py-8 text-center text-sm">Loading…</div>;
   }
 
   return (
@@ -156,7 +149,7 @@ export function BoardView({
       onDragEnd={handleDragEnd}
     >
       {/* Horizontal scroll — same as Linear on all screen sizes */}
-      <div className="flex gap-3 overflow-x-auto pb-2 min-h-[200px]">
+      <div className="flex min-h-[200px] gap-3 overflow-x-auto pb-2">
         {columns.map(([state, colIssues]) => (
           <BoardColumn
             key={state}

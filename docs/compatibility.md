@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-This document records which external tool versions Symphony Go is developed and tested against.
+This document records which external tool versions Itervox is developed and tested against.
 Use it to understand what upgrades are safe and where silent breakage can occur.
 
 ---
@@ -15,14 +15,14 @@ Use it to understand what upgrades are safe and where silent breakage can occur.
 
 ## Agent CLIs
 
-Symphony spawns an agent subprocess per issue. Each CLI has its own release cadence; Symphony does not pin a version.
+Itervox spawns an agent subprocess per issue. Each CLI has its own release cadence; Itervox does not pin a version.
 
 | CLI | Tested against | Breaking-change risk |
 |---|---|---|
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | **latest** | Symphony checks for `--resume` and `--dangerously-skip-permissions` flags; a flag rename in a Claude Code release would break resume behavior. Watch Claude Code release notes. |
-| [Codex](https://github.com/openai/codex) (`codex`) | **latest** | Symphony passes `--approval-mode full-auto`. Flag renames in Codex releases would break dispatch. |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) | **latest** | Itervox checks for `--resume` and `--dangerously-skip-permissions` flags; a flag rename in a Claude Code release would break resume behavior. Watch Claude Code release notes. |
+| [Codex](https://github.com/openai/codex) (`codex`) | **latest** | Itervox passes `--approval-mode full-auto`. Flag renames in Codex releases would break dispatch. |
 
-> **How to detect breakage:** If agents exit immediately with a non-zero code, check the log for "unknown flag" or "unrecognised option". Run `claude --help` / `codex --help` to verify flag names match what Symphony sends.
+> **How to detect breakage:** If agents exit immediately with a non-zero code, check the log for "unknown flag" or "unrecognised option". Run `claude --help` / `codex --help` to verify flag names match what Itervox sends.
 
 ---
 
@@ -31,7 +31,7 @@ Symphony spawns an agent subprocess per issue. Each CLI has its own release cade
 | Tracker | API surface | Pinned version | Notes |
 |---|---|---|---|
 | [Linear](https://linear.app) | GraphQL | **Unversioned** (`api.linear.app/graphql`) | Linear's GraphQL schema is unversioned and evolves without breaking existing queries in practice. Queries use a stable subset: `issues`, `pageInfo`, `labels`, `inverseRelations`. Field additions are safe; field removals or renames would surface as JSON decode failures. |
-| [GitHub Issues](https://docs.github.com/en/rest) | REST | **2022-11-28** (`X-GitHub-Api-Version: 2022-11-28`) | Pinned via request header. GitHub guarantees 24-month support for dated API versions. This version is valid until at least late 2026. Symphony uses `GET /repos/{owner}/{repo}/issues`, `POST /repos/{owner}/{repo}/issues/{number}/comments`, `GET /repos/{owner}/{repo}/pulls`. |
+| [GitHub Issues](https://docs.github.com/en/rest) | REST | **2022-11-28** (`X-GitHub-Api-Version: 2022-11-28`) | Pinned via request header. GitHub guarantees 24-month support for dated API versions. This version is valid until at least late 2026. Itervox uses `GET /repos/{owner}/{repo}/issues`, `POST /repos/{owner}/{repo}/issues/{number}/comments`, `GET /repos/{owner}/{repo}/pulls`. |
 
 ---
 
@@ -54,7 +54,7 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 |---|---|---|
 | macOS (arm64, x86_64) | **Supported** | Primary development platform. |
 | Linux (x86_64, arm64) | **Supported** | Used in CI (`ubuntu-latest`). |
-| Windows | **Unsupported** | Agent CLIs (Claude Code, Codex) do not support Windows. Symphony's workspace/shell plumbing assumes a POSIX shell. |
+| Windows | **Unsupported** | Agent CLIs (Claude Code, Codex) do not support Windows. Itervox's workspace/shell plumbing assumes a POSIX shell. |
 
 ---
 
@@ -63,7 +63,7 @@ Pre-built dashboards are included in release binaries — Node.js is **not** req
 | Scenario | Risk | Action |
 |---|---|---|
 | New minor Go release | Low | Update `go.mod`, run `go test ./...` and `go test -race ./...`. |
-| New Claude Code release | Medium | Check Claude Code changelog for flag renames. Run `symphony --dry-run` and verify dispatch logs show agent starting. |
+| New Claude Code release | Medium | Check Claude Code changelog for flag renames. Run `itervox --dry-run` and verify dispatch logs show agent starting. |
 | New Codex release | Medium | Same as above. |
 | Linear GraphQL schema change | Low | Monitor [Linear changelog](https://linear.app/changelog). If `FetchCandidateIssues` starts returning unexpected shapes, Zod-style errors will surface in logs. |
 | GitHub API version expiry (2026+) | High | Update `X-GitHub-Api-Version` header in `internal/tracker/github/client.go` to a current dated version. |

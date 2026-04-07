@@ -23,7 +23,7 @@ export class PageErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     if (import.meta.env.DEV) {
-      console.error('[Symphony] Page render error', error, info.componentStack);
+      console.error('[Itervox] Page render error', error, info.componentStack);
     }
   }
 
@@ -33,18 +33,16 @@ export class PageErrorBoundary extends Component<Props, State> {
 
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
-        <h2 className="text-xl font-semibold text-theme-danger">
-          This page crashed
-        </h2>
-        <p className="max-w-md text-sm text-theme-muted">
+        <h2 className="text-theme-danger text-xl font-semibold">This page crashed</h2>
+        <p className="text-theme-muted max-w-md text-sm">
           An unexpected error occurred while rendering this page.
         </p>
-        <pre className="max-w-lg overflow-auto rounded-lg p-4 text-left text-xs border border-theme-line bg-theme-bg-soft text-theme-text-secondary">
+        <pre className="border-theme-line bg-theme-bg-soft text-theme-text-secondary max-w-lg overflow-auto rounded-lg border p-4 text-left text-xs">
           {error.message}
         </pre>
         <a
           href="/"
-          className="rounded-lg px-4 py-2 text-sm font-medium text-white bg-theme-accent hover:opacity-90 transition-opacity"
+          className="bg-theme-accent rounded-lg px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
         >
           Go to Dashboard
         </a>

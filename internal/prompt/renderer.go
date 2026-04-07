@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/osteele/liquid"
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // DefaultPrompt is used when the workflow prompt body is empty.

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useProjects } from '../../queries/projects';
 
 interface Props {
@@ -9,25 +9,26 @@ interface Props {
 export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
   const { data: projects = [], isLoading, isError } = useProjects();
   const isDefaultMode = activeFilter === undefined;
-  const [selected, setSelected] = useState<Set<string>>(
-    new Set(isDefaultMode ? [] : activeFilter),
+
+  // Derive the server-side set for comparison without triggering effects.
+  const serverSet = useMemo(
+    () => new Set(activeFilter ?? []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeFilter?.join('\0')],
   );
+
+  const [selected, setSelected] = useState<Set<string>>(() => serverSet);
   const [saving, setSaving] = useState(false);
 
-  // Sync local selection when server state changes (new array reference with
-  // different content). Uses a ref to compare by value instead of reference.
-  const prevFilterRef = useRef(activeFilter);
+  // Track which serverSet identity we last synced to so we only overwrite
+  // local edits when the server value actually changes, not on every render.
+  const prevServerRef = useRef(serverSet);
   useEffect(() => {
-    const prev = prevFilterRef.current;
-    const changed =
-      prev === activeFilter ? false
-      : prev === undefined || activeFilter === undefined ? true
-      : prev.length !== activeFilter.length || prev.some((s, i) => s !== activeFilter[i]);
-    if (changed) {
-      setSelected(new Set(activeFilter ?? []));
+    if (prevServerRef.current !== serverSet) {
+      prevServerRef.current = serverSet;
+      setSelected(serverSet);
     }
-    prevFilterRef.current = activeFilter;
-  }, [activeFilter]);
+  }, [serverSet]);
 
   const toggle = (slug: string) => {
     setSelected((prev) => {
@@ -50,31 +51,25 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
     setSaving(false);
   };
 
-  const selectAll = () => setSelected(new Set());
+  const selectAll = () => {
+    setSelected(new Set());
+  };
   const allSelected = selected.size === 0;
 
   return (
-    <div
-      className="overflow-hidden rounded-[var(--radius-md)] border border-theme-line bg-theme-bg-elevated"
-    >
-      <div
-        className="border-b px-5 py-4 border-theme-line bg-theme-panel-strong"
-      >
-        <h2 className="text-sm font-semibold text-theme-text">
-          Project Filter
-        </h2>
-        <p className="mt-0.5 text-xs text-theme-text-secondary">
-          Limit Symphony to specific Linear projects. Leave all unchecked to include every project.
+    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
+      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
+        <h2 className="text-theme-text text-sm font-semibold">Project Filter</h2>
+        <p className="text-theme-text-secondary mt-0.5 text-xs">
+          Limit Itervox to specific Linear projects. Leave all unchecked to include every project.
         </p>
       </div>
 
-      <div className="px-5 py-5 space-y-4">
-        {isLoading && (
-          <p className="text-sm text-theme-muted">Loading projects…</p>
-        )}
+      <div className="space-y-4 px-5 py-5">
+        {isLoading && <p className="text-theme-muted text-sm">Loading projects…</p>}
 
         {isError && (
-          <p className="text-sm text-theme-danger">
+          <p className="text-theme-danger text-sm">
             Failed to load projects. Check that the server is running.
           </p>
         )}
@@ -90,29 +85,27 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
                   className="h-4 w-4 rounded"
                   style={{ accentColor: 'var(--accent)' }}
                 />
-                <span className="text-sm font-medium text-theme-text">
-                  All projects
-                </span>
+                <span className="text-theme-text text-sm font-medium">All projects</span>
               </label>
               {projects.map((p) => (
                 <label key={p.slug} className="flex cursor-pointer items-center gap-2.5 pl-1">
                   <input
                     type="checkbox"
                     checked={selected.has(p.slug)}
-                    onChange={() => { toggle(p.slug); }}
+                    onChange={() => {
+                      toggle(p.slug);
+                    }}
                     className="h-4 w-4 rounded"
                     style={{ accentColor: 'var(--accent)' }}
                   />
-                  <span className="text-sm text-theme-text">{p.name}</span>
-                  <span className="font-mono text-xs text-theme-muted">
-                    {p.slug}
-                  </span>
+                  <span className="text-theme-text text-sm">{p.name}</span>
+                  <span className="text-theme-muted font-mono text-xs">{p.slug}</span>
                 </label>
               ))}
             </div>
 
             {isDefaultMode && (
-              <p className="text-xs text-theme-muted">
+              <p className="text-theme-muted text-xs">
                 Currently using the WORKFLOW.md default project slug.
               </p>
             )}
@@ -121,7 +114,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 bg-theme-accent"
+                className="bg-theme-accent rounded-[var(--radius-sm)] px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50"
               >
                 {saving ? 'Saving…' : 'Save filter'}
               </button>
@@ -129,7 +122,7 @@ export function ProjectFilterCard({ activeFilter, onSetFilter }: Props) {
                 <button
                   onClick={handleReset}
                   disabled={saving}
-                  className="rounded-[var(--radius-sm)] border px-4 py-2 text-sm font-medium transition-colors hover:opacity-80 disabled:opacity-50 border-theme-line text-theme-text-secondary"
+                  className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-4 py-2 text-sm font-medium transition-colors hover:opacity-80 disabled:opacity-50"
                 >
                   Reset to default
                 </button>

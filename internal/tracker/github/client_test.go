@@ -15,8 +15,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/tracker"
-	ghclient "github.com/vnovick/symphony-go/internal/tracker/github"
+	"github.com/vnovick/itervox/internal/tracker"
+	ghclient "github.com/vnovick/itervox/internal/tracker/github"
 )
 
 func ghIssue(number int, title, state string, labels []string) map[string]interface{} {

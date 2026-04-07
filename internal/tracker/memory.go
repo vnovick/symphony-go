@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // MemoryTracker is an in-memory Tracker implementation for tests and reconciliation.

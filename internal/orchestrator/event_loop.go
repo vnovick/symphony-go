@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/tracker"
-	"github.com/vnovick/symphony-go/internal/workspace"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 // Run executes the orchestrator event loop until ctx is cancelled.
@@ -48,7 +48,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			break
 		}
 	}
-	o.reviewerWg.Wait()
 	o.autoClearWg.Wait()
 	o.discardWg.Wait()
 	return loopErr
@@ -150,7 +149,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			)
 			continue
 		}
-		// Guard: if the latest comment is an unresolved Symphony input-required
+		// Guard: if the latest comment is an unresolved Itervox input-required
 		// comment, restore the issue to InputRequiredIssues instead of dispatching
 		// a fresh worker. This recovers from daemon restarts / state loss.
 		if entry := o.recoverInputRequired(ctx, issue); entry != nil {
@@ -227,12 +226,12 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 	return state
 }
 
-// symphonyCommentPrefix is the prefix used by Symphony when posting input-required
+// itervoxCommentPrefix is the prefix used by Itervox when posting input-required
 // question comments. Used to identify and skip own comments when detecting user replies.
-const symphonyCommentPrefix = "🤖 **Agent needs your input**"
+const itervoxCommentPrefix = "🤖 **Agent needs your input**"
 
 // recoverInputRequired fetches the full issue detail (with comments) and checks
-// if the latest comment is an unresolved Symphony input-required question.
+// if the latest comment is an unresolved Itervox input-required question.
 // If so, returns an InputRequiredEntry reconstructed from the comment,
 // preventing a wasteful fresh dispatch. Returns nil if no recovery is needed.
 func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Issue) *InputRequiredEntry {
@@ -245,26 +244,26 @@ func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Is
 	if len(detailed.Comments) == 0 {
 		return nil
 	}
-	// Walk comments in reverse to find the last Symphony question.
-	lastSymphonyIdx := -1
+	// Walk comments in reverse to find the last Itervox question.
+	lastItervoxIdx := -1
 	for i := len(detailed.Comments) - 1; i >= 0; i-- {
-		if strings.HasPrefix(detailed.Comments[i].Body, symphonyCommentPrefix) {
-			lastSymphonyIdx = i
+		if strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
+			lastItervoxIdx = i
 			break
 		}
 	}
-	if lastSymphonyIdx < 0 {
-		return nil // no Symphony question comment found
+	if lastItervoxIdx < 0 {
+		return nil // no Itervox question comment found
 	}
-	// Check if there's a non-Symphony comment after it (= user replied).
-	for i := lastSymphonyIdx + 1; i < len(detailed.Comments); i++ {
-		if !strings.HasPrefix(detailed.Comments[i].Body, symphonyCommentPrefix) {
+	// Check if there's a non-Itervox comment after it (= user replied).
+	for i := lastItervoxIdx + 1; i < len(detailed.Comments); i++ {
+		if !strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
 			return nil // user already replied — safe to dispatch fresh
 		}
 	}
 	// Extract the question context from the comment body.
-	body := detailed.Comments[lastSymphonyIdx].Body
-	questionCtx := strings.TrimPrefix(body, symphonyCommentPrefix)
+	body := detailed.Comments[lastItervoxIdx].Body
+	questionCtx := strings.TrimPrefix(body, itervoxCommentPrefix)
 	questionCtx = strings.TrimSpace(questionCtx)
 	// Strip the trailing instruction line.
 	if idx := strings.LastIndex(questionCtx, "\n---\n"); idx >= 0 {
@@ -279,7 +278,7 @@ func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Is
 }
 
 // checkTrackerReplies polls tracker comments for each InputRequiredIssues entry.
-// If a non-Symphony comment appeared after the agent's question, treat it as
+// If a non-Itervox	 comment appeared after the agent's question, treat it as
 // the user's reply and resume the agent — same as ProvideInput from the dashboard.
 func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) State {
 	if len(state.InputRequiredIssues) == 0 {
@@ -292,21 +291,21 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 				"identifier", identifier, "error", err)
 			continue
 		}
-		// Find the last Symphony question comment and check for a reply after it.
-		lastSymphonyIdx := -1
+		// Find the last Itervox question comment and check for a reply after it.
+		lastItervoxIdx := -1
 		for i := len(detailed.Comments) - 1; i >= 0; i-- {
-			if strings.HasPrefix(detailed.Comments[i].Body, symphonyCommentPrefix) {
-				lastSymphonyIdx = i
+			if strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
+				lastItervoxIdx = i
 				break
 			}
 		}
-		if lastSymphonyIdx < 0 {
+		if lastItervoxIdx < 0 {
 			continue // no question comment found — wait
 		}
-		// Look for a non-Symphony reply after the question.
+		// Look for a non-Itervox reply after the question.
 		var userReply string
-		for i := lastSymphonyIdx + 1; i < len(detailed.Comments); i++ {
-			if !strings.HasPrefix(detailed.Comments[i].Body, symphonyCommentPrefix) {
+		for i := lastItervoxIdx + 1; i < len(detailed.Comments); i++ {
+			if !strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
 				userReply = detailed.Comments[i].Body
 				break
 			}
@@ -723,11 +722,6 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		delete(state.DiscardingIdentifiers, ev.Identifier)
 		slog.Info("orchestrator: discard complete, issue released", "identifier", ev.Identifier)
 
-	case EventReviewerCompleted:
-		if ev.CompletedRun != nil {
-			o.addCompletedRun(*ev.CompletedRun)
-		}
-
 	case EventDispatchReviewer:
 		// Manual reviewer dispatch via API. Fetch the issue and dispatch.
 		if ev.ReviewerProfile == "" {
@@ -840,9 +834,15 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Do NOT schedule a retry; successful completions must not appear in
 			// the retry queue and must not cause infinite re-dispatch loops.
 			delete(state.Claimed, ev.IssueID)
+			var turns, inTok, outTok int
+			if liveEntry != nil {
+				turns = liveEntry.TurnCount
+				inTok = liveEntry.InputTokens
+				outTok = liveEntry.OutputTokens
+			}
 			successArgs := []any{
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier,
-				"turns", liveEntry.TurnCount, "input_tokens", liveEntry.InputTokens, "output_tokens", liveEntry.OutputTokens,
+				"turns", turns, "input_tokens", inTok, "output_tokens", outTok,
 			}
 			if ev.RunEntry != nil && ev.RunEntry.PRURL != "" {
 				successArgs = append(successArgs, "pr_url", ev.RunEntry.PRURL)
@@ -885,7 +885,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Auto-review: if configured, dispatch a reviewer worker for this issue.
 			// Only trigger when the completed worker was NOT itself a reviewer
 			// (prevents infinite review loops).
-			if liveEntry.Kind != "reviewer" {
+			if liveEntry == nil || liveEntry.Kind != "reviewer" {
 				o.cfgMu.RLock()
 				reviewerProfile := o.cfg.Agent.ReviewerProfile
 				autoReview := o.cfg.Agent.AutoReview
@@ -911,7 +911,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Post the agent's question as a tracker comment so it's visible
 			// in Linear/GitHub. The dashboard shows a reply UI; user replies
 			// are also posted as tracker comments before resuming the agent.
-			commentText := fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n_Reply via the Symphony dashboard to continue._", entry.Context)
+			commentText := fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n_Reply via the Itervox dashboard to continue._", entry.Context)
 			go func(issueID, ident string) {
 				postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 				defer cancel()
@@ -980,7 +980,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 // even during graceful shutdown so the issue owner knows why retries stopped.
 func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts int, lastErr string) {
 	comment := fmt.Sprintf(
-		"Symphony: maximum retries exhausted (%d attempts). Last error:\n\n%s\n\nIssue has been moved to failed state. Re-open or move back to an active state to retry.",
+		"Itervox: maximum retries exhausted (%d attempts). Last error:\n\n%s\n\nIssue has been moved to failed state. Re-open or move back to an active state to retry.",
 		attempts, lastErr)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

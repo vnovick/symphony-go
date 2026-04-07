@@ -4,8 +4,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // IneligibleReason returns a short string explaining why an issue cannot be

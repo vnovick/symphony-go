@@ -27,11 +27,11 @@ type BufLogEntry struct {
 // It matches the JSON schema expected by the frontend (same as the existing
 // /api/v1/issues/{id}/logs response).
 type IssueLogEntry struct {
-	Level   string `json:"level"`
-	Event   string `json:"event"`
-	Message string `json:"message"`
-	Tool    string `json:"tool,omitempty"`
-	Time    string `json:"time,omitempty"`
+	Level     string `json:"level"`
+	Event     string `json:"event"`
+	Message   string `json:"message"`
+	Tool      string `json:"tool,omitempty"`
+	Time      string `json:"time,omitempty"`
 	Detail    string `json:"detail,omitempty"`
 	SessionID string `json:"sessionId,omitempty"`
 }

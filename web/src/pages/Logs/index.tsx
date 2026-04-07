@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
-import { useSymphonyStore } from '../../store/symphonyStore';
+import { useItervoxStore } from '../../store/itervoxStore';
 import { useIssues, useClearIssueLogs } from '../../queries/issues';
 import { useIssueLogs, useLogIdentifiers } from '../../queries/logs';
 import { orchDotClass } from '../../utils/format';
@@ -19,7 +19,7 @@ type FilterChip = (typeof FILTER_CHIPS)[number];
 export default function Logs() {
   const { data: issues = [] } = useIssues();
   const logIdentifiers = useLogIdentifiers();
-  const { running, retrying } = useSymphonyStore(
+  const { running, retrying } = useItervoxStore(
     useShallow((s) => ({
       running: s.snapshot?.running ?? EMPTY_RUNNING,
       retrying: s.snapshot?.retrying ?? EMPTY_RETRYING,
@@ -27,10 +27,7 @@ export default function Logs() {
   );
 
   // Build a lookup map from issues for orchestratorState enrichment
-  const issueMap = useMemo(
-    () => new Map(issues.map((i) => [i.identifier, i])),
-    [issues],
-  );
+  const issueMap = useMemo(() => new Map(issues.map((i) => [i.identifier, i])), [issues]);
 
   // Sidebar uses log identifiers as source of truth, enriched with issue metadata
   const sortedIssues = useMemo(() => {
@@ -49,8 +46,8 @@ export default function Logs() {
       });
   }, [logIdentifiers, issueMap]);
 
-  const selectedId = useSymphonyStore((s) => s.activeIssueId) ?? '';
-  const setSelectedId = useSymphonyStore((s) => s.setActiveIssueId);
+  const selectedId = useItervoxStore((s) => s.activeIssueId) ?? '';
+  const setSelectedId = useItervoxStore((s) => s.setActiveIssueId);
   const [activeChips, setActiveChips] = useState<Set<FilterChip>>(new Set(FILTER_CHIPS));
 
   useEffect(() => {
@@ -59,14 +56,13 @@ export default function Logs() {
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (first) setSelectedId(first.identifier);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedId intentionally omitted: effect only auto-selects first issue when the issue list changes, not on every selectedId transition
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedId intentionally omitted: effect only auto-selects first issue when the issue list changes, not on every selectedId transition
   }, [sortedIssues]);
 
-  const isLive = !!(
+  const isLive =
     running.some((r) => r.identifier === selectedId) ||
-    retrying.some((r) => r.identifier === selectedId)
-  );
-  const { data: entries = [], isLoading: loading } = useIssueLogs(selectedId, isLive);
+    retrying.some((r) => r.identifier === selectedId);
+  const { data: entries, isLoading: loading } = useIssueLogs(selectedId, isLive);
 
   const clearLogsMutation = useClearIssueLogs();
   const handleClearLogs = () => {
@@ -102,8 +98,7 @@ export default function Logs() {
     () =>
       entries.filter(
         (e) =>
-          !FILTER_CHIPS.includes(e.event as FilterChip) ||
-          activeChips.has(e.event as FilterChip),
+          !FILTER_CHIPS.includes(e.event as FilterChip) || activeChips.has(e.event as FilterChip),
       ),
     [entries, activeChips],
   );
@@ -112,10 +107,10 @@ export default function Logs() {
 
   return (
     <>
-      <PageMeta title="Symphony | Logs" description="Agent logs — all issues" />
+      <PageMeta title="Itervox | Logs" description="Agent logs — all issues" />
       <div className="flex h-[calc(100vh-64px)]">
         {/* Sidebar */}
-        <div className="flex w-52 flex-shrink-0 flex-col border-r border-gray-800 bg-terminal-base">
+        <div className="bg-terminal-base flex w-52 flex-shrink-0 flex-col border-r border-gray-800">
           <div className="border-b border-gray-800 px-3 py-3">
             <p className="font-mono text-[10px] font-semibold tracking-widest text-[#4b5563] uppercase">
               Issues
@@ -154,9 +149,9 @@ export default function Logs() {
         </div>
 
         {/* Terminal panel */}
-        <div className="flex flex-1 flex-col overflow-hidden bg-terminal-void">
+        <div className="bg-terminal-void flex flex-1 flex-col overflow-hidden">
           {/* Terminal title bar */}
-          <div className="flex flex-shrink-0 items-center justify-between border-b border-[#1e2420] bg-terminal-header px-4 py-2">
+          <div className="bg-terminal-header flex flex-shrink-0 items-center justify-between border-b border-[#1e2420] px-4 py-2">
             <div className="flex items-center gap-3">
               {/* Traffic light dots */}
               <span className="flex gap-1.5">
@@ -207,7 +202,7 @@ export default function Logs() {
           {selectedId && (
             <div
               data-testid="logs-context-strip"
-              className="flex flex-shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-[#1e2420] bg-terminal-header px-4 py-1.5"
+              className="bg-terminal-header flex flex-shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-b border-[#1e2420] px-4 py-1.5"
             >
               <span className="font-mono text-[10px] text-[#4b5563]">
                 state{' '}
@@ -220,8 +215,7 @@ export default function Logs() {
               )}
               {runningRow?.sessionId && (
                 <span className="font-mono text-[10px] text-[#4b5563]">
-                  session{' '}
-                  <span className="text-[#9ca3af]">{runningRow.sessionId.slice(0, 8)}</span>
+                  session <span className="text-[#9ca3af]">{runningRow.sessionId.slice(0, 8)}</span>
                 </span>
               )}
               {selectedIssue?.branchName && (
@@ -241,13 +235,15 @@ export default function Logs() {
           {selectedId && (
             <div
               data-testid="logs-filter-chips"
-              className="flex flex-shrink-0 items-center gap-2 border-b border-[#1e2420] bg-terminal-header px-4 py-1.5"
+              className="bg-terminal-header flex flex-shrink-0 items-center gap-2 border-b border-[#1e2420] px-4 py-1.5"
             >
               {FILTER_CHIPS.map((chip) => (
                 <button
                   key={chip}
                   data-testid={`chip-${chip}`}
-                  onClick={() => toggleChip(chip)}
+                  onClick={() => {
+                    toggleChip(chip);
+                  }}
                   className={`rounded px-2 py-0.5 font-mono text-[10px] transition-colors ${
                     activeChips.has(chip)
                       ? 'bg-[#1a1f2e] text-[#9ca3af]'

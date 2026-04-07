@@ -41,7 +41,12 @@ interface ProfilesCardProps {
   availableModels?: Record<string, { id: string; label: string }[]>;
 }
 
-export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels }: ProfilesCardProps) {
+export function ProfilesCard({
+  profileDefs,
+  onUpsert,
+  onDelete,
+  availableModels,
+}: ProfilesCardProps) {
   const [uiState, setUiState] = useState({ adding: false, deleteError: '' });
   const { adding, deleteError } = uiState;
   const [quickAddSaving, setQuickAddSaving] = useState<string | null>(null);
@@ -136,17 +141,11 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
 
   return (
     <>
-      <div
-        className="overflow-hidden rounded-[var(--radius-md)] border border-theme-line bg-theme-bg-elevated"
-      >
-        <div
-          className="flex items-center justify-between border-b px-5 py-4 border-theme-line bg-theme-panel-strong"
-        >
+      <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
+        <div className="border-theme-line bg-theme-panel-strong flex items-center justify-between border-b px-5 py-4">
           <div>
-            <h2 className="text-sm font-semibold text-theme-text">
-              Agent Profiles
-            </h2>
-            <p className="mt-0.5 text-xs text-theme-text-secondary">
+            <h2 className="text-theme-text text-sm font-semibold">Agent Profiles</h2>
+            <p className="text-theme-text-secondary mt-0.5 text-xs">
               Select per-issue from the issue detail modal. Backend and model controls stay
               backend-aware, and custom wrapper commands are preserved instead of flattened.
             </p>
@@ -154,7 +153,7 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
           {!adding && (
             <button
               onClick={openAddForm}
-              className="flex items-center gap-1.5 rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 bg-theme-accent"
+              className="bg-theme-accent flex items-center gap-1.5 rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90"
             >
               <svg
                 className="h-3.5 w-3.5"
@@ -174,14 +173,10 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
           <table className="w-full text-sm">
             <thead className="bg-theme-bg-soft">
               <tr>
-                <th
-                  className="w-40 px-4 py-3 text-left text-xs font-medium tracking-wider uppercase"
-                >
+                <th className="w-40 px-4 py-3 text-left text-xs font-medium tracking-wider uppercase">
                   Name
                 </th>
-                <th
-                  className="px-4 py-3 text-left text-xs font-medium tracking-wider uppercase"
-                >
+                <th className="px-4 py-3 text-left text-xs font-medium tracking-wider uppercase">
                   Backend / Model
                 </th>
                 <th className="w-40 px-4 py-3" />
@@ -200,11 +195,15 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
               ))}
 
               {adding && (
-                <tr className="border-b border-theme-line bg-theme-bg-soft">
+                <tr className="border-theme-line bg-theme-bg-soft border-b">
                   <td className="px-4 py-3 align-top">
                     <input
-                      className="w-full rounded border px-3 py-1.5 font-mono text-sm focus:outline-none focus:ring-1"
-                      style={{ borderColor: 'var(--line)', background: 'var(--panel-strong)', color: 'var(--text)' }}
+                      className="w-full rounded border px-3 py-1.5 font-mono text-sm focus:ring-1 focus:outline-none"
+                      style={{
+                        borderColor: 'var(--line)',
+                        background: 'var(--panel-strong)',
+                        color: 'var(--text)',
+                      }}
                       placeholder="profile-name"
                       {...addForm.register('name')}
                       onKeyDown={(e) => {
@@ -213,7 +212,7 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
                       autoFocus
                     />
                     {addForm.formState.errors.name && (
-                      <p role="alert" className="mt-1 text-xs text-theme-danger">
+                      <p role="alert" className="text-theme-danger mt-1 text-xs">
                         {addForm.formState.errors.name.message}
                       </p>
                     )}
@@ -250,27 +249,29 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
                       dynamicModels={availableModels}
                     />
                     {addForm.formState.errors.command && (
-                      <p role="alert" className="text-xs text-theme-danger">
+                      <p role="alert" className="text-theme-danger text-xs">
                         {addForm.formState.errors.command.message}
                       </p>
                     )}
                     {addForm.formState.errors.root && (
-                      <p role="alert" className="text-xs text-theme-danger">
+                      <p role="alert" className="text-theme-danger text-xs">
                         {addForm.formState.errors.root.message}
                       </p>
                     )}
                   </td>
                   <td className="px-4 py-3 text-right align-top whitespace-nowrap">
                     <button
-                      onClick={() => { void handleAdd(); }}
+                      onClick={() => {
+                        void handleAdd();
+                      }}
                       disabled={addForm.formState.isSubmitting}
-                      className="mr-2 rounded-[var(--radius-sm)] px-3 py-1 text-sm text-white transition-colors disabled:opacity-50 bg-theme-accent"
+                      className="bg-theme-accent mr-2 rounded-[var(--radius-sm)] px-3 py-1 text-sm text-white transition-colors disabled:opacity-50"
                     >
                       {addForm.formState.isSubmitting ? 'Saving…' : 'Save'}
                     </button>
                     <button
                       onClick={handleAddCancel}
-                      className="rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80 border-theme-line text-theme-text-secondary"
+                      className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80"
                     >
                       Cancel
                     </button>
@@ -280,15 +281,9 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
 
               {profileEntries.length === 0 && !adding && (
                 <tr>
-                  <td
-                    colSpan={3}
-                    className="px-4 py-10 text-center text-sm"
-                  >
+                  <td colSpan={3} className="px-4 py-10 text-center text-sm">
                     No profiles configured yet.{' '}
-                    <button
-                      onClick={openAddForm}
-                      className="hover:underline text-theme-accent"
-                    >
+                    <button onClick={openAddForm} className="text-theme-accent hover:underline">
                       Add one
                     </button>
                   </td>
@@ -299,8 +294,8 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
         </div>
 
         {suggestedToShow.length > 0 && (
-          <div className="border-t px-6 py-4 border-theme-line">
-            <p className="mb-3 text-[11px] font-medium tracking-wider uppercase text-theme-muted">
+          <div className="border-theme-line border-t px-6 py-4">
+            <p className="text-theme-muted mb-3 text-[11px] font-medium tracking-wider uppercase">
               Quick-add templates
             </p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -318,11 +313,13 @@ export function ProfilesCard({ profileDefs, onUpsert, onDelete, availableModels 
         )}
       </div>
 
-      {deleteError && <p className="text-sm text-theme-danger">{deleteError}</p>}
+      {deleteError && <p className="text-theme-danger text-sm">{deleteError}</p>}
 
       <TemplatePreviewModal
         suggestion={previewSuggestion}
-        onClose={() => { setPreviewSuggestion(null); }}
+        onClose={() => {
+          setPreviewSuggestion(null);
+        }}
         onAdd={handleQuickAdd}
         saving={previewSuggestion !== null && quickAddSaving === previewSuggestion.id}
       />

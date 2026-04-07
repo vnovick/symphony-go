@@ -8,10 +8,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // succeedOnceRunner returns a successful result on every call (non-zero tokens,
@@ -76,10 +76,7 @@ func TestOrchestratorLifecycle(t *testing.T) {
 
 	// 2. Wait for the runner to be called at least once.
 	deadline := time.After(3 * time.Second)
-	for {
-		if runner.calls.Load() >= 1 {
-			break
-		}
+	for runner.calls.Load() < 1 {
 		select {
 		case <-deadline:
 			t.Fatal("runner was not called within timeout")

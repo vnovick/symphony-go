@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/vnovick/symphony-go/internal/config"
+	"github.com/vnovick/itervox/internal/config"
 )
 
 // Provider defines the workspace operations needed by the orchestrator.

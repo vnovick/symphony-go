@@ -6,9 +6,14 @@ interface ModalProps {
   onClose: () => void;
   className?: string;
   children: React.ReactNode;
-  showCloseButton?: boolean; // New prop to control close button visibility
-  isFullscreen?: boolean; // Default to false for backwards compatibility
+  showCloseButton?: boolean;
+  isFullscreen?: boolean;
+  /** When true, adds standard p-6 padding to the content area. */
+  padded?: boolean;
 }
+
+export { ConfirmModal } from './ConfirmModal';
+export { ModalFooter } from './ModalFooter';
 
 export const Modal: React.FC<ModalProps> = ({
   isOpen,
@@ -17,6 +22,7 @@ export const Modal: React.FC<ModalProps> = ({
   className,
   showCloseButton = true, // Default to true for backwards compatibility
   isFullscreen = false,
+  padded = false,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
 
@@ -60,7 +66,7 @@ export const Modal: React.FC<ModalProps> = ({
     <div className="modal fixed inset-0 z-99999 flex items-center justify-center overflow-y-auto">
       {!isFullscreen && (
         <div
-          className="fixed inset-0 h-full w-full backdrop-blur-sm bg-black/50"
+          className="fixed inset-0 h-full w-full bg-black/50 backdrop-blur-sm"
           onClick={onClose}
         ></div>
       )}
@@ -68,7 +74,7 @@ export const Modal: React.FC<ModalProps> = ({
         ref={modalRef}
         role="dialog"
         aria-modal="true"
-        className={`${contentClasses} ${className ?? ''} border border-theme-line bg-theme-bg-elevated`}
+        className={`${contentClasses} ${className ?? ''} border-theme-line bg-theme-bg-elevated border`}
         style={{ boxShadow: 'var(--shadow-lg)' }}
         onClick={(e) => {
           e.stopPropagation();
@@ -78,7 +84,7 @@ export const Modal: React.FC<ModalProps> = ({
           <button
             onClick={onClose}
             aria-label="Close"
-            className="absolute top-3 right-3 z-999 flex h-8 w-8 items-center justify-center rounded-full transition-colors sm:top-4 sm:right-4 bg-theme-bg-soft text-theme-muted"
+            className="bg-theme-bg-soft text-theme-muted absolute top-3 right-3 z-999 flex h-8 w-8 items-center justify-center rounded-full transition-colors sm:top-4 sm:right-4"
           >
             <svg
               width="24"
@@ -96,7 +102,7 @@ export const Modal: React.FC<ModalProps> = ({
             </svg>
           </button>
         )}
-        <div>{children}</div>
+        <div className={padded ? 'p-6' : ''}>{children}</div>
       </div>
     </div>
   );

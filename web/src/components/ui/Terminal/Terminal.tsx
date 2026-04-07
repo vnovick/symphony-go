@@ -43,12 +43,9 @@ export function Terminal({ entries, follow = true, showTime = false, className }
       style={{ background: 'var(--bg)', color: 'var(--text-secondary)' }}
     >
       {entries.map((entry, i) => (
-        <div key={`${String(entry.ts)}-${String(i)}`} className="flex gap-2 py-0.5 px-2 leading-5">
+        <div key={`${String(entry.ts)}-${String(i)}`} className="flex gap-2 px-2 py-0.5 leading-5">
           {showTime && (
-            <span
-              data-testid={`terminal-time-${String(i)}`}
-              className="shrink-0 opacity-40"
-            >
+            <span data-testid={`terminal-time-${String(i)}`} className="shrink-0 opacity-40">
               {formatTime(entry.ts)}
             </span>
           )}

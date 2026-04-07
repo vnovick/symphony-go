@@ -1,7 +1,7 @@
 /**
- * Zod schemas for all shapes returned by the Symphony HTTP API.
+ * Zod schemas for all shapes returned by the Itervox HTTP API.
  *
- * These are the authoritative type definitions. `symphony.ts` re-exports the
+ * These are the authoritative type definitions. `itervox.ts` re-exports the
  * inferred TypeScript types for backward compatibility with existing imports.
  *
  * At every API boundary (fetch + SSE parse), call `.parse()` so a field rename
@@ -29,6 +29,7 @@ export const RunningRowSchema = z.object({
   workerHost: z.string().optional(), // omitempty — absent for local execution
   backend: z.string().optional(), // omitempty — absent when unknown
   kind: z.string().optional(), // omitempty — "worker" (default) | "reviewer"
+  subagentCount: z.number().optional(), // omitempty — 0 when no subagents
   elapsedMs: z.number(),
   startedAt: z.string(),
 });
@@ -117,14 +118,18 @@ export const StateSnapshotSchema = z.object({
   dispatchStrategy: z.string().optional(),
   defaultBackend: z.string().optional(),
   inlineInput: z.boolean().optional(),
-  inputRequired: z.array(z.object({
-    identifier: z.string(),
-    sessionId: z.string(),
-    context: z.string(),
-    backend: z.string().optional(),
-    profile: z.string().optional(),
-    queuedAt: z.string(),
-  })).optional(),
+  inputRequired: z
+    .array(
+      z.object({
+        identifier: z.string(),
+        sessionId: z.string(),
+        context: z.string(),
+        backend: z.string().optional(),
+        profile: z.string().optional(),
+        queuedAt: z.string(),
+      }),
+    )
+    .optional(),
 });
 
 export const LogEventTypeSchema = z.enum([
@@ -170,7 +175,7 @@ export const TrackerIssueSchema = z.object({
   agentBackend: z.string().optional(),
 });
 
-// Inferred TypeScript types — re-exported from symphony.ts for backward compatibility.
+// Inferred TypeScript types — re-exported from itervox.ts for backward compatibility.
 export type SSHHostInfo = z.infer<typeof SSHHostInfoSchema>;
 export type CommentRow = z.infer<typeof CommentRowSchema>;
 export type RunningRow = z.infer<typeof RunningRowSchema>;

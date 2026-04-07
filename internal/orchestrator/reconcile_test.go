@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 func cfgWithStall(stallMs int) *config.Config {

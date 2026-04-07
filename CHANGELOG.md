@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Symphony Go are documented here.
+All notable changes to Itervox are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
@@ -28,7 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 | `internal/server/handlers.go` | `parseLogLine`: new cases for `action_started` (→ `event:"action"` with `…` suffix) and `action_detail` (→ `event:"action"` with `Detail` JSON); both handle `claude:` and `codex:` prefixes |
 | `internal/server/handlers.go` | `buildDetailJSON(status, exitCode, outputSize string) string` *(new)* — builds `{"status":…,"exit_code":…,"output_size":…}` omitting empty fields, using a typed struct for deterministic key order |
 | `internal/statusui/model.go` | `colorLine`: `action_detail` case returns `""` (suppressed); `action_started` case renders gray `⧖ tool — desc…` |
-| `web/src/types/symphony.ts` | `IssueLogEntry.time?: string`, `IssueLogEntry.detail?: string` |
+| `web/src/types/itervox.ts` | `IssueLogEntry.time?: string`, `IssueLogEntry.detail?: string` |
 
 #### Codex parity in TUI and web API
 
@@ -51,7 +51,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 | `internal/templates/workflow_github.md` | Profile section examples added |
 | `internal/templates/workflow_linear.md` | Profile section examples added |
 | `WORKFLOW.md` *(new)* | Root-level workflow template with profile definitions |
-| `web/src/types/symphony.ts` | `ProfileDef` interface; `StateSnapshot.availableProfiles`, `profileDefs`, `agentMode`, `activeStates`, `terminalStates`, `completionState`, `backlogStates` |
+| `web/src/types/itervox.ts` | `ProfileDef` interface; `StateSnapshot.availableProfiles`, `profileDefs`, `agentMode`, `activeStates`, `terminalStates`, `completionState`, `backlogStates` |
 | `web/src/pages/Settings/index.tsx` | Profile picker UI |
 | `web/src/pages/Settings/profileCommands.ts` *(new)* | Per-profile agent command helpers |
 | `web/src/hooks/useSettingsActions.ts` | Profile selection action |
@@ -60,8 +60,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 | File | Change |
 |------|--------|
-| `web/src/types/symphony.ts` | `RunningRow.backend string`, `HistoryRow.backend? string` |
-| `web/src/components/symphony/RunningSessionsTable.tsx` | Backend column |
+| `web/src/types/itervox.ts` | `RunningRow.backend string`, `HistoryRow.backend? string` |
+| `web/src/components/itervox/RunningSessionsTable.tsx` | Backend column |
 | `web/src/queries/issues.ts` | Backend field forwarded |
 
 #### Per-run log isolation (`AppSessionID` + `session_id` stamping)
@@ -74,8 +74,8 @@ would show subagents from all prior runs mixed together.
 
 | File | Change |
 |------|--------|
-| `cmd/symphony/main.go` | `newAppSessionID()` *(new)* — generates a 16-byte `crypto/rand` hex token at startup; stored as `appSessionID` and threaded through `buildSnapFunc` |
-| `cmd/symphony/main.go` | `buildSnapFunc`: `HistoryRow.AppSessionID` set from `run.AppSessionID`; `StateSnapshot.CurrentAppSessionID` set from the live token |
+| `cmd/itervox/main.go` | `newAppSessionID()` *(new)* — generates a 16-byte `crypto/rand` hex token at startup; stored as `appSessionID` and threaded through `buildSnapFunc` |
+| `cmd/itervox/main.go` | `buildSnapFunc`: `HistoryRow.AppSessionID` set from `run.AppSessionID`; `StateSnapshot.CurrentAppSessionID` set from the live token |
 | `internal/orchestrator/state.go` | `CompletedRun.AppSessionID string` *(new)* — daemon-invocation grouping key; empty for legacy entries |
 | `internal/orchestrator/orchestrator.go` | `Orchestrator.appSessionID string` field and `SetAppSessionID(id string)` method *(new)* — allows `main.go` to inject the token after construction; stamped onto `CompletedRun` at worker exit |
 | `internal/orchestrator/logging.go` | `formatBufLine` `switch key`: new `case "session_id"` maps slog key-value to `BufLogEntry.SessionID` — previously the session ID was silently dropped |
@@ -89,7 +89,7 @@ would show subagents from all prior runs mixed together.
 
 | File | Change |
 |------|--------|
-| `cmd/symphony/main.go` | `loadDotEnv()` *(new)* — loads `.symphony/.env` or `.env` from CWD at startup via `github.com/joho/godotenv`; existing env vars are never overwritten; runs before `config.Load` so env vars are available for config resolution |
+| `cmd/itervox/main.go` | `loadDotEnv()` *(new)* — loads `.itervox/.env` or `.env` from CWD at startup via `github.com/joho/godotenv`; existing env vars are never overwritten; runs before `config.Load` so env vars are available for config resolution |
 | `.env.example` *(new)* | Documents all required env vars with format hints (`LINEAR_API_KEY`, `GITHUB_TOKEN`, `SSH_KEY_PATH`) |
 
 #### Single-issue fast-path fetch (`FetchIssueByIdentifier`)
@@ -102,19 +102,19 @@ would show subagents from all prior runs mixed together.
 | `internal/tracker/memory.go` | Implements `FetchIssueByIdentifier` for in-memory tracker |
 | `internal/server/server.go` | New `FetchIssue` callback on `server.Config`; `handleIssueDetail` uses fast path via `FetchIssue` with fallback to `fetchIssues` scan |
 
-#### `symphony init --runner` flag
+#### `itervox init --runner` flag
 
 | File | Change |
 |------|--------|
-| `cmd/symphony/main.go` | `runInit`: new `--runner claude\|codex` flag (default: `claude`); `codex` emits `command: codex` + `backend: codex` in the generated WORKFLOW.md; runner is validated before file write |
-| `cmd/symphony/main.go` | `generateWorkflow`: accepts `runner` parameter and emits the appropriate `agent:` block |
-| `cmd/symphony/main.go` | `configuredBackend(command, explicit string)` *(new)* — resolves final backend string from agent command + explicit override |
+| `cmd/itervox/main.go` | `runInit`: new `--runner claude\|codex` flag (default: `claude`); `codex` emits `command: codex` + `backend: codex` in the generated WORKFLOW.md; runner is validated before file write |
+| `cmd/itervox/main.go` | `generateWorkflow`: accepts `runner` parameter and emits the appropriate `agent:` block |
+| `cmd/itervox/main.go` | `configuredBackend(command, explicit string)` *(new)* — resolves final backend string from agent command + explicit override |
 
 #### Per-project log directory
 
 | File | Change |
 |------|--------|
-| `cmd/symphony/main.go` | `--logs-dir` default changed from `./log` to `~/.symphony/logs/<tracker-kind>/<project-slug>`; new `defaultLogsDir(workflowPath string)` helper performs a lightweight early config read to derive the path; failures fall back to `~/.symphony/logs` |
+| `cmd/itervox/main.go` | `--logs-dir` default changed from `./log` to `~/.itervox/logs/<tracker-kind>/<project-slug>`; new `defaultLogsDir(workflowPath string)` helper performs a lightweight early config read to derive the path; failures fall back to `~/.itervox/logs` |
 
 #### Auto-clear workspace
 
@@ -125,13 +125,13 @@ would show subagents from all prior runs mixed together.
 | `internal/server/handlers.go` | `POST /api/v1/settings/workspace/auto-clear` — persists the toggle back to WORKFLOW.md and notifies the orchestrator |
 | `internal/workflow/loader.go` | `PatchWorkspaceBoolField(path, key string, enabled bool)` *(new)* — generic workspace-block bool patcher; backed by shared `patchBlockBoolField` with the existing `PatchAgentBoolField` |
 | `web/src/pages/Settings/index.tsx` | Toggle switch "Auto-clear workspace on success" with description |
-| `web/src/types/symphony.ts` (via `schemas.ts`) | `StateSnapshot.autoClearWorkspace?: boolean` |
+| `web/src/types/itervox.ts` (via `schemas.ts`) | `StateSnapshot.autoClearWorkspace?: boolean` |
 
 #### Agent queue view
 
 | File | Change |
 |------|--------|
-| `web/src/components/symphony/AgentQueueView.tsx` *(new)* | Drag-and-drop issue→agent-profile assignment board using `@dnd-kit/core`; columns per profile + "Unassigned"; dragging a card calls `onProfileChange` |
+| `web/src/components/itervox/AgentQueueView.tsx` *(new)* | Drag-and-drop issue→agent-profile assignment board using `@dnd-kit/core`; columns per profile + "Unassigned"; dragging a card calls `onProfileChange` |
 | `web/src/pages/Dashboard/index.tsx` | "◈ Agents" tab added to the board/list/agents toggle (visible when `availableProfiles.length > 0`); `AgentQueueView` rendered in agents tab |
 | `web/src/pages/Dashboard/index.tsx` | Inline profile `<select>` in board and list views — per-issue assignment without opening the queue tab |
 
@@ -140,7 +140,7 @@ would show subagents from all prior runs mixed together.
 | File | Change |
 |------|--------|
 | `internal/config/config.go` | `WorkspaceConfig.Worktree bool` — new field; defaults `false` (backward-compatible); loaded from `workspace.worktree` in WORKFLOW.md front-matter |
-| `internal/workspace/worktree.go` *(new)* | `SlugifyIdentifier(id)` — lowercases, replaces non-alphanumeric chars with `-`, deduplicates; `ResolveWorktreeBranch(branchName, identifier)` — returns explicit branch > `symphony/<slug>` fallback, skips default branches (main/master/develop); `ensureWorktree` — `git worktree add -b <branch>`; retries without `-b` when branch already exists; `removeWorktree` — `git worktree remove --force` + `git worktree prune` + optional `git branch -D` |
+| `internal/workspace/worktree.go` *(new)* | `SlugifyIdentifier(id)` — lowercases, replaces non-alphanumeric chars with `-`, deduplicates; `ResolveWorktreeBranch(branchName, identifier)` — returns explicit branch > `itervox/<slug>` fallback, skips default branches (main/master/develop); `ensureWorktree` — `git worktree add -b <branch>`; retries without `-b` when branch already exists; `removeWorktree` — `git worktree remove --force` + `git worktree prune` + optional `git branch -D` |
 | `internal/workspace/manager.go` | `EnsureWorkspace` / `RemoveWorkspace` gain a `branchName string` parameter; delegate to `ensureWorktree` / `removeWorktree` when `cfg.Workspace.Worktree = true`, otherwise fall back to original directory-per-issue behaviour |
 | `internal/orchestrator/orchestrator.go` | `runWorker`: calls `workspace.ResolveWorktreeBranch` before `EnsureWorkspace`; `CheckoutBranch` step skipped when `worktreeMode = true` (branch already checked out by worktree); `auto_clear` goroutine passes resolved branch name to `RemoveWorkspace` |
 
@@ -187,7 +187,7 @@ would show subagents from all prior runs mixed together.
 | `internal/statusui/model_catwalk_test.go` *(new)* | Catwalk golden-file tests — drives full Update→View pipeline and diffs against `testdata/` snapshots |
 | `internal/statusui/testdata/` *(new)* | Golden snapshots for catwalk tests (`catwalk_details`, `catwalk_picker`, `catwalk_tool_detail`, `catwalk_tools`) |
 | `internal/orchestrator/subagents_internal_test.go` *(new)* | Subagent orchestration internal tests |
-| `cmd/symphony/main_test.go` *(new)* | Main entry-point smoke tests |
+| `cmd/itervox/main_test.go` *(new)* | Main entry-point smoke tests |
 
 ---
 
@@ -226,14 +226,14 @@ would show subagents from all prior runs mixed together.
 
 | Item | Details |
 |------|---------|
-| `SECURITY.md` | Responsible disclosure process, scope (API token exposure, workspace path traversal, HTTP API, prompt injection), and link to Symphony SPEC |
-| `CONTRIBUTING.md` | Added Protocol Specification section linking to the [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md) |
+| `SECURITY.md` | Responsible disclosure process, scope (API token exposure, workspace path traversal, HTTP API, prompt injection), and link to itervox SPEC |
+| `CONTRIBUTING.md` | Added Protocol Specification section linking to the [itervox SPEC](https://github.com/openai/itervox/blob/main/SPEC.md) |
 | `.env.example` | All required env vars documented with format hints (`LINEAR_API_KEY`, `GITHUB_TOKEN`, `SSH_KEY_PATH`) |
 | `ErrorBoundary` component | Class component wrapping the app root — render crashes show a recovery UI instead of a blank screen |
 | SSE exponential backoff | Reconnect delay increases `5s → 10s → 20s → 30s` (cap) instead of a flat 5 s retry |
 | Go coverage gate | CI fails if total Go coverage drops below **50%** (`ci-go.yml`) |
 | Frontend coverage thresholds | `vitest.config.ts` enforces ≥ 15% statement / ≥ 12% function coverage |
-| Zod runtime API validation | `src/types/schemas.ts` validates all 4 API boundaries; `symphony.ts` re-exports inferred types for backward compatibility |
+| Zod runtime API validation | `src/types/schemas.ts` validates all 4 API boundaries; `itervox.ts` re-exports inferred types for backward compatibility |
 | Typed tracker errors | `tracker.APIStatusError`, `tracker.NotFoundError` (supports `errors.Is(err, tracker.ErrNotFound)`), `tracker.GraphQLError` in `internal/tracker/errors.go` |
 | `BackoffMs` godoc | Full retry progression table (`10s → 20s → … → 300s cap`) with formula and rationale |
 | `AgentConfig` timeout docs | Each of `turn_timeout_ms`, `read_timeout_ms`, `stall_timeout_ms` now has a doc comment explaining scope, default, and how it differs from the others |
@@ -253,7 +253,7 @@ would show subagents from all prior runs mixed together.
 
 ### Added
 
-- Initial public release of Symphony Go
+- Initial public release of Itervox
 - Kanban web dashboard for real-time issue monitoring
 - Terminal UI (TUI) with split-panel issue list and log viewer
 - Linear and GitHub tracker integration
@@ -261,9 +261,9 @@ would show subagents from all prior runs mixed together.
 - Agent profiles for per-issue command overrides
 - Agent teams mode for multi-agent collaboration
 - Timeline view for historical agent run review
-- `symphony --version` flag
-- `symphony init` command for WORKFLOW.md scaffolding
-- `symphony clear` command for workspace cleanup
+- `itervox --version` flag
+- `itervox init` command for WORKFLOW.md scaffolding
+- `itervox clear` command for workspace cleanup
 - CONTRIBUTING.md and CODE_OF_CONDUCT.md
 
 ### Security
@@ -284,6 +284,6 @@ would show subagents from all prior runs mixed together.
 
 - Linear + GitHub tracker integration, Claude Code agent runner, bubbletea TUI, REST API, web dashboard.
 
-[Unreleased]: https://github.com/vnovick/symphony-go/compare/v0.0.2...HEAD
-[0.0.2]: https://github.com/vnovick/symphony-go/compare/v0.1.0...v0.0.2
-[0.1.0]: https://github.com/vnovick/symphony-go/releases/tag/v0.1.0
+[Unreleased]: https://github.com/vnovick/itervox-go/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/vnovick/itervox-go/compare/v0.1.0...v0.0.2
+[0.1.0]: https://github.com/vnovick/itervox-go/releases/tag/v0.1.0

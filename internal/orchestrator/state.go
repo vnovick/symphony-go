@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // EventType identifies the kind of OrchestratorEvent.
@@ -29,11 +29,6 @@ const (
 	// with EventWorkerExited, closing the TOCTOU window where a natural worker
 	// exit races with a user-initiated cancel (GO-R5-3).
 	EventTerminateRunning EventType = "TerminateRunning"
-	// EventReviewerCompleted is sent by runReviewerWorker when it finishes
-	// (success or failure) so the event loop can append a CompletedRun record
-	// to the history ring buffer without requiring the reviewer goroutine to
-	// call addCompletedRun directly (which would violate the single-writer invariant).
-	EventReviewerCompleted EventType = "ReviewerCompleted"
 	// EventCancelRetry is sent by CancelIssue when the target issue is in the
 	// retry queue (no live worker). The event loop removes the retry entry,
 	// releases the claim, and moves the issue to PausedIdentifiers.
@@ -53,16 +48,15 @@ const (
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
 type OrchestratorEvent struct { //nolint:revive
-	Type         EventType
-	IssueID      string // tracker UUID (e.g. "abc123"); used by WorkerExited/Update events
-	Identifier   string // human identifier (e.g. "ENG-1"); used by ForceReanalyze events
-	RunEntry     *RunEntry
-	RetryEntry   *RetryEntry
+	Type               EventType
+	IssueID            string // tracker UUID (e.g. "abc123"); used by WorkerExited/Update events
+	Identifier         string // human identifier (e.g. "ENG-1"); used by ForceReanalyze events
+	RunEntry           *RunEntry
+	RetryEntry         *RetryEntry
 	Error              error
 	Message            string              // user-provided text for EventProvideInput
 	ReviewerProfile    string              // profile name for EventDispatchReviewer
-	CompletedRun       *CompletedRun       // used by EventReviewerCompleted
-	InputRequiredEntry *InputRequiredEntry  // used by TerminalInputRequired
+	InputRequiredEntry *InputRequiredEntry // used by TerminalInputRequired
 }
 
 // TerminalReason classifies why a worker stopped.
@@ -89,12 +83,12 @@ const (
 type InputRequiredEntry struct {
 	IssueID     string
 	Identifier  string
-	SessionID   string    // for --resume
-	Context     string    // what the agent was waiting for (from FailureText/ResultText)
-	Backend     string    // which runner was used
-	Command     string    // agent command (for resume on same runner)
-	WorkerHost  string    // SSH host (for resume on same host)
-	ProfileName string    // active profile
+	SessionID   string // for --resume
+	Context     string // what the agent was waiting for (from FailureText/ResultText)
+	Backend     string // which runner was used
+	Command     string // agent command (for resume on same runner)
+	WorkerHost  string // SSH host (for resume on same host)
+	ProfileName string // active profile
 	QueuedAt    time.Time
 }
 
@@ -161,9 +155,9 @@ type State struct {
 	// throughout a tick. These are the cfg fields governed by cfgMu.
 	ActiveStates   []string
 	TerminalStates []string
-	Running             map[string]*RunEntry
-	Claimed             map[string]struct{}
-	RetryAttempts       map[string]*RetryEntry
+	Running        map[string]*RunEntry
+	Claimed        map[string]struct{}
+	RetryAttempts  map[string]*RetryEntry
 	// PausedIdentifiers tracks issues paused by user kill.
 	// Key: identifier (e.g. "TIPRD-25"), Value: issue UUID (empty when loaded
 	// from an old disk snapshot that predates UUID persistence).
@@ -236,6 +230,6 @@ func NewState(cfg *config.Config) State {
 		PrevActiveIdentifiers: make(map[string]struct{}),
 		DiscardingIdentifiers: make(map[string]struct{}),
 		InputRequiredIssues:   make(map[string]*InputRequiredEntry),
-		InlineInputIssues:    make(map[string]*InlineInputEntry),
+		InlineInputIssues:     make(map[string]*InlineInputEntry),
 	}
 }

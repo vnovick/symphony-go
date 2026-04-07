@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/vnovick/symphony-go/internal/workflow"
+	"github.com/vnovick/itervox/internal/workflow"
 )
 
 var envVarRe = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)$`)
@@ -26,7 +26,7 @@ type TrackerConfig struct {
 	WorkingState string
 	// CompletionState is the state name to transition an issue to when the agent
 	// finishes successfully (e.g. "In Review", "Done"). Empty string = no transition.
-	// When set, the issue leaves active_states so Symphony stops re-dispatching it.
+	// When set, the issue leaves active_states so Itervox stops re-dispatching it.
 	CompletionState string
 	// BacklogStates are always fetched and shown as the leftmost board column(s).
 	// Defaults to ["Backlog"] for linear, [] for github.
@@ -48,7 +48,7 @@ type WorkspaceConfig struct {
 	// succeeds (reaches the completion state) so disk space is reclaimed
 	// automatically. Logs are kept separately and unaffected.
 	AutoClearWorkspace bool
-	// Worktree enables git worktree mode. When true, Symphony manages
+	// Worktree enables git worktree mode. When true, Itervox manages
 	// per-issue git worktrees inside workspace.root instead of creating
 	// one empty directory per issue. Requires the base git clone at
 	// workspace.root to already exist. Default: false.
@@ -167,7 +167,7 @@ type AgentConfig struct {
 	MaxRetries int
 	// BaseBranch is the remote branch used as the base for git diffs when
 	// enriching PR context (e.g. "origin/main", "origin/develop", "origin/master").
-	// When empty, Symphony auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
+	// When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`,
 	// falling back to "origin/main" if detection fails.
 	BaseBranch string
 	// AvailableModels maps backend names ("claude", "codex") to model options
@@ -199,7 +199,7 @@ type ServerConfig struct {
 	Host string
 }
 
-// Config is the fully-parsed, defaulted, and resolved Symphony configuration.
+// Config is the fully-parsed, defaulted, and resolved Itervox configuration.
 type Config struct {
 	Tracker        TrackerConfig
 	Polling        PollingConfig
@@ -348,13 +348,13 @@ func resolvePathValue(value, defaultVal string) string {
 	return expanded
 }
 
-// defaultWorkspaceRoot returns ~/.symphony/workspaces, falling back to
-// os.TempDir()/symphony_workspaces if the home directory cannot be determined.
+// defaultWorkspaceRoot returns ~/.itervox/workspaces, falling back to
+// os.TempDir()/itervox_workspaces if the home directory cannot be determined.
 func defaultWorkspaceRoot() string {
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".symphony", "workspaces")
+		return filepath.Join(home, ".itervox", "workspaces")
 	}
-	return filepath.Join(os.TempDir(), "symphony_workspaces")
+	return filepath.Join(os.TempDir(), "itervox_workspaces")
 }
 
 func expandTilde(path string) string {

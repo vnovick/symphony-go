@@ -1,4 +1,4 @@
-// Package app contains extracted business logic from cmd/symphony that is
+// Package app contains extracted business logic from cmd/itervox that is
 // testable in isolation. Functions here depend only on domain, orchestrator,
 // config, and server — no side effects.
 package app
@@ -6,10 +6,10 @@ package app
 import (
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/vnovick/symphony-go/internal/server"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/server"
 )
 
 // EnrichIssue maps a domain.Issue to a server.TrackerIssue, overlaying live

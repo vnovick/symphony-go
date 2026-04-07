@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -31,9 +31,10 @@ type RunningRow struct {
 	ElapsedMs    int64     `json:"elapsedMs"`
 	StartedAt    time.Time `json:"startedAt"`
 	SessionID    string    `json:"sessionId,omitempty"`
-	WorkerHost   string    `json:"workerHost,omitempty"`
-	Backend      string    `json:"backend,omitempty"`
-	Kind         string    `json:"kind,omitempty"` // "worker" (default) | "reviewer"
+	WorkerHost     string    `json:"workerHost,omitempty"`
+	Backend        string    `json:"backend,omitempty"`
+	Kind           string    `json:"kind,omitempty"` // "worker" (default) | "reviewer"
+	SubagentCount  int       `json:"subagentCount,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -138,40 +139,40 @@ type OrchestratorClient interface {
 // Boolean methods return false; error methods return errNotConfigured.
 type noopClient struct{}
 
-func (noopClient) FetchIssues(context.Context) ([]TrackerIssue, error)           { return nil, errNotConfigured }
-func (noopClient) CancelIssue(string) bool                                        { return false }
-func (noopClient) ResumeIssue(string) bool                                        { return false }
-func (noopClient) TerminateIssue(string) bool                                     { return false }
-func (noopClient) ReanalyzeIssue(string) bool                                     { return false }
-func (noopClient) FetchLogs(string) []string                                      { return nil }
-func (noopClient) ClearLogs(string) error                                         { return errNotConfigured }
-func (noopClient) ClearAllLogs() error                                            { return errNotConfigured }
-func (noopClient) ClearIssueSubLogs(string) error                                 { return errNotConfigured }
-func (noopClient) ClearSessionSublog(string, string) error                        { return errNotConfigured }
-func (noopClient) FetchSubLogs(string) ([]domain.IssueLogEntry, error)            { return nil, nil }
-func (noopClient) DispatchReviewer(string) error                                  { return errNotConfigured }
-func (noopClient) UpdateIssueState(context.Context, string, string) error         { return errNotConfigured }
-func (noopClient) SetWorkers(int)                                                  {}
-func (noopClient) BumpWorkers(int) int                                             { return 0 }
-func (noopClient) SetIssueProfile(string, string)                                 {}
-func (noopClient) SetIssueBackend(string, string)                                 {}
-func (noopClient) ProfileDefs() map[string]ProfileDef                             { return nil }
-func (noopClient) AvailableModels() map[string][]ModelOption                       { return nil }
-func (noopClient) ReviewerConfig() (string, bool)                                  { return "", false }
-func (noopClient) SetReviewerConfig(string, bool) error                            { return nil }
-func (noopClient) UpsertProfile(string, ProfileDef) error                         { return errNotConfigured }
-func (noopClient) DeleteProfile(string) error                                     { return errNotConfigured }
-func (noopClient) SetAgentMode(string) error                                      { return errNotConfigured }
-func (noopClient) SetAutoClearWorkspace(bool) error                               { return errNotConfigured }
-func (noopClient) ClearAllWorkspaces() error                                       { return errNotConfigured }
-func (noopClient) FetchLogIdentifiers() []string                                   { return nil }
-func (noopClient) UpdateTrackerStates([]string, []string, string) error           { return errNotConfigured }
-func (noopClient) AddSSHHost(string, string) error                                { return errNotConfigured }
-func (noopClient) RemoveSSHHost(string) error                                     { return errNotConfigured }
-func (noopClient) SetDispatchStrategy(string) error                               { return errNotConfigured }
-func (noopClient) ProvideInput(string, string) bool                               { return false }
-func (noopClient) DismissInput(string) bool                                        { return false }
-func (noopClient) SetInlineInput(bool) error                                       { return errNotConfigured }
+func (noopClient) FetchIssues(context.Context) ([]TrackerIssue, error)    { return nil, errNotConfigured }
+func (noopClient) CancelIssue(string) bool                                { return false }
+func (noopClient) ResumeIssue(string) bool                                { return false }
+func (noopClient) TerminateIssue(string) bool                             { return false }
+func (noopClient) ReanalyzeIssue(string) bool                             { return false }
+func (noopClient) FetchLogs(string) []string                              { return nil }
+func (noopClient) ClearLogs(string) error                                 { return errNotConfigured }
+func (noopClient) ClearAllLogs() error                                    { return errNotConfigured }
+func (noopClient) ClearIssueSubLogs(string) error                         { return errNotConfigured }
+func (noopClient) ClearSessionSublog(string, string) error                { return errNotConfigured }
+func (noopClient) FetchSubLogs(string) ([]domain.IssueLogEntry, error)    { return nil, nil }
+func (noopClient) DispatchReviewer(string) error                          { return errNotConfigured }
+func (noopClient) UpdateIssueState(context.Context, string, string) error { return errNotConfigured }
+func (noopClient) SetWorkers(int)                                         {}
+func (noopClient) BumpWorkers(int) int                                    { return 0 }
+func (noopClient) SetIssueProfile(string, string)                         {}
+func (noopClient) SetIssueBackend(string, string)                         {}
+func (noopClient) ProfileDefs() map[string]ProfileDef                     { return nil }
+func (noopClient) AvailableModels() map[string][]ModelOption              { return nil }
+func (noopClient) ReviewerConfig() (string, bool)                         { return "", false }
+func (noopClient) SetReviewerConfig(string, bool) error                   { return nil }
+func (noopClient) UpsertProfile(string, ProfileDef) error                 { return errNotConfigured }
+func (noopClient) DeleteProfile(string) error                             { return errNotConfigured }
+func (noopClient) SetAgentMode(string) error                              { return errNotConfigured }
+func (noopClient) SetAutoClearWorkspace(bool) error                       { return errNotConfigured }
+func (noopClient) ClearAllWorkspaces() error                              { return errNotConfigured }
+func (noopClient) FetchLogIdentifiers() []string                          { return nil }
+func (noopClient) UpdateTrackerStates([]string, []string, string) error   { return errNotConfigured }
+func (noopClient) AddSSHHost(string, string) error                        { return errNotConfigured }
+func (noopClient) RemoveSSHHost(string) error                             { return errNotConfigured }
+func (noopClient) SetDispatchStrategy(string) error                       { return errNotConfigured }
+func (noopClient) ProvideInput(string, string) bool                       { return false }
+func (noopClient) DismissInput(string) bool                               { return false }
+func (noopClient) SetInlineInput(bool) error                              { return errNotConfigured }
 
 // FuncClient builds an OrchestratorClient from individual function fields.
 // Any nil field falls back to the noopClient default. Intended for tests.
@@ -199,14 +200,14 @@ type FuncClient struct {
 	UpsertProfileFn         func(string, ProfileDef) error
 	DeleteProfileFn         func(string) error
 	SetAgentModeFn          func(string) error
-	SetAutoClearWorkspaceFn  func(bool) error
-	ClearAllWorkspacesFn     func() error
-	FetchLogIdentifiersFn    func() []string
-	UpdateTrackerStatesFn    func([]string, []string, string) error
-	FetchSubLogsFn           func(string) ([]domain.IssueLogEntry, error)
-	AddSSHHostFn             func(string, string) error
-	RemoveSSHHostFn          func(string) error
-	SetDispatchStrategyFn    func(string) error
+	SetAutoClearWorkspaceFn func(bool) error
+	ClearAllWorkspacesFn    func() error
+	FetchLogIdentifiersFn   func() []string
+	UpdateTrackerStatesFn   func([]string, []string, string) error
+	FetchSubLogsFn          func(string) ([]domain.IssueLogEntry, error)
+	AddSSHHostFn            func(string, string) error
+	RemoveSSHHostFn         func(string) error
+	SetDispatchStrategyFn   func(string) error
 }
 
 func (c *FuncClient) FetchIssues(ctx context.Context) ([]TrackerIssue, error) {
@@ -416,10 +417,10 @@ type StateSnapshot struct {
 	// Empty/absent means no profiles are configured.
 	AvailableProfiles []string `json:"availableProfiles,omitempty"`
 	// ProfileDefs is the map of named agent profile definitions from WORKFLOW.md.
-	ProfileDefs     map[string]ProfileDef      `json:"profileDefs,omitempty"`
-	AvailableModels map[string][]ModelOption   `json:"availableModels,omitempty"`
-	ReviewerProfile string                     `json:"reviewerProfile,omitempty"`
-	AutoReview      bool                       `json:"autoReview,omitempty"`
+	ProfileDefs     map[string]ProfileDef    `json:"profileDefs,omitempty"`
+	AvailableModels map[string][]ModelOption `json:"availableModels,omitempty"`
+	ReviewerProfile string                   `json:"reviewerProfile,omitempty"`
+	AutoReview      bool                     `json:"autoReview,omitempty"`
 	// AgentMode is the active agent collaboration mode.
 	// "" (off/solo): agent runs alone.
 	// "subagents":   agent may spawn helpers via its native delegation tool.
@@ -688,56 +689,60 @@ func (s *Server) routes() {
 		r.Get("/health", s.handleHealth)
 
 		// If an API token is configured, all remaining routes require it.
-		if s.apiToken != "" {
-			r.Use(s.bearerAuthMiddleware)
-		}
+		// Use r.Group to create a sub-router so middleware is applied only to
+		// authenticated routes without violating chi's "middleware before routes" rule.
+		r.Group(func(r chi.Router) {
+			if s.apiToken != "" {
+				r.Use(s.bearerAuthMiddleware)
+			}
 
-		r.Get("/state", s.handleState)
-		r.Get("/events", s.handleEvents)
-		r.Get("/issues", s.handleIssues)
-		r.Get("/issues/{identifier}", s.handleIssueDetail)
-		r.Get("/issues/{identifier}/logs", s.handleIssueLogs)
-		r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
-		r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
-		r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
-		r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
-		r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
-		r.Get("/logs/identifiers", s.handleLogIdentifiers)
-		r.Delete("/logs", s.handleClearAllLogs)
-		r.Delete("/issues/{identifier}", s.handleCancelIssue)
-		r.Post("/issues/{identifier}/cancel", s.handleCancelIssue)
-		r.Post("/issues/{identifier}/resume", s.handleResumeIssue)
-		r.Post("/issues/{identifier}/reanalyze", s.handleReanalyzeIssue)
-		r.Post("/issues/{identifier}/terminate", s.handleTerminateIssue)
-		r.Post("/issues/{identifier}/ai-review", s.handleAIReview)
-		r.Patch("/issues/{identifier}/state", s.handleUpdateIssueState)
-		r.Post("/issues/{identifier}/profile", s.handleSetIssueProfile)
-		r.Post("/issues/{identifier}/backend", s.handleSetIssueBackend)
-		r.Post("/issues/{identifier}/provide-input", s.handleProvideInput)
-		r.Post("/issues/{identifier}/dismiss-input", s.handleDismissInput)
-		r.Post("/settings/inline-input", s.handleSetInlineInput)
-		r.Get("/logs", s.handleLogs)
-		r.Post("/refresh", s.handleRefresh)
-		r.Get("/projects", s.handleListProjects)
-		r.Get("/projects/filter", s.handleGetProjectFilter)
-		r.Put("/projects/filter", s.handleSetProjectFilter)
-		r.Post("/settings/workers", s.handleSetWorkers)
-		r.Post("/settings/agent-mode", s.handleSetAgentMode)
-		r.Delete("/workspaces", s.handleClearAllWorkspaces)
-		r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
-		r.Get("/settings/models", s.handleListModels)
-		r.Get("/settings/reviewer", s.handleGetReviewer)
-		r.Put("/settings/reviewer", s.handleSetReviewer)
-		r.Get("/settings/profiles", s.handleListProfiles)
-		r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
-		r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)
-		r.Put("/settings/tracker/states", s.handleUpdateTrackerStates)
-		r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
-		r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
-		r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
+			r.Get("/state", s.handleState)
+			r.Get("/events", s.handleEvents)
+			r.Get("/issues", s.handleIssues)
+			r.Get("/issues/{identifier}", s.handleIssueDetail)
+			r.Get("/issues/{identifier}/logs", s.handleIssueLogs)
+			r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
+			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
+			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
+			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
+			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
+			r.Get("/logs/identifiers", s.handleLogIdentifiers)
+			r.Delete("/logs", s.handleClearAllLogs)
+			r.Delete("/issues/{identifier}", s.handleCancelIssue)
+			r.Post("/issues/{identifier}/cancel", s.handleCancelIssue)
+			r.Post("/issues/{identifier}/resume", s.handleResumeIssue)
+			r.Post("/issues/{identifier}/reanalyze", s.handleReanalyzeIssue)
+			r.Post("/issues/{identifier}/terminate", s.handleTerminateIssue)
+			r.Post("/issues/{identifier}/ai-review", s.handleAIReview)
+			r.Patch("/issues/{identifier}/state", s.handleUpdateIssueState)
+			r.Post("/issues/{identifier}/profile", s.handleSetIssueProfile)
+			r.Post("/issues/{identifier}/backend", s.handleSetIssueBackend)
+			r.Post("/issues/{identifier}/provide-input", s.handleProvideInput)
+			r.Post("/issues/{identifier}/dismiss-input", s.handleDismissInput)
+			r.Post("/settings/inline-input", s.handleSetInlineInput)
+			r.Get("/logs", s.handleLogs)
+			r.Post("/refresh", s.handleRefresh)
+			r.Get("/projects", s.handleListProjects)
+			r.Get("/projects/filter", s.handleGetProjectFilter)
+			r.Put("/projects/filter", s.handleSetProjectFilter)
+			r.Post("/settings/workers", s.handleSetWorkers)
+			r.Post("/settings/agent-mode", s.handleSetAgentMode)
+			r.Delete("/workspaces", s.handleClearAllWorkspaces)
+			r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
+			r.Get("/settings/models", s.handleListModels)
+			r.Get("/settings/reviewer", s.handleGetReviewer)
+			r.Put("/settings/reviewer", s.handleSetReviewer)
+			r.Get("/settings/profiles", s.handleListProfiles)
+			r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
+			r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)
+			r.Put("/settings/tracker/states", s.handleUpdateTrackerStates)
+			r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
+			r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
+			r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
 
-		r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
-			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+			})
 		})
 	})
 

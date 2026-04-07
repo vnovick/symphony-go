@@ -1,14 +1,14 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
-import RunningSessionsTable from '../../components/symphony/RunningSessionsTable';
-import RetryQueueTable from '../../components/symphony/RetryQueueTable';
-import { HostPool } from '../../components/symphony/HostPool';
-import { ProjectSelector } from '../../components/symphony/ProjectSelector';
-import { NarrativeFeed } from '../../components/symphony/NarrativeFeed';
-import AgentQueueView from '../../components/symphony/AgentQueueView';
-import { FilterPills, type FilterPill } from '../../components/symphony/FilterPills';
-import { useSymphonyStore } from '../../store/symphonyStore';
+import RunningSessionsTable from '../../components/itervox/RunningSessionsTable';
+import RetryQueueTable from '../../components/itervox/RetryQueueTable';
+import { HostPool } from '../../components/itervox/HostPool';
+import { ProjectSelector } from '../../components/itervox/ProjectSelector';
+import { NarrativeFeed } from '../../components/itervox/NarrativeFeed';
+import AgentQueueView from '../../components/itervox/AgentQueueView';
+import { FilterPills, type FilterPill } from '../../components/itervox/FilterPills';
+import { useItervoxStore } from '../../store/itervoxStore';
 import { useUIStore } from '../../store/uiStore';
 import { useToastStore } from '../../store/toastStore';
 import {
@@ -31,7 +31,19 @@ const EMPTY_TERMINAL_STATES = EMPTY_STATES;
 
 export default function Dashboard() {
   const { data: issues = [] } = useIssues();
-  const { hasSnapshot, availableProfiles, backlogStates, activeStates, terminalStates, completionState, profileDefs, availableModels, defaultBackend, running, runHistory } = useSymphonyStore(
+  const {
+    hasSnapshot,
+    availableProfiles,
+    backlogStates,
+    activeStates,
+    terminalStates,
+    completionState,
+    profileDefs,
+    availableModels,
+    defaultBackend,
+    running,
+    runHistory,
+  } = useItervoxStore(
     useShallow((s) => ({
       hasSnapshot: s.snapshot !== null,
       availableProfiles: s.snapshot?.availableProfiles ?? EMPTY_PROFILES,
@@ -62,7 +74,7 @@ export default function Dashboard() {
   }, [running, runHistory, issues, backlogStateSet]);
 
   const invalidateIssues = useInvalidateIssues();
-  const setSelectedIdentifier = useSymphonyStore((s) => s.setSelectedIdentifier);
+  const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
   const { mutateAsync: updateIssueState } = useUpdateIssueState();
   const setIssueProfileMutation = useSetIssueProfile();
 
@@ -132,9 +144,7 @@ export default function Dashboard() {
         )
           return false;
         if (activePillStates !== null) {
-          const match = activePillStates.some(
-            (s) => s.toLowerCase() === issue.state.toLowerCase(),
-          );
+          const match = activePillStates.some((s) => s.toLowerCase() === issue.state.toLowerCase());
           if (!match) return false;
         }
         return true;
@@ -147,7 +157,7 @@ export default function Dashboard() {
     try {
       await fetch('/api/v1/refresh', { method: 'POST' });
       await invalidateIssues();
-      await useSymphonyStore.getState().refreshSnapshot();
+      await useItervoxStore.getState().refreshSnapshot();
     } catch {
       useToastStore.getState().addToast('Refresh failed — check the server.', 'error');
     } finally {
@@ -183,29 +193,28 @@ export default function Dashboard() {
 
   return (
     <>
-      <PageMeta title="Symphony | Dashboard" description="Symphony agent orchestration dashboard" />
+      <PageMeta title="Itervox | Dashboard" description="Itervox agent orchestration dashboard" />
       <div className="space-y-[14px]">
         <ProjectSelector />
 
         {/* Hero-compact banner — responsive: stacks on mobile */}
-        <div
-          className="relative overflow-hidden rounded-[var(--radius-lg)] px-4 py-4 sm:px-[22px] sm:py-[18px] border border-theme-line bg-theme-bg-elevated"
-        >
+        <div className="border-theme-line bg-theme-bg-elevated relative overflow-hidden rounded-[var(--radius-lg)] border px-4 py-4 sm:px-[22px] sm:py-[18px]">
           <div
             className="pointer-events-none absolute inset-0"
-            style={{ background: 'radial-gradient(ellipse at top left, var(--accent-soft) 0%, transparent 60%)' }}
+            style={{
+              background:
+                'radial-gradient(ellipse at top left, var(--accent-soft) 0%, transparent 60%)',
+            }}
           />
           <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
             <div className="min-w-0">
               <div className="mb-2">
-                <span
-                  className="inline-flex items-center rounded-full px-3 py-[5px] text-[11px] font-semibold uppercase tracking-[0.03em] bg-theme-accent-soft text-theme-accent-strong"
-                >
-                  Symphony
+                <span className="bg-theme-accent-soft text-theme-accent-strong inline-flex items-center rounded-full px-3 py-[5px] text-[11px] font-semibold tracking-[0.03em] uppercase">
+                  Itervox
                 </span>
               </div>
               <h1
-                className="text-xl sm:text-2xl font-bold leading-tight tracking-[-0.03em]"
+                className="text-xl leading-tight font-bold tracking-[-0.03em] sm:text-2xl"
                 style={{
                   background: 'var(--gradient-accent)',
                   WebkitBackgroundClip: 'text',
@@ -214,7 +223,7 @@ export default function Dashboard() {
               >
                 Parallel agent orchestration
               </h1>
-              <p className="mt-2 text-[13px] leading-relaxed text-theme-text-secondary">
+              <p className="text-theme-text-secondary mt-2 text-[13px] leading-relaxed">
                 Manage running agents and track issues across states.
               </p>
             </div>
@@ -223,18 +232,14 @@ export default function Dashboard() {
         </div>
 
         {apiOffline && (
-          <div
-            className="rounded-[var(--radius-md)] p-4 text-sm border border-theme-warning-soft bg-theme-warning-soft text-theme-warning"
-          >
-            <p className="mb-1 font-semibold">Cannot reach the Symphony API</p>
+          <div className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning rounded-[var(--radius-md)] border p-4 text-sm">
+            <p className="mb-1 font-semibold">Cannot reach the Itervox API</p>
             <p className="mb-2 opacity-80">
               Make sure your{' '}
-              <code className="rounded px-1 font-mono bg-theme-bg-elevated">
-                WORKFLOW.md
-              </code>{' '}
-              front matter includes the following and the symphony binary is running:
+              <code className="bg-theme-bg-elevated rounded px-1 font-mono">WORKFLOW.md</code> front
+              matter includes the following and the itervox binary is running:
             </p>
-            <pre className="rounded p-2 font-mono text-xs bg-theme-bg-elevated">
+            <pre className="bg-theme-bg-elevated rounded p-2 font-mono text-xs">
               {'server:\n  port: 8090'}
             </pre>
           </div>
@@ -245,39 +250,35 @@ export default function Dashboard() {
         <RetryQueueTable />
 
         {/* Issues panel */}
-        <div
-          className="overflow-hidden rounded-[var(--radius-lg)] border border-theme-line bg-theme-bg-elevated shadow-theme-sm"
-        >
+        <div className="border-theme-line bg-theme-bg-elevated shadow-theme-sm overflow-hidden rounded-[var(--radius-lg)] border">
           {/* Panel header — search always visible */}
-          <div
-            className="flex flex-col gap-3 border-b px-4 py-3 sm:px-[18px] sm:py-[14px] border-theme-line"
-          >
+          <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3 sm:px-[18px] sm:py-[14px]">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <h2
-                  className="flex items-center gap-2 text-sm font-semibold tracking-tight text-theme-text"
-                >
+                <h2 className="text-theme-text flex items-center gap-2 text-sm font-semibold tracking-tight">
                   Issues
-                  <span
-                    className="rounded-full px-1.5 py-0.5 text-[10px] font-bold bg-theme-bg-soft text-theme-text-secondary"
-                  >
+                  <span className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold">
                     {filtered.length}
                   </span>
                 </h2>
               </div>
               <div className="flex flex-shrink-0 items-center gap-2">
                 {/* View toggle — segmented */}
-                <div
-                  className="inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border p-[3px] bg-theme-bg-elevated border-theme-line"
-                >
-                  {(['board', 'list', ...(availableProfiles.length > 0 ? ['agents'] : [])] as ('board' | 'list' | 'agents')[]).map((mode) => (
+                <div className="bg-theme-bg-elevated border-theme-line inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border p-[3px]">
+                  {(
+                    ['board', 'list', ...(availableProfiles.length > 0 ? ['agents'] : [])] as (
+                      | 'board'
+                      | 'list'
+                      | 'agents'
+                    )[]
+                  ).map((mode) => (
                     <button
                       key={mode}
-                      onClick={() => { setViewMode(mode); }}
+                      onClick={() => {
+                        setViewMode(mode);
+                      }}
                       className={`rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-semibold transition-all ${
-                        viewMode === mode
-                          ? 'bg-theme-accent text-white'
-                          : 'text-theme-muted'
+                        viewMode === mode ? 'bg-theme-accent text-white' : 'text-theme-muted'
                       }`}
                     >
                       {mode === 'board' ? 'Board' : mode === 'list' ? 'List' : 'Agents'}
@@ -289,7 +290,7 @@ export default function Dashboard() {
                 <button
                   onClick={handleRefresh}
                   disabled={loading}
-                  className="flex h-7 w-7 items-center justify-center rounded-lg text-sm transition-colors disabled:opacity-50 border border-theme-line text-theme-text-secondary"
+                  className="border-theme-line text-theme-text-secondary flex h-7 w-7 items-center justify-center rounded-lg border text-sm transition-colors disabled:opacity-50"
                   title={loading ? 'Refreshing…' : 'Refresh issues'}
                   aria-label="Refresh issues"
                 >
@@ -307,15 +308,17 @@ export default function Dashboard() {
                     type="text"
                     placeholder="Search identifier or title…"
                     value={search}
-                    onChange={(e) => { setSearch(e.target.value); }}
-                    className="min-w-0 flex-1 rounded-lg px-3 py-1.5 text-sm focus:outline-none border border-theme-line bg-theme-bg-elevated text-theme-text"
+                    onChange={(e) => {
+                      setSearch(e.target.value);
+                    }}
+                    className="border-theme-line bg-theme-bg-elevated text-theme-text min-w-0 flex-1 rounded-lg border px-3 py-1.5 text-sm focus:outline-none"
                   />
                 </div>
               </>
             )}
           </div>
 
-          <div className="px-4 pb-4 pt-3 sm:px-[18px] sm:pb-[18px] sm:pt-[14px]">
+          <div className="px-4 pt-3 pb-4 sm:px-[18px] sm:pt-[14px] sm:pb-[18px]">
             {viewMode === 'board' && (
               <BoardView
                 issues={filtered}
@@ -356,7 +359,6 @@ export default function Dashboard() {
 
         <NarrativeFeed />
       </div>
-
     </>
   );
 }

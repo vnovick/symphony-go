@@ -1,29 +1,31 @@
-# Symphony Go
+# Itervox
 
 > A full Go implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) —
 > a long-running daemon that polls Linear or GitHub, spawns Claude Code or Codex agents per issue,
 > and gives you a live Kanban dashboard + terminal UI while they work.
+>
+> Formerly known as "Symphony Go".
 
-[![Symphony Go — full demo](https://img.youtube.com/vi/rzBZkc9Cvh0/maxresdefault.jpg)](https://www.youtube.com/watch?v=rzBZkc9Cvh0)
+[![Itervox — full demo](https://img.youtube.com/vi/rzBZkc9Cvh0/maxresdefault.jpg)](https://www.youtube.com/watch?v=rzBZkc9Cvh0)
 
 **[→ Quick Start](#quick-start) · [→ WORKFLOW.md Reference](#workflowmd-reference) · [→ HTTP Dashboard](#http-dashboard)**
 
 ---
 
-[![Go CI](https://github.com/vnovick/symphony-go/actions/workflows/ci-go.yml/badge.svg)](https://github.com/vnovick/symphony-go/actions/workflows/ci-go.yml)
-[![Web CI](https://github.com/vnovick/symphony-go/actions/workflows/ci-web.yml/badge.svg)](https://github.com/vnovick/symphony-go/actions/workflows/ci-web.yml)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/vnovick/symphony-go)](go.mod)
-[![Latest Release](https://img.shields.io/github/v/release/vnovick/symphony-go)](https://github.com/vnovick/symphony-go/releases/latest)
+[![Go CI](https://github.com/vnovick/itervox/actions/workflows/ci-go.yml/badge.svg)](https://github.com/vnovick/itervox/actions/workflows/ci-go.yml)
+[![Web CI](https://github.com/vnovick/itervox/actions/workflows/ci-web.yml/badge.svg)](https://github.com/vnovick/itervox/actions/workflows/ci-web.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/vnovick/itervox)](go.mod)
+[![Latest Release](https://img.shields.io/github/v/release/vnovick/itervox)](https://github.com/vnovick/itervox/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/vnovick/symphony-go)](https://goreportcard.com/report/github.com/vnovick/symphony-go)
+[![Go Report Card](https://goreportcard.com/badge/github.com/vnovick/itervox)](https://goreportcard.com/report/github.com/vnovick/itervox)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/Q6FrQSrP)
-[![codecov](https://codecov.io/gh/vnovick/symphony-go/graph/badge.svg?token=2KGN4P0WPG)](https://codecov.io/gh/vnovick/symphony-go)
+[![codecov](https://codecov.io/gh/vnovick/itervox/graph/badge.svg?token=2KGN4P0WPG)](https://codecov.io/gh/vnovick/itervox)
 
 ---
 
-## Why Symphony Go?
+## Why Itervox?
 
-| | Symphony Go |
+| | Itervox |
 |---|---|
 | **Dashboard** | Live Kanban board with drag-to-move, log drilldown, token tracking |
 | **TUI** | Bubbletea split-panel — issue tree + streaming agent logs |
@@ -55,7 +57,7 @@
 | Linear | Personal API key | Full access (read issues, write comments and state) |
 | GitHub Issues | Personal Access Token or fine-grained token | `repo` (or `issues: write` + `contents: read` for fine-grained) |
 
-Store credentials in `.symphony/.env` (gitignored by default) or export them in your shell. See [Quick start → step 3](#quick-start) for details.
+Store credentials in `.itervox/.env` (gitignored by default) or export them in your shell. See [Quick start → step 3](#quick-start) for details.
 
 ### Web dashboard dev loop (contributors)
 
@@ -64,8 +66,8 @@ Store credentials in `.symphony/.env` (gitignored by default) or export them in 
 cd web && pnpm install --frozen-lockfile
 # If pnpm asks about untrusted builds:  pnpm approve-builds
 
-# Terminal 1 — run symphony with the HTTP server enabled
-./symphony path/to/WORKFLOW.md   # server.port: 8090 in WORKFLOW.md
+# Terminal 1 — run itervox with the HTTP server enabled
+./itervox path/to/WORKFLOW.md   # server.port: 8090 in WORKFLOW.md
 
 # Terminal 2 — start the Vite dev server (proxies API calls to :8090)
 cd web && pnpm dev               # HMR at http://localhost:5173
@@ -90,7 +92,7 @@ The pre-built dashboard is embedded in the binary when you `go install` or downl
 
 ### Platform support
 
-Symphony does not have identical runtime support on every OS. The current support boundary is:
+Itervox does not have identical runtime support on every OS. The current support boundary is:
 
 | Surface | macOS | Linux | Windows |
 |---|---|---|---|
@@ -105,13 +107,13 @@ Notes:
 
 - Primary supported operator environments are macOS and Linux.
 - Windows is currently best-effort. The codebase includes some Windows-specific handling, but hooks and most shell-based agent launches assume `$SHELL` or `bash`.
-- If you need to operate from Windows, use WSL2 or run Symphony against Linux/macOS worker hosts.
+- If you need to operate from Windows, use WSL2 or run Itervox against Linux/macOS worker hosts.
 
 ---
 
 ## How It Works
 
-Symphony runs a continuous orchestration loop:
+Itervox runs a continuous orchestration loop:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -181,32 +183,32 @@ See the [Requirements](#requirements) section at the top of this document for th
 **Homebrew (macOS / Linux):**
 
 ```bash
-brew install vnovick/tap/symphony-go
+brew install vnovick/tap/itervox
 ```
 
 **Go install:**
 
 ```bash
-go install github.com/vnovick/symphony-go/cmd/symphony@latest
+go install github.com/vnovick/itervox/cmd/itervox@latest
 ```
 
-**Download a binary** from the [latest release](https://github.com/vnovick/symphony-go/releases/latest) — pre-built for macOS (arm64/amd64), Linux (arm64/amd64), and Windows.
+**Download a binary** from the [latest release](https://github.com/vnovick/itervox/releases/latest) — pre-built for macOS (arm64/amd64), Linux (arm64/amd64), and Windows.
 
 Or build from source:
 
 ```bash
-git clone https://github.com/vnovick/symphony-go
-cd symphony-go
+git clone https://github.com/vnovick/itervox
+cd itervox
 
 # Build the web dashboard (requires Node.js 20+ and pnpm 9+)
 cd web && pnpm install --frozen-lockfile && pnpm build && cd ..
 
 # Embed the dashboard and compile the binary
 go generate ./internal/server/
-go build -o symphony ./cmd/symphony
+go build -o itervox ./cmd/itervox
 
 # Run it
-./symphony -workflow path/to/WORKFLOW.md
+./itervox -workflow path/to/WORKFLOW.md
 ```
 
 For contributors, `make dev` runs the Go server and the Vite dev server together with HMR. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full list of `make` commands.
@@ -215,22 +217,22 @@ For contributors, `make dev` runs the Go server and the Vite dev server together
 
 | Command | Description |
 |---|---|
-| `symphony` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
-| `symphony init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo's metadata |
-| `symphony clear` | Remove all workspace directories under `workspace.root` |
-| `symphony clear ENG-1 ENG-2` | Remove workspace directories for specific issues |
-| `symphony --version` | Print version, commit, and build date |
-| `symphony help` | Show all commands and run-mode flags |
+| `itervox` | Start the orchestrator (reads `WORKFLOW.md` in the current directory) |
+| `itervox init --tracker <linear\|github>` | Scaffold a `WORKFLOW.md` from your repo's metadata |
+| `itervox clear` | Remove all workspace directories under `workspace.root` |
+| `itervox clear ENG-1 ENG-2` | Remove workspace directories for specific issues |
+| `itervox --version` | Print version, commit, and build date |
+| `itervox help` | Show all commands and run-mode flags |
 
-**Run-mode flags** (used with the default `symphony` command):
+**Run-mode flags** (used with the default `itervox` command):
 
 | Flag | Default | Description |
 |---|---|---|
 | `-workflow` | `WORKFLOW.md` | Path to your WORKFLOW.md |
-| `-logs-dir` | `~/.symphony/logs/<kind>/<slug>` | Directory for rotating log files (derived from tracker kind and project slug; falls back to `~/.symphony/logs` if config is unreadable) |
+| `-logs-dir` | `~/.itervox/logs/<kind>/<slug>` | Directory for rotating log files (derived from tracker kind and project slug; falls back to `~/.itervox/logs` if config is unreadable) |
 | `-verbose` | false | Enable DEBUG-level logging (includes agent output) |
 
-**`symphony init` flags:**
+**`itervox init` flags:**
 
 | Flag | Default | Description |
 |---|---|---|
@@ -248,7 +250,7 @@ For contributors, `make dev` runs the Go server and the Vite dev server together
 
 ```bash
 # Scan the current directory and write a pre-filled WORKFLOW.md
-symphony init --tracker linear    # or: --tracker github
+itervox init --tracker linear    # or: --tracker github
 ```
 
 This detects your git remote, default branch, and tech stack, then writes a
@@ -266,20 +268,20 @@ tracker:
 
 ```bash
 # Option A — project-local file (recommended, gitignored automatically)
-mkdir -p .symphony
-cp .env.example .symphony/.env
-# edit .symphony/.env and fill in LINEAR_API_KEY / GITHUB_TOKEN
-symphony
+mkdir -p .itervox
+cp .env.example .itervox/.env
+# edit .itervox/.env and fill in LINEAR_API_KEY / GITHUB_TOKEN
+itervox
 
 # Option B — shell export (CI-friendly; existing exports always win over any .env file)
 export LINEAR_API_KEY=lin_api_...
-symphony
+itervox
 
 # or with an explicit workflow path:
-symphony -workflow path/to/WORKFLOW.md
+itervox -workflow path/to/WORKFLOW.md
 ```
 
-Symphony auto-loads `.symphony/.env` (preferred) or `.env` from the current directory before parsing `WORKFLOW.md`. Variables already present in the environment are never overwritten, so CI secrets injected via `export` or your CI provider always take precedence.
+Itervox auto-loads `.itervox/.env` (preferred) or `.env` from the current directory before parsing `WORKFLOW.md`. Variables already present in the environment are never overwritten, so CI secrets injected via `export` or your CI provider always take precedence.
 
 ---
 
@@ -308,7 +310,7 @@ The file has two sections separated by `---` front matter delimiters:
 | `active_states` | `["Todo", "In Progress"]` | Issue states to pick up and work on |
 | `terminal_states` | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | States that end the agent session |
 | `working_state` | `"In Progress"` | State to transition an issue to when it is first dispatched to an agent. Set to `""` to disable auto-transition. |
-| `completion_state` | `""` | State to transition to when the agent finishes successfully (e.g. `"In Review"`). When set, the issue leaves `active_states` so Symphony stops re-dispatching it. |
+| `completion_state` | `""` | State to transition to when the agent finishes successfully (e.g. `"In Review"`). When set, the issue leaves `active_states` so Itervox stops re-dispatching it. |
 | `backlog_states` | `["Backlog"]` (Linear) / `[]` (GitHub) | States shown in the Backlog column of the web Kanban board. Issues here are visible but not auto-dispatched. |
 
 #### `polling`
@@ -354,7 +356,7 @@ agent:
 
 #### SSH Worker Hosts
 
-When `agent.ssh_hosts` is set, Symphony executes each agent turn on a remote machine over SSH
+When `agent.ssh_hosts` is set, Itervox executes each agent turn on a remote machine over SSH
 instead of locally. This lets you distribute agents across a fleet of build machines, cloud VMs,
 or any SSH-accessible host.
 
@@ -365,10 +367,10 @@ agent:
     - build-worker-2.internal:2222     # custom port
 ```
 
-Hosts are selected in round-robin order. If the connection to a host fails, Symphony falls back
+Hosts are selected in round-robin order. If the connection to a host fails, Itervox falls back
 to the next host in the list. The session continues on whichever host succeeds.
 
-**How Symphony connects:**
+**How Itervox connects:**
 
 ```bash
 ssh -t -o StrictHostKeyChecking=no -o BatchMode=yes <host> bash -lc 'cd /path && claude ...'
@@ -381,18 +383,18 @@ ssh -t -o StrictHostKeyChecking=no -o BatchMode=yes <host> bash -lc 'cd /path &&
 
 **Step 1 — Set up SSH key authentication**
 
-The machine running Symphony must be able to SSH to each worker host without a password prompt.
+The machine running Itervox must be able to SSH to each worker host without a password prompt.
 Use `ssh-copy-id` or add the public key to `~/.ssh/authorized_keys` on each worker:
 
 ```bash
-# From the machine running Symphony
+# From the machine running Itervox
 ssh-copy-id ci-agent@build-worker-1.internal
 ssh-copy-id -p 2222 ci-agent@build-worker-2.internal
 ```
 
 **Step 2 — Add host keys to known_hosts**
 
-Symphony uses `BatchMode=yes`, which refuses unknown hosts. Pre-populate `~/.ssh/known_hosts`:
+Itervox uses `BatchMode=yes`, which refuses unknown hosts. Pre-populate `~/.ssh/known_hosts`:
 
 ```bash
 ssh-keyscan build-worker-1.internal >> ~/.ssh/known_hosts
@@ -407,7 +409,7 @@ The workspace path must exist on the remote host. Pick the strategy that fits yo
 
 ```yaml
 workspace:
-  root: /mnt/nfs/symphony/workspaces   # same path on all hosts
+  root: /mnt/nfs/itervox/workspaces   # same path on all hosts
 ```
 
 *Option B — rsync hook:* Copy the workspace to the remote host before each agent turn.
@@ -415,7 +417,7 @@ workspace:
 ```yaml
 hooks:
   before_run: |
-    rsync -az --delete ./ ${SYMPHONY_WORKER_HOST}:${SYMPHONY_WORKSPACE_PATH}/
+    rsync -az --delete ./ ${ITERVOX_WORKER_HOST}:${ITERVOX_WORKSPACE_PATH}/
 ```
 
 *Option C — git clone hook:* Each host clones the repo independently on first create.
@@ -423,8 +425,8 @@ hooks:
 ```yaml
 hooks:
   after_create: |
-    ssh ${SYMPHONY_WORKER_HOST} \
-      "git clone git@github.com:org/repo.git ${SYMPHONY_WORKSPACE_PATH}"
+    ssh ${ITERVOX_WORKER_HOST} \
+      "git clone git@github.com:org/repo.git ${ITERVOX_WORKSPACE_PATH}"
 ```
 
 **Using Docker on remote hosts**
@@ -436,14 +438,14 @@ You can combine SSH dispatch with Docker containers by running `docker exec` ins
 hooks:
   after_create: |
     # Start a persistent container on the worker host
-    ssh ${SYMPHONY_WORKER_HOST} "docker run -d \
-      --name symphony-${SYMPHONY_ISSUE_ID} \
-      -v ${SYMPHONY_WORKSPACE_PATH}:/workspace \
+    ssh ${ITERVOX_WORKER_HOST} "docker run -d \
+      --name itervox-${ITERVOX_ISSUE_ID} \
+      -v ${ITERVOX_WORKSPACE_PATH}:/workspace \
       ghcr.io/org/agent-image:latest sleep infinity"
 
   before_remove: |
-    ssh ${SYMPHONY_WORKER_HOST} \
-      "docker rm -f symphony-${SYMPHONY_ISSUE_ID}"
+    ssh ${ITERVOX_WORKER_HOST} \
+      "docker rm -f itervox-${ITERVOX_ISSUE_ID}"
 ```
 
 > **Fleet prototype:** See `planning/prototypes/prototypes/fleet-redesign.html` for a UI prototype
@@ -454,7 +456,7 @@ hooks:
 
 | Field | Default | Description |
 |---|---|---|
-| `root` | `~/.symphony/workspaces` | Root directory for per-issue workspaces. Supports `~` expansion and `$ENV_VAR` references. |
+| `root` | `~/.itervox/workspaces` | Root directory for per-issue workspaces. Supports `~` expansion and `$ENV_VAR` references. |
 | `auto_clear_workspace` | `false` | When `true`, the workspace directory is automatically deleted after a task reaches the completion state. Togglable at runtime from the Settings page. |
 
 #### `hooks`
@@ -526,7 +528,7 @@ Issues are fetched from the configured project filtered by `active_states`. The 
 2. Set `tracker.project_slug` to `owner/repo`
 3. Set `tracker.kind: github` and `tracker.api_key: $GITHUB_TOKEN`
 
-GitHub Issues don't have named workflow states. Symphony maps them via **labels**:
+GitHub Issues don't have named workflow states. Itervox maps them via **labels**:
 - Open issue with an **active label** → eligible for dispatch
 - Open issue with a **terminal label** → treated as done
 - **Closed** issue → always terminal regardless of labels
@@ -545,7 +547,7 @@ tracker:
 
 #### Required labels
 
-Create these labels in your GitHub repo before running Symphony (`github.com/<owner>/<repo>/labels`):
+Create these labels in your GitHub repo before running Itervox (`github.com/<owner>/<repo>/labels`):
 
 | Label | Color suggestion | Purpose |
 |---|---|---|
@@ -569,7 +571,7 @@ gh label create "backlog"     --color "f9f9f9" --repo owner/repo
 
 #### GitHub Projects v2 vs Labels
 
-**GitHub Projects v2 "Status"** (the Backlog / In Progress / Done column you see in the Projects board) is **completely separate** from issue labels. Symphony only reads and writes **labels** — it does not interact with Projects v2 status fields.
+**GitHub Projects v2 "Status"** (the Backlog / In Progress / Done column you see in the Projects board) is **completely separate** from issue labels. Itervox only reads and writes **labels** — it does not interact with Projects v2 status fields.
 
 If you manage work through a Projects board, use [GitHub Projects automation](https://docs.github.com/en/issues/planning-and-tracking-with-projects/automating-your-project/using-the-built-in-automations) to sync the Status field → labels:
 - Status "Todo" → add label `todo`
@@ -578,9 +580,9 @@ If you manage work through a Projects board, use [GitHub Projects automation](ht
 
 #### `working_state` — important for GitHub
 
-`working_state` is the label Symphony applies when an agent starts working on an issue (transitions it away from `todo`). The **default is `"In Progress"`** — a label that does not exist in most repos.
+`working_state` is the label Itervox applies when an agent starts working on an issue (transitions it away from `todo`). The **default is `"In Progress"`** — a label that does not exist in most repos.
 
-If `working_state` refers to a label that doesn't exist in your repo, Symphony will delete the existing active label and fail to add the new one, leaving the issue with **no state label at all**. It then disappears from Symphony silently.
+If `working_state` refers to a label that doesn't exist in your repo, Itervox will delete the existing active label and fail to add the new one, leaving the issue with **no state label at all**. It then disappears from Itervox silently.
 
 **Fix:** either create the label first (recommended — use the `gh label create` commands above), or set `working_state: "todo"` to keep the issue in its current state throughout the agent run.
 
@@ -613,14 +615,14 @@ server:
 ---
 ```
 
-Then start symphony and open your browser:
+Then start itervox and open your browser:
 
 ```bash
-./symphony
+./itervox
 open http://127.0.0.1:8090
 ```
 
-![Symphony dashboard — live Kanban board with agent log drilldown](docs/ss-dashboard.gif)
+![Itervox dashboard — live Kanban board with agent log drilldown](docs/ss-dashboard.gif)
 
 The dashboard shows a Kanban board (drag to move issues between states), a list view, live running sessions, token counts, and per-issue agent logs. It auto-refreshes, or you can hit the **Refresh** button to trigger an immediate poll.
 
@@ -643,9 +645,9 @@ The server binds `127.0.0.1` only and is not intended for public exposure.
 
 ## Terminal UI (TUI)
 
-Symphony ships with a Bubbletea split-panel TUI. No web browser required.
+Itervox ships with a Bubbletea split-panel TUI. No web browser required.
 
-![Symphony TUI — Bubbletea split-panel with issue tree and streaming agent logs](docs/tui-recording.gif)
+![Itervox TUI — Bubbletea split-panel with issue tree and streaming agent logs](docs/tui-recording.gif)
 
 ```
 ┌──────────────────────┬──────────────────────────────────────────────────┐
@@ -680,7 +682,7 @@ Symphony ships with a Bubbletea split-panel TUI. No web browser required.
 | `w` | Open web dashboard in browser |
 | `q` / `ctrl+c` | Exit |
 
-![Symphony TUI — subagent drill-down with streaming tool call logs](docs/tui-drilldown.gif)
+![Itervox TUI — subagent drill-down with streaming tool call logs](docs/tui-drilldown.gif)
 
 
 ---
@@ -689,7 +691,7 @@ Symphony ships with a Bubbletea split-panel TUI. No web browser required.
 
 The Timeline page (accessible from the web dashboard) shows every agent session across all issues — including completed, failed, and retried runs.
 
-Logs are persisted to disk under `workspace.root` and survive daemon restarts. When you re-open the dashboard after restarting Symphony, all previous session logs are still accessible.
+Logs are persisted to disk under `workspace.root` and survive daemon restarts. When you re-open the dashboard after restarting Itervox, all previous session logs are still accessible.
 
 ---
 
@@ -706,14 +708,14 @@ Logs are persisted to disk under `workspace.root` and survive daemon restarts. W
 
 ## Security Posture
 
-Symphony is designed for **high-trust local environments**:
+Itervox is designed for **high-trust local environments**:
 
 - Claude runs with `--dangerously-skip-permissions` — it can read, write, and execute files without asking for approval. Only run against code you trust.
 - API tokens are never logged. Use `$ENV_VAR` references in config; the value is resolved at runtime and not written to disk.
 - The HTTP server binds `127.0.0.1` only.
 - Workspace path containment is enforced via `filepath.EvalSymlinks` before every agent launch. Symlink escapes outside `workspace.root` are rejected.
 - Hook scripts are sourced from `WORKFLOW.md` and run with full shell access in the workspace directory. Treat them as trusted code.
-- SSH worker hosts (`agent.ssh_hosts`) use standard host key verification via `~/.ssh/known_hosts`. Run `ssh-keyscan <host> >> ~/.ssh/known_hosts` before adding a host to the list. Symphony does not disable host key checking.
+- SSH worker hosts (`agent.ssh_hosts`) use standard host key verification via `~/.ssh/known_hosts`. Run `ssh-keyscan <host> >> ~/.ssh/known_hosts` before adding a host to the list. Itervox does not disable host key checking.
 
 ---
 

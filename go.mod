@@ -1,4 +1,4 @@
-module github.com/vnovick/symphony-go
+module github.com/vnovick/itervox
 
 go 1.25.8
 

@@ -19,15 +19,9 @@ export function WorkspaceCard({ autoClearWorkspace, onToggle }: WorkspaceCardPro
   };
 
   return (
-    <div
-      className="overflow-hidden rounded-[var(--radius-md)] border border-theme-line bg-theme-bg-elevated"
-    >
-      <div
-        className="border-b px-5 py-4 border-theme-line bg-theme-panel-strong"
-      >
-        <h2 className="text-sm font-semibold text-theme-text">
-          Workspace
-        </h2>
+    <div className="border-theme-line bg-theme-bg-elevated overflow-hidden rounded-[var(--radius-md)] border">
+      <div className="border-theme-line bg-theme-panel-strong border-b px-5 py-4">
+        <h2 className="text-theme-text text-sm font-semibold">Workspace</h2>
       </div>
       <div className="px-5 py-5">
         <label className="flex cursor-pointer items-start gap-4">
@@ -54,15 +48,15 @@ export function WorkspaceCard({ autoClearWorkspace, onToggle }: WorkspaceCardPro
             />
           </div>
           <div>
-            <span className="block text-sm font-medium text-theme-text">
+            <span className="text-theme-text block text-sm font-medium">
               Auto-clear workspace on success
             </span>
-            <span className="mt-0.5 block text-xs text-theme-text-secondary">
+            <span className="text-theme-text-secondary mt-0.5 block text-xs">
               When a task completes successfully (reaches the completion state), automatically
               delete the cloned workspace directory. Logs are always kept for visibility.
             </span>
             {error && (
-              <span role="alert" className="mt-1 block text-xs text-theme-danger">
+              <span role="alert" className="text-theme-danger mt-1 block text-xs">
                 {error}
               </span>
             )}

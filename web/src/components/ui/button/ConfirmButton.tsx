@@ -24,9 +24,7 @@ export function ConfirmButton({
   if (confirming) {
     return (
       <div className="flex items-center gap-2">
-        <span className="text-xs text-theme-muted">
-          Are you sure?
-        </span>
+        <span className="text-theme-muted text-xs">Are you sure?</span>
         <button
           onClick={() => {
             onConfirm();

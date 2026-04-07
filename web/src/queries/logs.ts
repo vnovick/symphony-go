@@ -93,7 +93,9 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
         es = null;
 
         if (import.meta.env.DEV) {
-          console.warn(`[symphony] Log stream disconnected for ${identifier}, reconnecting (attempt ${String(reconnectAttempt + 1)})…`);
+          console.warn(
+            `[itervox] Log stream disconnected for ${identifier}, reconnecting (attempt ${String(reconnectAttempt + 1)})…`,
+          );
         }
 
         // Schedule reconnect with exponential backoff
@@ -121,7 +123,11 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
   }, [identifier, isLive]);
 
   // One-shot query — disabled when isLive to avoid redundant HTTP fetches
-  const { data: queryData, isLoading: queryLoading, isError: queryError } = useQuery({
+  const {
+    data: queryData,
+    isLoading: queryLoading,
+    isError: queryError,
+  } = useQuery({
     queryKey: logsKey(identifier),
     queryFn: () => fetchIssueLogs(identifier),
     enabled: !!identifier && !isLive,

@@ -6,7 +6,7 @@ const noProjectSentinel = "__no_project__"
 
 // QueryCandidateIssues fetches paginated issues by project + state filter.
 const QueryCandidateIssues = `
-query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+query ItervoxLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
   issues(filter: {project: {slugId: {eq: $projectSlug}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
     nodes {
       id
@@ -33,7 +33,7 @@ query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first:
 
 // QueryIssueDetail fetches a single issue by ID with full details including comments.
 const QueryIssueDetail = `
-query SymphonyIssueDetail($id: String!) {
+query ItervoxIssueDetail($id: String!) {
   issue(id: $id) {
     id
     identifier
@@ -65,7 +65,7 @@ query SymphonyIssueDetail($id: String!) {
 // QueryCandidateIssuesAll fetches paginated issues by state only — no project filter.
 // Used when the runtime project filter is set to "all issues".
 const QueryCandidateIssuesAll = `
-query SymphonyLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+query ItervoxLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
   issues(filter: {state: {name: {in: $stateNames}}}, first: $first, after: $after) {
     nodes {
       id
@@ -93,7 +93,7 @@ query SymphonyLinearPollAll($stateNames: [String!]!, $first: Int!, $relationFirs
 // QueryCandidateIssuesNoProject fetches paginated issues that have no project
 // assigned, filtered by state.
 const QueryCandidateIssuesNoProject = `
-query SymphonyLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+query ItervoxLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
   issues(filter: {project: {null: true}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
     nodes {
       id
@@ -121,7 +121,7 @@ query SymphonyLinearPollNoProject($stateNames: [String!]!, $first: Int!, $relati
 // QueryListProjects fetches up to 100 projects visible to the API key.
 // Used for the interactive project picker.
 const QueryListProjects = `
-query SymphonyListProjects {
+query ItervoxListProjects {
   projects(first: 100) {
     nodes {
       id
@@ -133,7 +133,7 @@ query SymphonyListProjects {
 
 // QueryIssuesByIDs fetches issues by ID list for reconciliation (uses [ID!] type).
 const QueryIssuesByIDs = `
-query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
+query ItervoxLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
   issues(filter: {id: {in: $ids}}, first: $first) {
     nodes {
       id

@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/config"
+	"github.com/vnovick/itervox/internal/config"
 )
 
 func workflowWithContent(t *testing.T, content string) string {
@@ -73,12 +73,12 @@ func TestEnvVarMissingBecomesEmpty(t *testing.T) {
 }
 
 func TestTildeExpansionOnWorkspaceRoot(t *testing.T) {
-	content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\nworkspace:\n  root: ~/symphony_ws\n---\n\nPrompt.\n"
+	content := "---\ntracker:\n  kind: linear\n  api_key: key\n  project_slug: proj\nworkspace:\n  root: ~/itervox_ws\n---\n\nPrompt.\n"
 	path := workflowWithContent(t, content)
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 	home, _ := os.UserHomeDir()
-	assert.Equal(t, home+"/symphony_ws", cfg.Workspace.Root)
+	assert.Equal(t, home+"/itervox_ws", cfg.Workspace.Root)
 }
 
 func TestAgentCommandNotTildeExpanded(t *testing.T) {
@@ -145,8 +145,8 @@ func TestWorkspaceRootDefault(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
-	// Primary default: ~/.symphony/workspaces
-	// Fallback (no home dir): <os.TempDir()>/symphony_workspaces
+	// Primary default: ~/.itervox/workspaces
+	// Fallback (no home dir): <os.TempDir()>/itervox_workspaces
 	// Both paths end in "workspaces".
 	assert.Contains(t, cfg.Workspace.Root, "workspaces")
 }

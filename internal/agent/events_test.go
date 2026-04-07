@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/agent"
+	"github.com/vnovick/itervox/internal/agent"
 )
 
 func TestParseLineSystemEvent(t *testing.T) {

@@ -21,7 +21,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     if (import.meta.env.DEV) {
-      console.error('[Symphony] Unhandled render error', error, info.componentStack);
+      console.error('[Itervox] Unhandled render error', error, info.componentStack);
     }
   }
 

@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 const defaultEndpoint = "https://api.github.com"
@@ -259,9 +259,9 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 			if body == "" {
 				continue
 			}
-			// Extract branch name from hidden symphony marker; skip adding to Comments.
-			if strings.HasPrefix(body, symphonyBranchPrefix) {
-				branch := strings.TrimPrefix(body, symphonyBranchPrefix)
+			// Extract branch name from hidden itervox marker; skip adding to Comments.
+			if strings.HasPrefix(body, itervoxBranchPrefix) {
+				branch := strings.TrimPrefix(body, itervoxBranchPrefix)
 				branch = strings.TrimSuffix(strings.TrimSpace(branch), "-->")
 				branch = strings.TrimSpace(branch)
 				if branch != "" {
@@ -429,15 +429,15 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	return nil
 }
 
-// symphonyBranchPrefix is used to embed the branch name in a hidden HTML
+// itervoxBranchPrefix is used to embed the branch name in a hidden HTML
 // comment so it survives round-trips without polluting the issue UI.
-const symphonyBranchPrefix = "<!-- symphony:branch:"
+const itervoxBranchPrefix = "<!-- itervox:branch:"
 
 // SetIssueBranch posts a hidden HTML comment recording the branch name on the
 // GitHub issue. FetchIssueDetail scans for this comment to restore BranchName
 // on subsequent fetches, enabling retried workers to resume the correct branch.
 func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
-	body := symphonyBranchPrefix + branchName + " -->"
+	body := itervoxBranchPrefix + branchName + " -->"
 	return c.CreateComment(ctx, issueID, body)
 }
 

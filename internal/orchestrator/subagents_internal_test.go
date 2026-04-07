@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/logbuffer"
 )
 
 func TestBuildSubAgentContext_UsesCodexToolName(t *testing.T) {

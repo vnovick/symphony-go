@@ -50,7 +50,7 @@ export function MetricsGrid({ metrics, columns = 4 }: MetricsGridProps) {
           {/* Header: label + badge */}
           <div className="mb-[10px] flex items-center justify-between gap-2">
             <span
-              className="font-semibold uppercase text-theme-muted"
+              className="text-theme-muted font-semibold uppercase"
               style={{ fontSize: 11, letterSpacing: '0.05em' }}
             >
               {m.label}
@@ -80,7 +80,7 @@ export function MetricsGrid({ metrics, columns = 4 }: MetricsGridProps) {
             {m.value}
           </div>
           {m.subtitle && (
-            <p className="mt-2 text-theme-text-secondary" style={{ fontSize: 12, lineHeight: 1.4 }}>
+            <p className="text-theme-text-secondary mt-2" style={{ fontSize: 12, lineHeight: 1.4 }}>
               {m.subtitle}
             </p>
           )}

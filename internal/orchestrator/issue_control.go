@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"maps"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // CancelIssue cancels a running or retry-queued issue and marks it as paused
@@ -203,14 +203,6 @@ func (o *Orchestrator) SetIssueBackend(identifier, backend string) {
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}
-}
-
-// getIssueBackend returns the per-issue backend override (may be "").
-// Safe to call from any goroutine.
-func (o *Orchestrator) getIssueBackend(identifier string) string {
-	o.issueBackendsMu.RLock()
-	defer o.issueBackendsMu.RUnlock()
-	return o.issueBackends[identifier]
 }
 
 // GetRunningIssue returns a copy of the domain.Issue for the currently running

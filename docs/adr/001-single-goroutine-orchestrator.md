@@ -2,13 +2,13 @@
 
 **Status:** Accepted
 **Date:** 2025-01-01
-**Authors:** Symphony Go maintainers
+**Authors:** Itervox maintainers
 
 ---
 
 ## Context
 
-Symphony's core job is to:
+Itervox's core job is to:
 
 1. Poll a tracker (Linear or GitHub) for candidate issues on a configurable interval.
 2. Claim issues and dispatch agent subprocesses (Claude Code, Codex) for each one.

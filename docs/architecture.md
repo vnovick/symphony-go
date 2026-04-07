@@ -2,7 +2,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                        symphony                          │
+│                        itervox                          │
 │                                                          │
 │  ┌──────────┐   poll    ┌──────────────┐                │
 │  │  Tracker │◄─────────│ Orchestrator │                 │
@@ -46,7 +46,7 @@ These are protected by `Orchestrator.cfgMu` (`sync.RWMutex`). All other config f
 
 ### Workspace isolation
 
-Each issue gets a dedicated workspace directory under `~/.symphony/workspaces/<identifier>/`. The `workspace.Manager` ensures the directory exists before the agent is invoked and enforces that the agent cannot escape to parent directories (`workspace.Safety`).
+Each issue gets a dedicated workspace directory under `~/.itervox/workspaces/<identifier>/`. The `workspace.Manager` ensures the directory exists before the agent is invoked and enforces that the agent cannot escape to parent directories (`workspace.Safety`).
 
 ### Per-run log isolation
 
@@ -87,7 +87,7 @@ Browser POST /api/v1/issues/:id/resume
 
 | Package | Responsibility |
 |---|---|
-| `cmd/symphony` | Entry point, wires all components |
+| `cmd/itervox` | Entry point, wires all components |
 | `internal/orchestrator` | Core event loop, dispatch, state machine |
 | `internal/agent` | Runner interface, claude subprocess, stream parsing |
 | `internal/tracker/linear` | Linear GraphQL client |

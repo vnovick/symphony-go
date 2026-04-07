@@ -15,7 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // --- shellQuote ---
@@ -156,7 +156,7 @@ func TestSSHSessionIDFromTarHeader(t *testing.T) {
 	// The tar header name → session ID formula must match the local readJSONLFileMultiWith formula.
 	cases := []struct{ name, want string }{
 		{"abc123.jsonl", "abc123"},
-		{"./abc123.jsonl", "abc123"},   // tar may include "./" prefix
+		{"./abc123.jsonl", "abc123"},      // tar may include "./" prefix
 		{"subdir/abc123.jsonl", "abc123"}, // tar -C strips dir but test robustness
 	}
 	for _, c := range cases {

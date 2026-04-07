@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import type { ReactNode } from 'react';
 
 type CardVariant = 'default' | 'elevated' | 'outline';
@@ -24,7 +25,13 @@ const VARIANT_STYLE: Record<CardVariant, React.CSSProperties> = {
   outline: { background: 'transparent', border: '1px solid var(--line-strong)' },
 };
 
-function CardRoot({ children, variant = 'default', padding = 'md', className, onClick }: CardProps) {
+function CardRoot({
+  children,
+  variant = 'default',
+  padding = 'md',
+  className,
+  onClick,
+}: CardProps) {
   return (
     <div
       data-variant={variant}
@@ -38,28 +45,20 @@ function CardRoot({ children, variant = 'default', padding = 'md', className, on
   );
 }
 
-function Header({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <div
-      className={['pb-3 mb-3 border-b border-theme-line', className ?? ''].join(' ')}
-    >
-      {children}
-    </div>
-  );
-}
+const Header = ({ children, className }: { children: ReactNode; className?: string }) => (
+  <div className={['border-theme-line mb-3 border-b pb-3', className ?? ''].join(' ')}>
+    {children}
+  </div>
+);
 
-function Body({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={className}>{children}</div>;
-}
+const Body = ({ children, className }: { children: ReactNode; className?: string }) => (
+  <div className={className}>{children}</div>
+);
 
-function Footer({ children, className }: { children: ReactNode; className?: string }) {
-  return (
-    <div
-      className={['pt-3 mt-3 border-t border-theme-line', className ?? ''].join(' ')}
-    >
-      {children}
-    </div>
-  );
-}
+const Footer = ({ children, className }: { children: ReactNode; className?: string }) => (
+  <div className={['border-theme-line mt-3 border-t pt-3', className ?? ''].join(' ')}>
+    {children}
+  </div>
+);
 
 export const Card = Object.assign(CardRoot, { Header, Body, Footer });

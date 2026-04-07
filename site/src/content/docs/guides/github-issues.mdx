@@ -108,6 +108,49 @@ Itervox polls the GitHub Issues API every `interval_ms` milliseconds and dispatc
 
 Open the dashboard at [http://localhost:8090](http://localhost:8090) to monitor progress.
 
+## Using labels as states
+
+GitHub Issues has only two native states: `open` and `closed`. To get intermediate states (like "in progress", "in review"), Itervox uses **labels as state proxies**.
+
+When you set `active_states: ["todo", "in-progress"]`, Itervox fetches open issues that have a `todo` or `in-progress` label. When it transitions state (e.g., on completion), it removes the old state label and adds the new one.
+
+```yaml
+tracker:
+  active_states:
+    - todo
+    - in-progress
+  terminal_states:
+    - done
+    - closed
+  completion_state: done     # adds "done" label when agent finishes
+  backlog_states:
+    - backlog               # optional: enables the backlog panel in TUI/dashboard
+```
+
+Create these labels in your GitHub repository before running Itervox. Then assign the `todo` label to issues you want agents to pick up.
+
+### GitHub Projects (v2) are not supported
+
+Itervox works with **GitHub Issues + labels** directly. It does not integrate with GitHub Projects v2 (the board/kanban feature). This means:
+
+- No column-based state management (cards don't move between project board columns)
+- No project board filtering or views
+- The TUI/dashboard project picker is not available for GitHub (it's a Linear-only feature)
+
+If your team uses GitHub Projects for tracking, you can still use Itervox — just make sure your issues also have the correct state labels. Itervox reads labels, not board columns.
+
+### GitHub Enterprise
+
+For GitHub Enterprise Server, set `tracker.endpoint` in your WORKFLOW.md:
+
+```yaml
+tracker:
+  kind: github
+  endpoint: https://github.yourcompany.com/api/v3
+  api_key: $GITHUB_TOKEN
+  project_slug: org/repo
+```
+
 ## Using labels for filtering
 
 The Liquid prompt template has access to the full issue object, including its labels. You can use this to give agents specialised instructions based on how the issue is tagged.
@@ -163,7 +206,7 @@ Implement the changes described in the issue, add tests, and open a pull request
 
 ### Filtering by label in `active_states`
 
-GitHub Issues does not expose custom states, but you can narrow which issues get dispatched by combining `active_states` with label filters in your prompt. Alternatively, create a project board and configure Itervox to only dispatch issues assigned to a specific column — use the web UI to pause individual issues while you refine your workflow.
+You can narrow which issues get dispatched by using specific labels in `active_states`. For example, set `active_states: ["ready"]` and only assign the `ready` label to issues you want agents to work on. Use the TUI or web dashboard to pause individual issues while you refine your workflow.
 
 ### Auto-closing issues on success
 

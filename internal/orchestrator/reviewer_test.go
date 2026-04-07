@@ -10,12 +10,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/agent/agenttest"
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/agent/agenttest"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // ─── Config + accessor tests ─────────────────────────────────────────────────
@@ -268,9 +268,6 @@ func (r *countingTrackingRunner) RunTurn(ctx context.Context, log agent.Logger, 
 	}
 	return res, err
 }
-
-// syncBuffer from token_log_test.go — copied here for reviewer tests.
-type reviewerSyncBuffer = syncBuffer
 
 // Verify syncBuffer exists in the test package (defined in token_log_test.go).
 // If this doesn't compile, the syncBuffer type from token_log_test.go is needed.

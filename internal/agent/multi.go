@@ -8,7 +8,7 @@ import (
 	"unicode"
 )
 
-const backendHintPrefix = "@@symphony-backend="
+const backendHintPrefix = "@@itervox-backend="
 
 type MultiRunner struct {
 	defaultRunner Runner

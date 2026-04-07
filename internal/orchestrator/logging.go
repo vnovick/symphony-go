@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/logbuffer"
 )
 
 // bufLogger wraps a slog.Logger and also writes INFO/WARN lines to a LogBuffer.
@@ -133,7 +133,7 @@ func formatSessionComment(allText []string, identifier string) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("## Symphony Agent Session — ")
+	sb.WriteString("## Itervox Agent Session — ")
 	sb.WriteString(identifier)
 	sb.WriteString("\n\n")
 	for _, t := range nonEmpty {

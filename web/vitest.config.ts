@@ -51,21 +51,21 @@ export default defineConfig({
         'src/components/ui/table/**',
         'src/components/ui/ThemeToggle/**',
 
-        // Symphony components without dedicated test suites
-        'src/components/symphony/AgentQueueView.tsx',
-        'src/components/symphony/RateLimitBar.tsx',
-        'src/components/symphony/StatusStrip.tsx',
-        'src/components/symphony/TagInput.tsx',
-        'src/components/symphony/HostPool.tsx',
-        'src/components/symphony/RetryQueueTable.tsx',
-        'src/components/symphony/SessionAccordion.tsx',
+        // Itervox components without dedicated test suites
+        'src/components/itervox/AgentQueueView.tsx',
+        'src/components/itervox/RateLimitBar.tsx',
+        'src/components/itervox/StatusStrip.tsx',
+        'src/components/itervox/TagInput.tsx',
+        'src/components/itervox/HostPool.tsx',
+        'src/components/itervox/RetryQueueTable.tsx',
+        'src/components/itervox/SessionAccordion.tsx',
 
         // Extracted timeline presentational components (logic tested via types.test.ts)
-        'src/components/symphony/timeline/AgentLogPanel.tsx',
-        'src/components/symphony/timeline/IssueRunsView.tsx',
-        'src/components/symphony/timeline/RunRow.tsx',
-        'src/components/symphony/timeline/SubagentBar.tsx',
-        'src/components/symphony/timeline/TimeAxis.tsx',
+        'src/components/itervox/timeline/AgentLogPanel.tsx',
+        'src/components/itervox/timeline/IssueRunsView.tsx',
+        'src/components/itervox/timeline/RunRow.tsx',
+        'src/components/itervox/timeline/SubagentBar.tsx',
+        'src/components/itervox/timeline/TimeAxis.tsx',
 
         // Extracted profile presentational components
         'src/pages/Settings/profiles/ProfileEditorFields.tsx',
@@ -108,7 +108,7 @@ export default defineConfig({
         'src/store/toastStore.ts',
 
         // Legacy excluded files
-        'src/components/symphony/LogViewer.tsx',
+        'src/components/itervox/LogViewer.tsx',
       ],
     },
   },

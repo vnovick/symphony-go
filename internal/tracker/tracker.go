@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // RateLimitSnapshot holds the most recently observed API rate-limit counters.

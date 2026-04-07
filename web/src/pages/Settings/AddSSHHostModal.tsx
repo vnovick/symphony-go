@@ -51,48 +51,47 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
   });
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} showCloseButton className="max-w-md p-6">
-      <h2 className="text-base font-semibold mb-4 text-theme-text">
-        Add Worker Host
-      </h2>
+    <Modal isOpen={isOpen} onClose={onClose} showCloseButton padded className="max-w-md">
+      <h2 className="text-theme-text mb-4 text-base font-semibold">Add Worker Host</h2>
 
       {/* Host type selector */}
-      <div className="flex gap-2 mb-5">
+      <div className="mb-5 flex gap-2">
         <div
-          className="flex-1 py-2.5 px-3 rounded-lg border-2 text-left"
+          className="flex-1 rounded-lg border-2 px-3 py-2.5 text-left"
           style={{
             borderColor: 'var(--accent)',
             background: 'rgba(99,102,241,0.06)',
           }}
         >
-          <div className="text-[13px] font-semibold text-theme-text">SSH</div>
-          <div className="text-[11px] mt-0.5 text-theme-text-secondary">
-            Remote host via SSH
-          </div>
+          <div className="text-theme-text text-[13px] font-semibold">SSH</div>
+          <div className="text-theme-text-secondary mt-0.5 text-[11px]">Remote host via SSH</div>
         </div>
         <button
           type="button"
           disabled
-          className="flex-1 py-2.5 px-3 rounded-lg border-2 text-left opacity-50 cursor-not-allowed"
+          className="flex-1 cursor-not-allowed rounded-lg border-2 px-3 py-2.5 text-left opacity-50"
           style={{ borderColor: 'var(--line)', background: 'transparent' }}
           title="Coming in a future release"
         >
           <div className="flex items-center gap-1.5">
-            <span className="text-[13px] font-semibold text-theme-text">Docker</span>
+            <span className="text-theme-text text-[13px] font-semibold">Docker</span>
             <span
-              className="px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide"
+              className="rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase"
               style={{ background: 'rgba(99,102,241,0.12)', color: '#818cf8' }}
             >
               Soon
             </span>
           </div>
-          <div className="text-[11px] mt-0.5 text-theme-text-secondary">
-            Ephemeral containers
-          </div>
+          <div className="text-theme-text-secondary mt-0.5 text-[11px]">Ephemeral containers</div>
         </button>
       </div>
 
-      <form onSubmit={(e) => { void onSubmit(e); }} className="space-y-4">
+      <form
+        onSubmit={(e) => {
+          void onSubmit(e);
+        }}
+        className="space-y-4"
+      >
         <div>
           <label className={labelCls}>
             Host address <span className="text-theme-danger">*</span>
@@ -105,14 +104,13 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
             {...register('host')}
           />
           {errors.host && (
-            <p role="alert" className="mt-1 text-xs text-theme-danger">
+            <p role="alert" className="text-theme-danger mt-1 text-xs">
               {errors.host.message}
             </p>
           )}
-          <p className="mt-1 text-[11px] text-theme-muted">
-            Use <code className="bg-theme-bg-soft px-0.5 rounded">host</code> or{' '}
-            <code className="bg-theme-bg-soft px-0.5 rounded">host:port</code>.
-            Defaults to port 22.
+          <p className="text-theme-muted mt-1 text-[11px]">
+            Use <code className="bg-theme-bg-soft rounded px-0.5">host</code> or{' '}
+            <code className="bg-theme-bg-soft rounded px-0.5">host:port</code>. Defaults to port 22.
           </p>
         </div>
 
@@ -128,10 +126,14 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
 
         {/* Host key warning */}
         <div
-          className="rounded-lg px-3.5 py-3 text-[12px] leading-relaxed space-y-1.5"
-          style={{ background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.25)', color: '#ca8a04' }}
+          className="space-y-1.5 rounded-lg px-3.5 py-3 text-[12px] leading-relaxed"
+          style={{
+            background: 'rgba(234,179,8,0.08)',
+            border: '1px solid rgba(234,179,8,0.25)',
+            color: '#ca8a04',
+          }}
         >
-          <div className="font-semibold flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 font-semibold">
             <span>⚠</span> SSH host key required
           </div>
           <p style={{ color: '#a16207' }}>
@@ -139,10 +141,10 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
             <code style={{ background: 'rgba(234,179,8,0.12)', padding: '0 3px', borderRadius: 3 }}>
               ~/.ssh/known_hosts
             </code>{' '}
-            on this machine before Symphony can connect. Run once to pre-accept it:
+            on this machine before Itervox can connect. Run once to pre-accept it:
           </p>
           <pre
-            className="rounded px-2.5 py-1.5 text-[11px] font-mono select-all"
+            className="rounded px-2.5 py-1.5 font-mono text-[11px] select-all"
             style={{ background: 'rgba(0,0,0,0.15)', color: '#fbbf24' }}
           >
             {`ssh-keyscan -H ${hostValue.trim() || '<host>'} >> ~/.ssh/known_hosts`}
@@ -153,14 +155,14 @@ export function AddSSHHostModal({ isOpen, onClose, onAdd }: AddSSHHostModalProps
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-theme-line px-4 py-1.5 text-[13px] text-theme-text-secondary"
+            className="border-theme-line text-theme-text-secondary rounded-md border px-4 py-1.5 text-[13px]"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={isSubmitting}
-            className="rounded-md px-4 py-1.5 text-[13px] font-semibold text-white bg-theme-accent disabled:opacity-60"
+            className="bg-theme-accent rounded-md px-4 py-1.5 text-[13px] font-semibold text-white disabled:opacity-60"
           >
             {isSubmitting ? 'Adding…' : 'Add host'}
           </button>

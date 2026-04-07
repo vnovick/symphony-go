@@ -42,7 +42,16 @@ interface ListViewProps {
   onProfileChange: (identifier: string, profile: string) => void;
 }
 
-export function ListView({ issues, onSelect, availableProfiles, profileDefs, runningBackendByIdentifier, defaultBackend, backlogStates, onProfileChange }: ListViewProps) {
+export function ListView({
+  issues,
+  onSelect,
+  availableProfiles,
+  profileDefs,
+  runningBackendByIdentifier,
+  defaultBackend,
+  backlogStates,
+  onProfileChange,
+}: ListViewProps) {
   const backlogSet = useMemo(() => new Set(backlogStates ?? []), [backlogStates]);
   const [sortKey, setSortKey] = useState<SortKey>('identifier');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -73,34 +82,57 @@ export function ListView({ issues, onSelect, availableProfiles, profileDefs, run
   );
 
   const thStyle: React.CSSProperties = { color: 'var(--text-secondary)' };
-  const thClass = 'px-4 py-3 text-left text-xs font-medium uppercase tracking-wider select-none cursor-pointer';
+  const thClass =
+    'px-4 py-3 text-left text-xs font-medium uppercase tracking-wider select-none cursor-pointer';
 
   return (
-    <div
-      className="overflow-hidden rounded-[var(--radius-md)] border border-theme-line bg-theme-panel"
-    >
+    <div className="border-theme-line bg-theme-panel overflow-hidden rounded-[var(--radius-md)] border">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[640px] text-sm">
           <thead className="bg-theme-bg-soft">
             <tr>
-              <th className={thClass} style={thStyle} onClick={() => { handleSort('identifier'); }}>
+              <th
+                className={thClass}
+                style={thStyle}
+                onClick={() => {
+                  handleSort('identifier');
+                }}
+              >
                 Identifier <SortIcon active={sortKey === 'identifier'} dir={sortDir} />
               </th>
-              <th className={thClass} style={thStyle} onClick={() => { handleSort('title'); }}>
+              <th
+                className={thClass}
+                style={thStyle}
+                onClick={() => {
+                  handleSort('title');
+                }}
+              >
                 Title <SortIcon active={sortKey === 'title'} dir={sortDir} />
               </th>
-              <th className={thClass} style={thStyle} onClick={() => { handleSort('state'); }}>
+              <th
+                className={thClass}
+                style={thStyle}
+                onClick={() => {
+                  handleSort('state');
+                }}
+              >
                 State <SortIcon active={sortKey === 'state'} dir={sortDir} />
               </th>
-              <th className={thClass} style={thStyle}>Backend</th>
-              <th className={thClass} style={thStyle}>Agent</th>
-              <th className={thClass} style={thStyle}>Actions</th>
+              <th className={thClass} style={thStyle}>
+                Backend
+              </th>
+              <th className={thClass} style={thStyle}>
+                Agent
+              </th>
+              <th className={thClass} style={thStyle}>
+                Actions
+              </th>
             </tr>
           </thead>
-          <tbody className="border-t border-theme-line">
+          <tbody className="border-theme-line border-t">
             {sorted.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-10 text-center text-sm text-theme-muted">
+                <td colSpan={6} className="text-theme-muted px-4 py-10 text-center text-sm">
                   No issues match the current filters
                 </td>
               </tr>
@@ -108,8 +140,10 @@ export function ListView({ issues, onSelect, availableProfiles, profileDefs, run
             {sorted.map((issue) => (
               <tr
                 key={issue.identifier}
-                className="cursor-pointer transition-colors hover:bg-[var(--bg-soft)] border-t border-theme-line"
-                onClick={() => { onSelect(issue.identifier); }}
+                className="border-theme-line cursor-pointer border-t transition-colors hover:bg-[var(--bg-soft)]"
+                onClick={() => {
+                  onSelect(issue.identifier);
+                }}
               >
                 <td className="px-4 py-3 whitespace-nowrap">
                   {issue.url ? (
@@ -117,19 +151,20 @@ export function ListView({ issues, onSelect, availableProfiles, profileDefs, run
                       href={issue.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="font-mono text-sm font-medium hover:underline text-theme-accent"
-                      
-                      onClick={(e) => { e.stopPropagation(); }}
+                      className="text-theme-accent font-mono text-sm font-medium hover:underline"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                      }}
                     >
                       {issue.identifier}
                     </a>
                   ) : (
-                    <span className="font-mono text-sm font-medium text-theme-text">
+                    <span className="text-theme-text font-mono text-sm font-medium">
                       {issue.identifier}
                     </span>
                   )}
                 </td>
-                <td className="max-w-xs truncate px-4 py-3 text-theme-text-secondary">
+                <td className="text-theme-text-secondary max-w-xs truncate px-4 py-3">
                   {issue.title}
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
@@ -139,41 +174,59 @@ export function ListView({ issues, onSelect, availableProfiles, profileDefs, run
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
                   {(() => {
-                    const b = resolveBackend(issue.agentProfile, profileDefs, runningBackendByIdentifier?.[issue.identifier], defaultBackend);
+                    const b = resolveBackend(
+                      issue.agentProfile,
+                      profileDefs,
+                      runningBackendByIdentifier?.[issue.identifier],
+                      defaultBackend,
+                    );
                     return (
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                        b === 'codex'
-                          ? 'bg-emerald-500/15 text-emerald-400'
-                          : 'bg-orange-500/15 text-orange-400'
-                      }`}>
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          b === 'codex'
+                            ? 'bg-emerald-500/15 text-emerald-400'
+                            : 'bg-orange-500/15 text-orange-400'
+                        }`}
+                      >
                         {b === 'codex' ? 'Codex' : 'Claude'}
                       </span>
                     );
                   })()}
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => { e.stopPropagation(); }}>
+                <td
+                  className="px-4 py-3 whitespace-nowrap"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                  }}
+                >
                   {(() => {
                     const isEditable = backlogSet.has(issue.state) && availableProfiles.length > 0;
                     if (isEditable) {
                       return (
                         <select
                           value={issue.agentProfile ?? ''}
-                          onChange={(e) => { onProfileChange(issue.identifier, e.target.value); }}
-                          className="rounded px-1.5 py-0.5 text-xs focus:outline-none border border-theme-line bg-theme-bg-elevated text-theme-text-secondary"
+                          onChange={(e) => {
+                            onProfileChange(issue.identifier, e.target.value);
+                          }}
+                          className="border-theme-line bg-theme-bg-elevated text-theme-text-secondary rounded border px-1.5 py-0.5 text-xs focus:outline-none"
                         >
                           <option value="">{EMPTY_PROFILE_LABEL}</option>
                           {availableProfiles.map((p) => (
-                            <option key={p} value={p}>{p}</option>
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
                           ))}
                         </select>
                       );
                     }
                     return (
-                      <span className="inline-flex items-center gap-1 text-xs text-theme-muted">
-                        <span className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`} />
-                        {issue.orchestratorState || 'idle'}
+                      <span className="text-theme-muted inline-flex items-center gap-1 text-xs">
+                        <span
+                          className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`}
+                        />
+                        {issue.orchestratorState}
                         {issue.agentProfile && (
-                          <span className="ml-1 rounded border border-theme-line px-1 py-0.5 text-[10px]">
+                          <span className="border-theme-line ml-1 rounded border px-1 py-0.5 text-[10px]">
                             {issue.agentProfile}
                           </span>
                         )}
@@ -181,21 +234,38 @@ export function ListView({ issues, onSelect, availableProfiles, profileDefs, run
                     );
                   })()}
                 </td>
-                <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => { e.stopPropagation(); }}>
+                <td
+                  className="px-4 py-3 whitespace-nowrap"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                  }}
+                >
                   {issue.orchestratorState === 'running' && (
                     <button
-                      onClick={() => { cancelIssueMutation.mutate(issue.identifier); }}
+                      onClick={() => {
+                        cancelIssueMutation.mutate(issue.identifier);
+                      }}
                       className="rounded px-2 py-1 text-xs transition-colors"
-                      style={{ border: '1px solid var(--danger-soft)', color: 'var(--danger)', background: 'transparent' }}
+                      style={{
+                        border: '1px solid var(--danger-soft)',
+                        color: 'var(--danger)',
+                        background: 'transparent',
+                      }}
                     >
                       ⏸ Pause
                     </button>
                   )}
                   {issue.orchestratorState === 'paused' && (
                     <button
-                      onClick={() => { resumeIssueMutation.mutate(issue.identifier); }}
+                      onClick={() => {
+                        resumeIssueMutation.mutate(issue.identifier);
+                      }}
                       className="rounded px-2 py-1 text-xs transition-colors"
-                      style={{ border: '1px solid var(--success-soft)', color: 'var(--success)', background: 'transparent' }}
+                      style={{
+                        border: '1px solid var(--success-soft)',
+                        color: 'var(--success)',
+                        background: 'transparent',
+                      }}
                     >
                       ▶ Resume
                     </button>

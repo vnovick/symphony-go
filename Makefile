@@ -6,7 +6,7 @@ export GOTOOLCHAIN := go1.25.8
 
 all: build verify
 
-# IMPORTANT: Always use `make build` instead of bare `go build ./cmd/symphony`.
+# IMPORTANT: Always use `make build` instead of bare `go build ./cmd/itervox`.
 # The Go binary embeds web/dist via //go:embed. If web/dist is missing, the binary
 # compiles but panics at runtime with "embed: failed to sub web/dist".
 # `make build` runs web-build first to ensure the frontend assets exist.
@@ -38,7 +38,7 @@ coverage:
 
 # Remove build artifacts and generated coverage files.
 clean:
-	rm -f symphony coverage.out coverage.html
+	rm -f itervox coverage.out coverage.html
 	go clean ./...
 
 # Regenerate catwalk golden files after intentional TUI render changes.
@@ -55,10 +55,11 @@ web-build:
 web-test:
 	cd web && pnpm install --frozen-lockfile && pnpm test
 
-# Guard against the common misspelling "Symphony" slipping into web source.
+# Guard against old "Itervox" name in user-visible strings (skip internal identifiers).
 web-spelling:
-	@if grep -r "Symphony" web/src/ --include="*.ts" --include="*.tsx" -l 2>/dev/null | grep -q .; then \
-		echo "ERROR: 'Symphony' (typo) found in web/src/ — run: grep -r Symphony web/src/"; \
+	@if grep -rn '".*Itervox' web/src/ --include="*.ts" --include="*.tsx" 2>/dev/null | grep -v "itervoxStore\|useItervox\|/itervox/" | grep -q .; then \
+		echo "ERROR: 'Itervox' found in user-visible strings — should be 'Itervox'."; \
+		grep -rn '".*Itervox' web/src/ --include="*.ts" --include="*.tsx" | grep -v "itervoxStore\|useItervox\|/itervox/"; \
 		exit 1; \
 	fi
 

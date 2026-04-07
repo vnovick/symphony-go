@@ -12,7 +12,7 @@ body:
     attributes:
       label: What happened?
       description: A clear description of the bug.
-      placeholder: "When I run `symphony`, it..."
+      placeholder: "When I run `itervox`, it..."
     validations:
       required: true
 
@@ -29,7 +29,7 @@ body:
       label: Steps to reproduce
       placeholder: |
         1. Create a WORKFLOW.md with...
-        2. Run `symphony`
+        2. Run `itervox`
         3. See error
     validations:
       required: true
@@ -50,8 +50,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: Symphony version
-      placeholder: "`symphony --version` output"
+      label: Itervox version
+      placeholder: "`itervox --version` output"
     validations:
       required: true
 

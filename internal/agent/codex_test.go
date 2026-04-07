@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/agent"
+	"github.com/vnovick/itervox/internal/agent"
 )
 
 func TestParseCodexLine_ThreadStarted(t *testing.T) {
@@ -233,7 +233,7 @@ func TestMultiRunnerDispatchesToHintedBackend(t *testing.T) {
 
 	argsData, err := os.ReadFile(argFile)
 	require.NoError(t, err)
-	assert.NotContains(t, string(argsData), "@@symphony-backend=")
+	assert.NotContains(t, string(argsData), "@@itervox-backend=")
 	assert.Contains(t, string(argsData), "exec")
 }
 
@@ -316,7 +316,7 @@ func TestMultiRunnerStripsBackendHintFromPrompt(t *testing.T) {
 	})
 	result, err := multi.RunTurn(
 		context.Background(), slog.Default(), nil,
-		nil, "@@symphony-backend=codex actual prompt text", dir, fakeCodex, "",
+		nil, "@@itervox-backend=codex actual prompt text", dir, fakeCodex, "",
 		"",
 		30000, 60000,
 	)
@@ -326,7 +326,7 @@ func TestMultiRunnerStripsBackendHintFromPrompt(t *testing.T) {
 	callData, err := os.ReadFile(argFile)
 	require.NoError(t, err)
 	callStr := string(callData)
-	assert.NotContains(t, callStr, "@@symphony-backend=codex actual prompt text")
+	assert.NotContains(t, callStr, "@@itervox-backend=codex actual prompt text")
 }
 
 func TestCodexRunnerStartupFailure(t *testing.T) {
@@ -438,12 +438,12 @@ func TestParseCodexLine_ItemStarted_CollabToolCall(t *testing.T) {
 	line, err := json.Marshal(map[string]any{
 		"type": "item.started",
 		"item": map[string]any{
-			"id":                "i2",
-			"type":              "collab_tool_call",
-			"tool":              "spawn_agent",
-			"sender_thread_id":  "thr-1",
+			"id":                  "i2",
+			"type":                "collab_tool_call",
+			"tool":                "spawn_agent",
+			"sender_thread_id":    "thr-1",
 			"receiver_thread_ids": []string{"thr-2"},
-			"status":            "in_progress",
+			"status":              "in_progress",
 		},
 	})
 	require.NoError(t, err)
@@ -618,7 +618,7 @@ func TestMultiRunnerWarnsOnUnsupportedBackend(t *testing.T) {
 	})
 	result, err := multi.RunTurn(
 		context.Background(), slog.Default(), nil,
-		nil, "hi", dir, "@@symphony-backend=unsupported "+fakeClaude, "",
+		nil, "hi", dir, "@@itervox-backend=unsupported "+fakeClaude, "",
 		"",
 		30000, 60000,
 	)

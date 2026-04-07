@@ -1,11 +1,11 @@
 import { useMemo } from 'react';
-import { useSymphonyStore } from '../store/symphonyStore';
+import { useItervoxStore } from '../store/itervoxStore';
 import { useToastStore } from '../store/toastStore';
 
 // Read refreshSnapshot from the store directly (not via selector) so
 // the returned action functions have stable references across renders.
 function getRefreshSnapshot() {
-  return useSymphonyStore.getState().refreshSnapshot;
+  return useItervoxStore.getState().refreshSnapshot;
 }
 
 function toastError(msg: string) {
@@ -81,12 +81,7 @@ const actions = {
     ),
 
   setProjectFilter: async (slugs: string[] | null): Promise<boolean> =>
-    settingsFetch(
-      '/api/v1/projects/filter',
-      'PUT',
-      { slugs },
-      'Failed to update project filter.',
-    ),
+    settingsFetch('/api/v1/projects/filter', 'PUT', { slugs }, 'Failed to update project filter.'),
 
   addSSHHost: async (host: string, description: string): Promise<boolean> =>
     settingsFetch(
@@ -113,17 +108,9 @@ const actions = {
     ),
 
   bumpWorkers: async (delta: number): Promise<boolean> =>
-    settingsFetch(
-      '/api/v1/settings/workers',
-      'POST',
-      { delta },
-      'Failed to update worker count.',
-    ),
+    settingsFetch('/api/v1/settings/workers', 'POST', { delta }, 'Failed to update worker count.'),
 
-  setReviewerConfig: async (
-    profile: string,
-    autoReview: boolean,
-  ): Promise<boolean> =>
+  setReviewerConfig: async (profile: string, autoReview: boolean): Promise<boolean> =>
     settingsFetch(
       '/api/v1/settings/reviewer',
       'PUT',

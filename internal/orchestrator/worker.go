@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/prdetector"
-	"github.com/vnovick/symphony-go/internal/prompt"
-	"github.com/vnovick/symphony-go/internal/workspace"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/prdetector"
+	"github.com/vnovick/itervox/internal/prompt"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 // Worker-level timeout and retry constants.
@@ -66,11 +66,12 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// from the start, before the first agent turn completes.
 	select {
 	case o.events <- OrchestratorEvent{
-		Type:    EventWorkerUpdate,
-		IssueID: issue.ID,
+		Type:     EventWorkerUpdate,
+		IssueID:  issue.ID,
 		RunEntry: &RunEntry{SessionID: runLogID},
 	}:
 	default:
+		slog.Debug("orchestrator: worker update event dropped (channel full)", "issue_id", issue.ID)
 	}
 
 	// --- Workspace ---
@@ -320,6 +321,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				},
 			}:
 			default:
+				slog.Debug("orchestrator: worker update event dropped (channel full)", "issue_id", issue.ID)
 			}
 		}
 		turnStart := time.Now()
@@ -482,7 +484,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				TotalTokens:  cumulativeInput + cumulativeCached + cumulativeOutput,
 				InputTokens:  cumulativeInput,
 				OutputTokens: cumulativeOutput,
-				SessionID: runLogID,
+				SessionID:    runLogID,
 			},
 		}:
 		default:
@@ -596,7 +598,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				if o.logBuf != nil {
 					// parseLogLine detects "pr" events by substring-matching "pr_opened" in the
 					// message text, not by the log level or a separate event-type field.
-				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", fmt.Sprintf("worker: pr_opened url=%s", prURL), runLogID))
+					o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", fmt.Sprintf("worker: pr_opened url=%s", prURL), runLogID))
 				}
 			}
 		}
@@ -647,7 +649,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
-	// Move issue to completion_state (e.g. "In Review") so Symphony stops
+	// Move issue to completion_state (e.g. "In Review") so Itervox stops
 	// re-dispatching it. Without this, issues stay in active_states after a
 	// successful run and get picked up again on the next retry tick.
 	// Up to 4 attempts total (1 immediate + 3 retries with 2s/4s/8s backoff) to guard against

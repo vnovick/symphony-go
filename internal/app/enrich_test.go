@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/vnovick/symphony-go/internal/server"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/server"
 )
 
 func ptr[T any](v T) *T { return &v }
@@ -57,11 +57,11 @@ func TestEnrichIssue(t *testing.T) {
 	now := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name   string
-		issue  domain.Issue
-		snap   orchestrator.State
-		cfg    *config.Config
-		check  func(t *testing.T, ti server.TrackerIssue)
+		name  string
+		issue domain.Issue
+		snap  orchestrator.State
+		cfg   *config.Config
+		check func(t *testing.T, ti server.TrackerIssue)
 	}{
 		{
 			name:  "running issue gets state and metrics",
@@ -169,7 +169,7 @@ func TestEnrichIssue(t *testing.T) {
 			},
 		},
 		{
-			name: "idle issue with ineligible reason (no slots)",
+			name:  "idle issue with ineligible reason (no slots)",
 			issue: baseIssue(),
 			snap: func() orchestrator.State {
 				s := emptyState()
@@ -187,7 +187,7 @@ func TestEnrichIssue(t *testing.T) {
 			},
 		},
 		{
-			name: "profile override applied",
+			name:  "profile override applied",
 			issue: baseIssue(),
 			snap: func() orchestrator.State {
 				s := emptyState()
@@ -202,7 +202,7 @@ func TestEnrichIssue(t *testing.T) {
 			},
 		},
 		{
-			name: "empty profile override is ignored",
+			name:  "empty profile override is ignored",
 			issue: baseIssue(),
 			snap: func() orchestrator.State {
 				s := emptyState()
@@ -269,8 +269,8 @@ func TestEnrichIssue(t *testing.T) {
 				i := baseIssue()
 				i.BlockedBy = []domain.BlockerRef{
 					{Identifier: ptr("ENG-10")},
-					{Identifier: ptr("")},  // empty identifier is skipped
-					{Identifier: nil},       // nil identifier is skipped
+					{Identifier: ptr("")}, // empty identifier is skipped
+					{Identifier: nil},     // nil identifier is skipped
 					{Identifier: ptr("ENG-11")},
 				}
 				return i
@@ -306,7 +306,7 @@ func TestEnrichIssue(t *testing.T) {
 			},
 		},
 		{
-			name: "running takes precedence over paused",
+			name:  "running takes precedence over paused",
 			issue: baseIssue(),
 			snap: func() orchestrator.State {
 				s := emptyState()

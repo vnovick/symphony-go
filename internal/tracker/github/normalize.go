@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 var blockerRe = regexp.MustCompile(`(?i)blocked\s+by\s+#(\d+)`)
@@ -115,7 +115,7 @@ func priorityFromLabels(labels []string) int {
 	return -1
 }
 
-// deriveState computes the Symphony state string for a GitHub issue.
+// deriveState computes the Itervox state string for a GitHub issue.
 // Closed issues: prefer a matching terminal label if present, otherwise return
 // the first configured terminal state (so the reconciler treats it as terminal
 // regardless of which label the user applied or whether they applied one at all).

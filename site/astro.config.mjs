@@ -27,6 +27,7 @@ export default defineConfig({
           ],
         },
         { label: 'CLI Reference', slug: 'cli' },
+        { label: 'API Reference', slug: 'api-reference' },
       ],
     }),
   ],

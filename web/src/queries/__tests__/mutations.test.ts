@@ -2,13 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import {
-  useUpdateIssueState,
-  useCancelIssue,
-  ISSUES_KEY,
-} from '../issues';
-import type { TrackerIssue } from '../../types/schemas';
-import { useSymphonyStore } from '../../store/symphonyStore';
+import { useUpdateIssueState, useCancelIssue, ISSUES_KEY } from '../issues';
+import type { TrackerIssue, StateSnapshot } from '../../types/schemas';
+import { useItervoxStore } from '../../store/itervoxStore';
 import { useToastStore } from '../../store/toastStore';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -48,7 +44,13 @@ function freshClient() {
 
 beforeEach(() => {
   // Reset real stores to initial state before each test
-  useSymphonyStore.setState({ snapshot: null, logs: [], sseConnected: false, selectedIdentifier: null, tokenSamples: [] });
+  useItervoxStore.setState({
+    snapshot: null,
+    logs: [],
+    sseConnected: false,
+    selectedIdentifier: null,
+    tokenSamples: [],
+  });
   useToastStore.setState({ toasts: [], _timers: new Map() });
 });
 
@@ -95,7 +97,9 @@ describe('useUpdateIssueState', () => {
       result.current.mutate({ identifier: 'ABC-1', state: 'In Progress' });
     });
 
-    await waitFor(() => expect(result.current.isError).toBe(true));
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
 
     const cached = qc.getQueryData<TrackerIssue[]>(ISSUES_KEY);
     expect(cached?.[0].state).toBe('Todo');
@@ -115,7 +119,9 @@ describe('useUpdateIssueState', () => {
       result.current.mutate({ identifier: 'ABC-1', state: 'Done' });
     });
 
-    await waitFor(() => expect(result.current.isError).toBe(true));
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
 
     const toasts = useToastStore.getState().toasts;
     expect(toasts.length).toBeGreaterThan(0);
@@ -151,11 +157,11 @@ describe('useCancelIssue', () => {
       counts: { running: 1, retrying: 0, paused: 0 },
       maxConcurrentAgents: 5,
       rateLimits: null,
-    } as unknown as import('../../types/symphony').StateSnapshot;
+    } as unknown as StateSnapshot;
 
-    useSymphonyStore.setState({ snapshot: baseSnapshot });
+    useItervoxStore.setState({ snapshot: baseSnapshot });
 
-    const patchSpy = vi.spyOn(useSymphonyStore.getState(), 'patchSnapshot');
+    const patchSpy = vi.spyOn(useItervoxStore.getState(), 'patchSnapshot');
 
     global.fetch = vi.fn().mockReturnValue(new Promise<Response>(() => {}));
 
@@ -200,9 +206,9 @@ describe('useCancelIssue', () => {
       counts: { running: 1, retrying: 0, paused: 0 },
       maxConcurrentAgents: 5,
       rateLimits: null,
-    } as unknown as import('../../types/symphony').StateSnapshot;
+    } as unknown as StateSnapshot;
 
-    useSymphonyStore.setState({ snapshot: baseSnapshot });
+    useItervoxStore.setState({ snapshot: baseSnapshot });
 
     global.fetch = vi.fn().mockRejectedValue(new Error('cancel failed'));
 
@@ -214,7 +220,9 @@ describe('useCancelIssue', () => {
       result.current.mutate('ABC-2');
     });
 
-    await waitFor(() => expect(result.current.isError).toBe(true));
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
 
     // Cache should be restored
     const cached = qc.getQueryData<TrackerIssue[]>(ISSUES_KEY);

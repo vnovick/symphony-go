@@ -1,12 +1,12 @@
 import { useEffect } from 'react';
 import { useToastStore } from '../store/toastStore';
 
-const CHANNEL_NAME = 'symphony-tab-sync';
+const CHANNEL_NAME = 'itervox-tab-sync';
 const PING = 'ping';
 const PONG = 'pong';
 
 /**
- * Detects when multiple browser tabs/windows have Symphony open and shows a
+ * Detects when multiple browser tabs/windows have Itervox open and shows a
  * warning toast. Uses BroadcastChannel to coordinate — no server changes needed.
  *
  * Flow: on mount, sends a PING. Any existing tab replies with PONG.
@@ -27,10 +27,12 @@ export function useMultiTabWarning() {
       } else if (event.data === PONG && !warned) {
         // Another tab replied to our ping — we're the new tab, show warning.
         warned = true;
-        useToastStore.getState().addToast(
-          'Symphony is open in another tab. Using multiple tabs may cause SSE connection issues.',
-          'error',
-        );
+        useToastStore
+          .getState()
+          .addToast(
+            'Itervox is open in another tab. Using multiple tabs may cause SSE connection issues.',
+            'error',
+          );
       }
     };
 

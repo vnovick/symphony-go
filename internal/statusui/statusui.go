@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/vnovick/symphony-go/internal/logbuffer"
-	"github.com/vnovick/symphony-go/internal/server"
+	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/server"
 )
 
 // Run starts the bubbletea TUI, writing to stderr. It blocks until ctx is

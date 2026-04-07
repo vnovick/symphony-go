@@ -1,9 +1,9 @@
 package prdetector
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
-	"cmp"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
 )
 
 // ReviewComment is a single PR review comment.

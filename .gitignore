@@ -2,7 +2,7 @@
 .worktrees/
 
 # Go build artifacts
-/symphony
+/itervox
 *.test
 
 # Node / Web
@@ -18,7 +18,7 @@ log/
 
 # Env
 .env
-.symphony/.env
+.itervox/.env
 .superpowers/
 
 # Planning docs (local only)

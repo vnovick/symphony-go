@@ -2,13 +2,13 @@
 
 **Status:** Accepted
 **Date:** 2026-03-25
-**Authors:** Symphony Go maintainers
+**Authors:** itervox Go maintainers
 
 ---
 
 ## Context
 
-Symphony stores a single flat log file per issue (e.g. `~/.symphony/logs/linear/my-project/<id>.jsonl`).
+itervox stores a single flat log file per issue (e.g. `~/.itervox/logs/linear/my-project/<id>.jsonl`).
 When an issue is retried or re-dispatched, the new agent run's log lines are appended to the same file.
 
 The Timeline page groups runs by issue and lets users expand any historical run to see its subagent
@@ -110,6 +110,6 @@ Use a monotonically incrementing `run_index` integer instead of the Claude Code 
 - `internal/orchestrator/logging.go` — `formatBufLine` `case "session_id"`
 - `internal/domain/types.go` — `BufLogEntry.SessionID`, `IssueLogEntry.SessionID`
 - `internal/server/server.go` — `HistoryRow.AppSessionID`, `StateSnapshot.CurrentAppSessionID`
-- `cmd/symphony/main.go` — `newAppSessionID()`, `buildSnapFunc`
+- `cmd/itervox/main.go` — `newAppSessionID()`, `buildSnapFunc`
 - `web/src/pages/Timeline/index.tsx` — `extractSubagents` with `filterSessionId`
 - ADR 001 — Single-Goroutine Orchestrator State Machine

@@ -13,7 +13,7 @@ import (
 
 // defaultBranches is the set of branch names treated as "no feature branch".
 // If issue.BranchName is one of these, ResolveWorktreeBranch falls back to
-// the symphony/<slug> convention.
+// the itervox/<slug> convention.
 var defaultBranches = map[string]bool{
 	"":        true,
 	"main":    true,
@@ -53,12 +53,12 @@ func SlugifyIdentifier(id string) string {
 // ResolveWorktreeBranch returns the git branch name to use for a worktree.
 // Priority:
 //  1. branchName if non-nil, non-empty, and not a default branch (main/master/develop)
-//  2. "symphony/" + SlugifyIdentifier(identifier)
+//  2. "itervox/" + SlugifyIdentifier(identifier)
 func ResolveWorktreeBranch(branchName *string, identifier string) string {
 	if branchName != nil && !IsDefaultBranch(*branchName) {
 		return *branchName
 	}
-	return "symphony/" + SlugifyIdentifier(identifier)
+	return "itervox/" + SlugifyIdentifier(identifier)
 }
 
 // worktreePath returns the absolute path for the worktree for the given

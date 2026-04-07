@@ -10,7 +10,7 @@
 
 Please **do not** open a public GitHub issue for security vulnerabilities.
 
-Report security issues privately via [GitHub Security Advisories](https://github.com/vnovick/symphony-go/security/advisories/new).
+Report security issues privately via [GitHub Security Advisories](https://github.com/vnovick/itervox/security/advisories/new).
 
 Include:
 - A description of the vulnerability and its impact
@@ -24,7 +24,7 @@ You can expect an initial response within **72 hours** and a fix or mitigation p
 
 Security concerns relevant to this project include:
 
-- **API token exposure** — Symphony reads `LINEAR_API_KEY` / `GITHUB_TOKEN` from environment variables. These should never be committed to version control or logged at non-debug levels.
+- **API token exposure** — Itervox reads `LINEAR_API_KEY` / `GITHUB_TOKEN` from environment variables. These should never be committed to version control or logged at non-debug levels.
 - **Workspace path traversal** — The SSH agent runner validates workspace paths with `filepath.EvalSymlinks` to prevent escape outside the configured root.
 - **HTTP API access** — The dashboard HTTP API binds to `127.0.0.1` by default. Do not expose it to the public internet without authentication.
 - **Prompt injection** — Issue titles and descriptions are included in agent prompts. Malicious issue content could attempt to influence agent behaviour.

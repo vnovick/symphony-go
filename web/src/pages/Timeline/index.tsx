@@ -1,15 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import PageMeta from '../../components/common/PageMeta';
-import { useSymphonyStore } from '../../store/symphonyStore';
+import { useItervoxStore } from '../../store/itervoxStore';
 import { useIssueLogs, useSubagentLogs } from '../../queries/logs';
 import { useStableValue } from '../../hooks/useStableValue';
 import { useClearIssueLogs, useClearIssueSubLogs } from '../../queries/issues';
-import { Modal } from '../../components/ui/modal';
 
-import { AgentLogPanel } from '../../components/symphony/timeline/AgentLogPanel';
-import { TimeAxis } from '../../components/symphony/timeline/TimeAxis';
-import { IssueRunsView } from '../../components/symphony/timeline/IssueRunsView';
 import {
   EMPTY_RUNNING,
   EMPTY_HISTORY,
@@ -17,16 +13,18 @@ import {
   fromHistory,
   extractSubagents,
   filterByRun,
-  dotStyle,
-} from '../../components/symphony/timeline/types';
-import type { NormalisedSession } from '../../components/symphony/timeline/types';
+} from '../../components/itervox/timeline/types';
+import type { NormalisedSession } from '../../components/itervox/timeline/types';
+
+import { TimelineSidebar } from './components/TimelineSidebar';
+import { TimelineDetailPanel } from './components/TimelineDetailPanel';
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function Timeline() {
-  const rawRunning = useSymphonyStore((s) => s.snapshot?.running ?? EMPTY_RUNNING);
-  const rawHistory = useSymphonyStore((s) => s.snapshot?.history ?? EMPTY_HISTORY);
-  const currentAppSessionId = useSymphonyStore((s) => s.snapshot?.currentAppSessionId);
+  const rawRunning = useItervoxStore((s) => s.snapshot?.running ?? EMPTY_RUNNING);
+  const rawHistory = useItervoxStore((s) => s.snapshot?.history ?? EMPTY_HISTORY);
+  const currentAppSessionId = useItervoxStore((s) => s.snapshot?.currentAppSessionId);
   const liveRunning = useStableValue(rawRunning, 5000);
 
   const liveSessions = useMemo(() => liveRunning.map(fromRunning), [liveRunning]);
@@ -75,19 +73,16 @@ export default function Timeline() {
   const [confirmClearId, setConfirmClearId] = useState<string | null>(null);
 
   // ── Selection ─────────────────────────────────────────────────────────────
-  const selectedId = useSymphonyStore((s) => s.activeIssueId);
-  const setSelectedId = useSymphonyStore((s) => s.setActiveIssueId);
+  const selectedId = useItervoxStore((s) => s.activeIssueId);
+  const setSelectedId = useItervoxStore((s) => s.setActiveIssueId);
   const [expandedRunAt, setExpandedRunAt] = useState<string | null>(null);
   const [selectedSubagentIdx, setSelectedSubagentIdx] = useState<number | null>(null);
-  const [expandedForId, setExpandedForId] = useState<string | null>(null);
+
+  // Track which selectedId we last synced expansion state for
+  const lastExpandedForIdRef = useRef<string | null>(null);
 
   // Auto-select first issue when current selection is invalid.
-  // Use a fingerprint of issue identifiers (not the full issueGroups reference)
-  // to avoid firing this effect on every SSE push.
-  const groupIds = useMemo(
-    () => issueGroups.map((g) => g.identifier).join('\0'),
-    [issueGroups],
-  );
+  const groupIds = useMemo(() => issueGroups.map((g) => g.identifier).join('\0'), [issueGroups]);
   const firstGroupId = issueGroups[0]?.identifier ?? null;
   useEffect(() => {
     if (!firstGroupId) return;
@@ -96,10 +91,10 @@ export default function Timeline() {
     }
   }, [groupIds, firstGroupId, selectedId, setSelectedId]);
 
-  // Synchronous reset: when selectedId changes, immediately auto-expand
-  // the latest run and clear subagent selection.
-  if (selectedId !== expandedForId) {
-    setExpandedForId(selectedId);
+  // When selectedId changes, auto-expand the latest run and clear subagent selection.
+  useEffect(() => {
+    if (selectedId === lastExpandedForIdRef.current) return;
+    lastExpandedForIdRef.current = selectedId;
     setSelectedSubagentIdx(null);
     const group = issueGroups.find((g) => g.identifier === selectedId);
     if (group && group.runs.length > 0) {
@@ -110,7 +105,18 @@ export default function Timeline() {
     } else {
       setExpandedRunAt(null);
     }
-  }
+  }, [selectedId, issueGroups]);
+
+  // ── Viewport ──────────────────────────────────────────────────────────────
+  const [viewport, setViewport] = useState<{ start: number; end: number } | null>(null);
+  const lastViewportForIdRef = useRef<string | null>(selectedId);
+
+  useEffect(() => {
+    if (selectedId !== lastViewportForIdRef.current) {
+      lastViewportForIdRef.current = selectedId;
+      setViewport(null);
+    }
+  }, [selectedId]);
 
   const selectedGroup = useMemo(
     () => issueGroups.find((g) => g.identifier === selectedId) ?? null,
@@ -118,17 +124,8 @@ export default function Timeline() {
   );
 
   const isSelectedLive = selectedGroup?.runs.some((r) => r.status === 'live') ?? false;
-  const { data: logsForSelected = [] } = useIssueLogs(selectedId ?? '', isSelectedLive);
+  const { data: logsForSelected } = useIssueLogs(selectedId ?? '', isSelectedLive);
   const { data: sublogs = [] } = useSubagentLogs(selectedId ?? '', isSelectedLive);
-
-  // ── Viewport ──────────────────────────────────────────────────────────────
-  const [viewport, setViewport] = useState<{ start: number; end: number } | null>(null);
-  const [viewportForId, setViewportForId] = useState<string | null>(selectedId);
-
-  if (selectedId !== viewportForId) {
-    setViewportForId(selectedId);
-    setViewport(null);
-  }
 
   const [liveTick, setLiveTick] = useState(0);
 
@@ -148,10 +145,11 @@ export default function Timeline() {
                 ? new Date(r.finishedAt).getTime()
                 : new Date(r.startedAt).getTime() + r.elapsedMs,
             ),
-          ) + 2 * 60_000
+          ) +
+          2 * 60_000
         : now + 10 * 60_000;
     return { wantStart: ws, wantEnd: we };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedGroup, liveTick]);
 
   useEffect(() => {
@@ -216,307 +214,74 @@ export default function Timeline() {
 
   useEffect(() => {
     if (!anyLive) return;
-    const id = setInterval(() => { setLiveTick((n) => n + 1); }, 10_000);
-    return () => { clearInterval(id); };
+    const id = setInterval(() => {
+      setLiveTick((n) => n + 1);
+    }, 10_000);
+    return () => {
+      clearInterval(id);
+    };
   }, [anyLive]);
+
+  // ── Callbacks ─────────────────────────────────────────────────────────────
+  const handleToggleExpand = useCallback((runStartedAt: string) => {
+    setExpandedRunAt((prev) => {
+      setSelectedSubagentIdx(null);
+      return prev === runStartedAt ? null : runStartedAt;
+    });
+  }, []);
+
+  const handleConfirmClear = useCallback(
+    (id: string) => {
+      clearIssueLogs.mutate(id);
+      clearIssueSubLogs.mutate(id, {
+        onSettled: () => {
+          setConfirmClearId(null);
+        },
+      });
+    },
+    [clearIssueLogs, clearIssueSubLogs],
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <>
-      <PageMeta title="Symphony | Timeline" description="Agent timeline" />
+      <PageMeta title="Itervox | Timeline" description="Agent timeline" />
 
       <div className="flex" style={{ height: 'calc(100vh - 100px)', minHeight: 500 }}>
-        {/* ── Sidebar: issue chips ─────────────────────────────────────────── */}
-        <aside
-          className="flex flex-shrink-0 flex-col border-r border-theme-line bg-theme-panel"
-          style={{ width: 180 }}
-        >
-          <div
-            className="border-b px-3 py-3 border-theme-line"
-          >
-            <p className="text-[10px] font-bold tracking-[0.08em] uppercase text-theme-muted">
-              Issues
-            </p>
-          </div>
+        <TimelineSidebar
+          issueGroups={issueGroups}
+          selectedId={selectedId}
+          onSelectIssue={setSelectedId}
+          confirmClearId={confirmClearId}
+          onRequestClear={setConfirmClearId}
+          onCancelClear={() => {
+            setConfirmClearId(null);
+          }}
+          onConfirmClear={handleConfirmClear}
+          isClearPending={clearIssueLogs.isPending || clearIssueSubLogs.isPending}
+        />
 
-          <div className="flex-1 overflow-y-auto p-2" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {issueGroups.length === 0 ? (
-              <p className="px-2 py-4 text-xs italic text-theme-muted">
-                No sessions yet
-              </p>
-            ) : (
-              issueGroups.map((group) => {
-                const isSelected = selectedId === group.identifier;
-                const isLive = group.latestStatus === 'live';
-                const statusText = isLive
-                  ? `${String(group.runs.length)} run${group.runs.length !== 1 ? 's' : ''} · live`
-                  : group.latestStatus === 'failed'
-                    ? 'failed + blocked'
-                    : group.latestStatus === 'succeeded'
-                      ? 'completed'
-                      : `${String(group.runs.length)} run${group.runs.length !== 1 ? 's' : ''}`;
-                return (
-                  <div key={group.identifier} className="group relative">
-                    <button
-                      onClick={() => { setSelectedId(group.identifier); }}
-                      className="w-full text-left transition-all"
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        padding: '11px 12px',
-                        borderRadius: 'var(--radius-md)',
-                        border: `1px solid ${isSelected ? 'var(--accent)' : 'var(--line)'}`,
-                        background: isSelected ? 'var(--accent-soft)' : 'var(--bg-elevated)',
-                        cursor: 'pointer',
-                        font: 'inherit',
-                      }}
-                    >
-                      <span
-                        className={`flex-shrink-0 rounded-full ${isLive ? 'animate-pulse' : ''}`}
-                        style={{ width: 8, height: 8, ...dotStyle(group.latestStatus) }}
-                      />
-                      <div className="min-w-0 pr-4">
-                        <div
-                          className="font-mono font-semibold truncate text-theme-text"
-                          style={{ fontSize: 14 }}
-                        >
-                          {group.identifier}
-                        </div>
-                        <div className="text-theme-text-secondary" style={{ fontSize: 12, marginTop: 2 }}>
-                          {statusText}
-                        </div>
-                      </div>
-                    </button>
-                    {!isLive && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setConfirmClearId(group.identifier); }}
-                        title="Clear all session logs"
-                        className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
-                        style={{
-                          background: 'transparent',
-                          border: 'none',
-                          cursor: 'pointer',
-                          padding: 4,
-                          color: 'var(--muted)',
-                          lineHeight: 1,
-                        }}
-                      >
-                        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <path d="M2 4h12M5 4V2h6v2M6 7v5M10 7v5M3 4l1 10h8l1-10H3z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </button>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </aside>
-
-        {/* ── Main: track area + log area ──────────────────────────────────── */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <div
-            className="flex flex-shrink-0 items-center justify-between border-b px-4 py-3 border-theme-line"
-          >
-            <div>
-              <h2 className="text-base font-semibold text-theme-text">
-                {selectedId ? `Timeline: ${selectedId}` : 'Timeline'}
-              </h2>
-              <p className="mt-1 text-[12px] text-theme-text-secondary">
-                {anyLive
-                  ? 'Running · click a run bar to expand subagents'
-                  : 'Completed sessions · click a run to drill down'}
-              </p>
-              {currentAppSessionId && (
-                <p className="mt-0.5 font-mono text-[10px] text-theme-muted">
-                  Session {currentAppSessionId.slice(0, 8)}
-                </p>
-              )}
-            </div>
-            {selectedGroup && (
-              <span
-                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-semibold bg-theme-accent-soft text-theme-accent-strong"
-              >
-                {selectedGroup.runs.some((r) => r.status === 'live') && (
-                  <span
-                    className="inline-block animate-pulse rounded-full bg-theme-success"
-                    style={{ width: 6, height: 6 }}
-                  />
-                )}
-                {selectedGroup.runs.length} run{selectedGroup.runs.length !== 1 ? 's' : ''}
-              </span>
-            )}
-          </div>
-
-          <div
-            className="flex-1 overflow-y-auto border-b border-theme-line"
-            style={{ padding: 16 }}
-          >
-            {!selectedGroup ? (
-              <div className="flex h-12 items-center justify-center text-sm text-theme-muted">
-                Select an issue from the sidebar
-              </div>
-            ) : (
-              <>
-                <TimeAxis viewStart={viewStart} viewEnd={viewEnd} />
-                <IssueRunsView
-                  group={selectedGroup}
-                  logs={logsForSelected}
-                  viewStart={viewStart}
-                  viewEnd={viewEnd}
-                  expandedRunAt={expandedRunAt}
-                  selectedSubagentIdx={selectedSubagentIdx}
-                  onToggleExpand={(runStartedAt) => {
-                    setExpandedRunAt((prev) => {
-                      setSelectedSubagentIdx(null);
-                      return prev === runStartedAt ? null : runStartedAt;
-                    });
-                  }}
-                  onSelectSubagent={setSelectedSubagentIdx}
-                />
-              </>
-            )}
-          </div>
-
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {selectedId ? (
-              <>
-                <div
-                  className="flex flex-shrink-0 items-center justify-between border-b px-3 py-2 border-theme-line bg-theme-panel-strong"
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="text-[11px] font-bold uppercase tracking-[0.08em]"
-                    >
-                      Logs — {selectedId}
-                    </span>
-                    {!isSelectedLive && sublogs.length > 0 && (
-                      <span
-                        className="rounded px-1.5 py-0.5 text-[9px] font-medium bg-theme-bg-soft text-theme-text-secondary"
-                        title="Full session logs from CLAUDE_CODE_LOG_DIR (includes all subagents)"
-                      >
-                        session logs · {sublogs.length} events
-                      </span>
-                    )}
-                    {validSubagentIdx !== null && subagentsForExpanded[validSubagentIdx] && (
-                      <span
-                        className="rounded px-1.5 py-0.5 text-[9px] font-medium bg-theme-accent-soft text-theme-accent-strong"
-                      >
-                        {subagentsForExpanded[validSubagentIdx].name.slice(0, 8)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {validSubagentIdx !== null && (
-                      <button
-                        onClick={() => { setSelectedSubagentIdx(null); }}
-                        className="text-[10px] hover:opacity-70 transition-opacity"
-                        style={{
-                          color: 'var(--muted)',
-                          background: 'transparent',
-                          border: '1px solid var(--line)',
-                          padding: '4px 8px',
-                          borderRadius: 4,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        show all logs
-                      </button>
-                    )}
-                    {selectedSession?.status === 'live' ? (
-                      <span
-                        className="rounded px-1.5 py-0.5 text-[9px] font-medium bg-theme-success-soft text-theme-success"
-                      >
-                        live
-                      </span>
-                    ) : selectedSession && (
-                      <span
-                        className="rounded px-1.5 py-0.5 text-[9px] font-medium"
-                        style={
-                          selectedSession.status === 'succeeded'
-                            ? { background: 'var(--success-soft)', color: 'var(--success)' }
-                            : { background: 'var(--danger-soft)', color: 'var(--danger)' }
-                        }
-                      >
-                        {selectedSession.status}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex-1 overflow-hidden">
-                  {expandedRunAt == null ? (
-                    <div
-                      className="flex h-full items-center justify-center font-mono text-[12px] italic text-theme-muted bg-theme-panel-dark"
-                    >
-                      Select a run to show logs per run
-                    </div>
-                  ) : (
-                    <AgentLogPanel key={expandedRunAt} identifier={selectedId} logSlice={logPanelSlice} />
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="flex flex-1 items-center justify-center text-sm text-theme-muted">
-                Select an issue from the sidebar to view logs
-              </div>
-            )}
-          </div>
-        </div>
+        <TimelineDetailPanel
+          selectedId={selectedId}
+          selectedGroup={selectedGroup}
+          currentAppSessionId={currentAppSessionId}
+          anyLive={anyLive}
+          logsForSelected={logsForSelected}
+          viewStart={viewStart}
+          viewEnd={viewEnd}
+          expandedRunAt={expandedRunAt}
+          selectedSubagentIdx={selectedSubagentIdx}
+          onToggleExpand={handleToggleExpand}
+          onSelectSubagent={setSelectedSubagentIdx}
+          expandedRun={expandedRun}
+          selectedSession={selectedSession}
+          isSelectedLive={isSelectedLive}
+          sublogs={sublogs}
+          subagentsForExpanded={subagentsForExpanded}
+          validSubagentIdx={validSubagentIdx}
+          logPanelSlice={logPanelSlice}
+        />
       </div>
-
-      {/* ── Confirm clear session logs modal ───────────────────────────── */}
-      <Modal
-        isOpen={!!confirmClearId}
-        onClose={() => { setConfirmClearId(null); }}
-        showCloseButton={false}
-        className="max-w-sm p-6"
-      >
-        <p className="text-sm font-semibold text-theme-text">
-          Clear session logs for <span className="font-mono">{confirmClearId}</span>?
-        </p>
-        <p className="mt-1 text-xs text-theme-muted">
-          All JSONL session files for this issue will be permanently deleted.
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={() => { setConfirmClearId(null); }}
-            style={{
-              padding: '6px 14px',
-              borderRadius: 4,
-              fontSize: 12,
-              cursor: 'pointer',
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              border: '1px solid var(--line)',
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            disabled={clearIssueLogs.isPending || clearIssueSubLogs.isPending}
-            onClick={() => {
-              if (!confirmClearId) return;
-              const id = confirmClearId;
-              clearIssueLogs.mutate(id);
-              clearIssueSubLogs.mutate(id, { onSettled: () => { setConfirmClearId(null); } });
-            }}
-            style={{
-              padding: '6px 14px',
-              borderRadius: 4,
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: clearIssueLogs.isPending || clearIssueSubLogs.isPending ? 'wait' : 'pointer',
-              background: 'var(--danger)',
-              color: '#fff',
-              border: 'none',
-            }}
-          >
-            {clearIssueLogs.isPending || clearIssueSubLogs.isPending ? 'Clearing…' : 'Clear all'}
-          </button>
-        </div>
-      </Modal>
     </>
   );
 }

@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/workspace"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 func TestSlugifyIdentifier(t *testing.T) {
@@ -43,20 +43,20 @@ func TestResolveWorktreeBranch_SkipsDefaultBranches(t *testing.T) {
 		def := def
 		t.Run(def, func(t *testing.T) {
 			result := workspace.ResolveWorktreeBranch(&def, "ENG-123")
-			assert.Equal(t, "symphony/eng-123", result)
+			assert.Equal(t, "itervox/eng-123", result)
 		})
 	}
 }
 
 func TestResolveWorktreeBranch_NilBranchFallsBack(t *testing.T) {
 	result := workspace.ResolveWorktreeBranch(nil, "ENG-123")
-	assert.Equal(t, "symphony/eng-123", result)
+	assert.Equal(t, "itervox/eng-123", result)
 }
 
 func TestResolveWorktreeBranch_EmptyBranchFallsBack(t *testing.T) {
 	empty := ""
 	result := workspace.ResolveWorktreeBranch(&empty, "ENG-123")
-	assert.Equal(t, "symphony/eng-123", result)
+	assert.Equal(t, "itervox/eng-123", result)
 }
 
 // initGitRepo creates a git repo with an initial commit in dir.
@@ -88,7 +88,7 @@ func worktreeManager(t *testing.T) (*workspace.Manager, string) {
 
 func TestEnsureWorktree_CreatesWorktree(t *testing.T) {
 	mgr, root := worktreeManager(t)
-	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.True(t, ws.CreatedNow)
 	assert.Equal(t, filepath.Join(root, "worktrees", "ENG-1"), ws.Path)
@@ -99,16 +99,16 @@ func TestEnsureWorktree_CreatesWorktree(t *testing.T) {
 	cmd.Dir = ws.Path
 	out, err := cmd.Output()
 	require.NoError(t, err)
-	assert.Equal(t, "symphony/eng-1", strings.TrimSpace(string(out)))
+	assert.Equal(t, "itervox/eng-1", strings.TrimSpace(string(out)))
 }
 
 func TestEnsureWorktree_ReusesExisting(t *testing.T) {
 	mgr, _ := worktreeManager(t)
-	ws1, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws1, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.True(t, ws1.CreatedNow)
 
-	ws2, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws2, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.False(t, ws2.CreatedNow, "second call must not recreate existing worktree")
 	assert.Equal(t, ws1.Path, ws2.Path)
@@ -118,12 +118,12 @@ func TestEnsureWorktree_BranchAlreadyExists(t *testing.T) {
 	mgr, root := worktreeManager(t)
 
 	// Create branch manually in the base repo (simulates partial previous run)
-	cmd := exec.Command("git", "branch", "symphony/eng-1")
+	cmd := exec.Command("git", "branch", "itervox/eng-1")
 	cmd.Dir = root
 	require.NoError(t, cmd.Run())
 
 	// EnsureWorkspace must succeed even though branch already exists
-	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.True(t, ws.CreatedNow)
 	assert.DirExists(t, ws.Path)
@@ -131,16 +131,16 @@ func TestEnsureWorktree_BranchAlreadyExists(t *testing.T) {
 
 func TestRemoveWorktree_RemovesWorktreeAndBranch(t *testing.T) {
 	mgr, root := worktreeManager(t)
-	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	require.DirExists(t, ws.Path)
 
-	err = mgr.RemoveWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	err = mgr.RemoveWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.NoDirExists(t, ws.Path)
 
 	// Branch must also be deleted
-	cmd := exec.Command("git", "branch", "--list", "symphony/eng-1")
+	cmd := exec.Command("git", "branch", "--list", "itervox/eng-1")
 	cmd.Dir = root
 	out, err := cmd.Output()
 	require.NoError(t, err)
@@ -149,14 +149,14 @@ func TestRemoveWorktree_RemovesWorktreeAndBranch(t *testing.T) {
 
 func TestRemoveWorktree_KeepsBranchWhenNameEmpty(t *testing.T) {
 	mgr, root := worktreeManager(t)
-	_, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	_, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 
 	// Empty branchName = remove worktree but skip branch deletion
 	err = mgr.RemoveWorkspace(context.Background(), "ENG-1", "")
 	require.NoError(t, err)
 
-	cmd := exec.Command("git", "branch", "--list", "symphony/eng-1")
+	cmd := exec.Command("git", "branch", "--list", "itervox/eng-1")
 	cmd.Dir = root
 	out, _ := cmd.Output()
 	assert.NotEmpty(t, strings.TrimSpace(string(out)), "branch should be kept when branchName is empty")
@@ -164,7 +164,7 @@ func TestRemoveWorktree_KeepsBranchWhenNameEmpty(t *testing.T) {
 
 func TestRemoveWorktree_MissingWorktreeIsNoOp(t *testing.T) {
 	mgr, _ := worktreeManager(t)
-	err := mgr.RemoveWorkspace(context.Background(), "nonexistent", "symphony/nonexistent")
+	err := mgr.RemoveWorkspace(context.Background(), "nonexistent", "itervox/nonexistent")
 	assert.NoError(t, err, "removing a non-existent worktree must not error")
 }
 
@@ -184,7 +184,7 @@ func bareWorktreeManager(t *testing.T) (*workspace.Manager, string) {
 
 func TestEnsureWorktree_BareClone_CreatesWorktree(t *testing.T) {
 	mgr, root := bareWorktreeManager(t)
-	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.True(t, ws.CreatedNow)
 	assert.Equal(t, filepath.Join(root, "worktrees", "ENG-1"), ws.Path)
@@ -195,16 +195,16 @@ func TestEnsureWorktree_BareClone_CreatesWorktree(t *testing.T) {
 	cmd.Dir = ws.Path
 	out, err := cmd.Output()
 	require.NoError(t, err)
-	assert.Equal(t, "symphony/eng-1", strings.TrimSpace(string(out)))
+	assert.Equal(t, "itervox/eng-1", strings.TrimSpace(string(out)))
 }
 
 func TestEnsureWorktree_BareClone_ReusesExisting(t *testing.T) {
 	mgr, _ := bareWorktreeManager(t)
-	ws1, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws1, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.True(t, ws1.CreatedNow)
 
-	ws2, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws2, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.False(t, ws2.CreatedNow)
 	assert.Equal(t, ws1.Path, ws2.Path)
@@ -212,16 +212,16 @@ func TestEnsureWorktree_BareClone_ReusesExisting(t *testing.T) {
 
 func TestRemoveWorktree_BareClone(t *testing.T) {
 	mgr, root := bareWorktreeManager(t)
-	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	ws, err := mgr.EnsureWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	require.DirExists(t, ws.Path)
 
-	err = mgr.RemoveWorkspace(context.Background(), "ENG-1", "symphony/eng-1")
+	err = mgr.RemoveWorkspace(context.Background(), "ENG-1", "itervox/eng-1")
 	require.NoError(t, err)
 	assert.NoDirExists(t, ws.Path)
 
 	// Branch must also be deleted from the bare repo
-	cmd := exec.Command("git", "-C", filepath.Join(root, ".bare"), "branch", "--list", "symphony/eng-1")
+	cmd := exec.Command("git", "-C", filepath.Join(root, ".bare"), "branch", "--list", "itervox/eng-1")
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	assert.Empty(t, strings.TrimSpace(string(out)), "branch should be deleted from bare repo")

@@ -16,11 +16,7 @@ describe('Terminal', () => {
   });
 
   it('renders multiple entries', () => {
-    render(
-      <Terminal
-        entries={[makeEntry('info', 'First'), makeEntry('warn', 'Second')]}
-      />,
-    );
+    render(<Terminal entries={[makeEntry('info', 'First'), makeEntry('warn', 'Second')]} />);
     expect(screen.getByText('First')).toBeInTheDocument();
     expect(screen.getByText('Second')).toBeInTheDocument();
   });

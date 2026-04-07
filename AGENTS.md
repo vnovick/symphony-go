@@ -1,11 +1,11 @@
-# AGENTS.md — symphony-go
+# AGENTS.md — itervox
 
 > This file provides context for AI coding agents (Codex, Claude Code, etc.) working on this repo.
 > For human contributor docs see CONTRIBUTING.md.
 
 ## Project overview
 
-Symphony Go is a Go 1.25.8 daemon that polls Linear/GitHub Issues, spawns Claude Code or
+Itervox is a Go 1.25.8 daemon that polls Linear/GitHub Issues, spawns Claude Code or
 Codex subagents per issue, and serves a React web dashboard + Bubbletea TUI.
 Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
 
@@ -41,7 +41,7 @@ make build         # web build → go binary
 ## Repository layout
 
 ```
-cmd/symphony/        CLI entry — wires all packages; main.go + main_test.go
+cmd/itervox/        CLI entry — wires all packages; main.go + main_test.go
 internal/
   agent/             Claude/Codex subprocess runners (stream-json + JSONL protocols)
   app/               Business logic (EnrichIssue)
@@ -112,7 +112,7 @@ orchestrator (imports agent, config, domain, logbuffer, prdetector,
         │
 app (imports domain, tracker) ── server (imports domain, config)
         │
-cmd/symphony (wires everything)
+cmd/itervox (wires everything)
 ```
 
 ## Testing conventions
@@ -129,7 +129,7 @@ cmd/symphony (wires everything)
 - **Toast API**: `addToast(message: string, variant?)` — first arg is a string.
   Passing an object silently renders `[object Object]`.
 - **Settings mutations** must call `refreshSnapshot()`, NOT `patchSnapshot()`.
-- **SSE hooks**: always use `useToastStore.getState()` / `useSymphonyStore.getState()`
+- **SSE hooks**: always use `useToastStore.getState()` / `useItervoxStore.getState()`
   inside effects — never call hooks conditionally.
 - **Map copy**: use `maps.Copy(dst, src)` not manual for-range loops.
 - **Clamp pattern**: `max(1, min(n, 50))` not if-chains (Go 1.21+).

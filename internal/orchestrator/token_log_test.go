@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/agent/agenttest"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/agent/agenttest"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 // syncBuffer is a goroutine-safe bytes.Buffer for capturing slog output.

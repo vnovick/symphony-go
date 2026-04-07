@@ -1,11 +1,11 @@
 ---
 tracker:
   kind: linear
-  api_key: $LINEAR_API_KEY          # export LINEAR_API_KEY=lin_api_...
-  project_slug: my-project-abc123   # from Linear URL: linear.app/team/project/<slug>
+  api_key: $LINEAR_API_KEY # export LINEAR_API_KEY=lin_api_...
+  project_slug: my-project-abc123 # from Linear URL: linear.app/team/project/<slug>
   active_states: ["Todo"]
   terminal_states: ["Done", "Cancelled", "Duplicate"]
-  completion_state: "In Review"     # state Symphony moves issue to after PR is created
+  completion_state: "In Review" # state Itervox moves issue to after PR is created
 
 polling:
   interval_ms: 60000
@@ -25,7 +25,7 @@ agent:
   #     command: claude --model claude-opus-4-6
 
 workspace:
-  root: ~/.symphony/workspaces/my-project
+  root: ~/.itervox/workspaces/my-project
 
 hooks:
   after_create: |
@@ -52,6 +52,7 @@ You are an expert engineer working on the codebase.
 Issue URL: {{ issue.url }}
 
 {% if issue.comments %}
+
 ## Comments
 
 {% for comment in issue.comments %}

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient } from '@tanstack/react-query';
-import { useSymphonyStore } from '../store/symphonyStore';
+import { useItervoxStore } from '../store/itervoxStore';
 import { useToastStore } from '../store/toastStore';
 import type { StateSnapshot, TrackerIssue } from '../types/schemas';
 import { TrackerIssueSchema } from '../types/schemas';
@@ -9,9 +9,7 @@ import { z } from 'zod';
 export const ISSUES_KEY = ['issues'] as const;
 export const ISSUE_KEY = (identifier: string) => ['issue', identifier] as const;
 
-type RollbackContext =
-  | { prevIssues?: TrackerIssue[]; prevSnapshot?: StateSnapshot }
-  | undefined;
+type RollbackContext = { prevIssues?: TrackerIssue[]; prevSnapshot?: StateSnapshot } | undefined;
 
 /** Extracts a user-facing message from an unknown error and shows it as a toast. */
 function toastApiError(err: unknown, fallback = 'Action failed — please try again.'): void {
@@ -27,7 +25,7 @@ function toastApiError(err: unknown, fallback = 'Action failed — please try ag
 function makeRollbackHandler(queryClient: QueryClient) {
   return (_error: unknown, _vars: unknown, context: RollbackContext) => {
     if (context?.prevIssues) queryClient.setQueryData(ISSUES_KEY, context.prevIssues);
-    if (context?.prevSnapshot) useSymphonyStore.getState().setSnapshot(context.prevSnapshot);
+    if (context?.prevSnapshot) useItervoxStore.getState().setSnapshot(context.prevSnapshot);
     toastApiError(_error);
   };
 }
@@ -82,7 +80,10 @@ function optimisticPauseSnapshot(snapshot: StateSnapshot, identifier: string): S
     counts: {
       ...snapshot.counts,
       running: wasRunning ? Math.max(0, snapshot.counts.running - 1) : snapshot.counts.running,
-      paused: !alreadyPaused && (wasRunning || wasRetrying) ? snapshot.counts.paused + 1 : snapshot.counts.paused,
+      paused:
+        !alreadyPaused && (wasRunning || wasRetrying)
+          ? snapshot.counts.paused + 1
+          : snapshot.counts.paused,
     },
   };
 }
@@ -189,7 +190,7 @@ export function useCancelIssue() {
     onMutate: async (identifier: string) => {
       await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
       const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
-      const prevSnapshot = useSymphonyStore.getState().snapshot;
+      const prevSnapshot = useItervoxStore.getState().snapshot;
 
       if (prevIssues) {
         queryClient.setQueryData<TrackerIssue[]>(
@@ -201,7 +202,7 @@ export function useCancelIssue() {
       }
       if (prevSnapshot) {
         const updated = optimisticPauseSnapshot(prevSnapshot, identifier);
-        useSymphonyStore.getState().patchSnapshot({
+        useItervoxStore.getState().patchSnapshot({
           running: updated.running,
           counts: updated.counts,
           paused: updated.paused,
@@ -220,7 +221,7 @@ export function useCancelIssue() {
     onSuccess: () => {
       // SSE + useSnapshotInvalidation handle both snapshot and issue list updates.
       // refreshSnapshot ensures immediate consistency if SSE is lagging.
-      void useSymphonyStore.getState().refreshSnapshot();
+      void useItervoxStore.getState().refreshSnapshot();
     },
   });
 }
@@ -231,15 +232,13 @@ export function useResumeIssue() {
     onMutate: async (identifier: string) => {
       await queryClient.cancelQueries({ queryKey: ISSUES_KEY });
       const prevIssues = queryClient.getQueryData<TrackerIssue[]>(ISSUES_KEY);
-      const prevSnapshot = useSymphonyStore.getState().snapshot;
+      const prevSnapshot = useItervoxStore.getState().snapshot;
 
       if (prevIssues) {
         queryClient.setQueryData<TrackerIssue[]>(
           ISSUES_KEY,
           prevIssues.map((issue) =>
-            issue.identifier === identifier
-              ? { ...issue, orchestratorState: 'running' }
-              : issue,
+            issue.identifier === identifier ? { ...issue, orchestratorState: 'running' } : issue,
           ),
         );
       }
@@ -261,19 +260,15 @@ export function useResumeIssue() {
           startedAt: new Date().toISOString(),
           sessionId: '',
         };
-        useSymphonyStore.getState().patchSnapshot({
+        useItervoxStore.getState().patchSnapshot({
           paused: updatedPaused,
-          running: wasInPaused
-            ? [...prevSnapshot.running, optimisticRow]
-            : prevSnapshot.running,
+          running: wasInPaused ? [...prevSnapshot.running, optimisticRow] : prevSnapshot.running,
           counts: {
             ...prevSnapshot.counts,
             paused: wasInPaused
               ? Math.max(0, prevSnapshot.counts.paused - 1)
               : prevSnapshot.counts.paused,
-            running: wasInPaused
-              ? prevSnapshot.counts.running + 1
-              : prevSnapshot.counts.running,
+            running: wasInPaused ? prevSnapshot.counts.running + 1 : prevSnapshot.counts.running,
           },
         });
       }
@@ -288,7 +283,7 @@ export function useResumeIssue() {
     },
     onError: makeRollbackHandler(queryClient),
     onSuccess: () => {
-      void useSymphonyStore.getState().refreshSnapshot();
+      void useItervoxStore.getState().refreshSnapshot();
     },
   });
 }
@@ -302,7 +297,7 @@ export function useTerminateIssue() {
       if (!res.ok) throw new Error(`terminateIssue failed: ${String(res.status)}`);
     },
     onSuccess: () => {
-      void useSymphonyStore.getState().refreshSnapshot();
+      void useItervoxStore.getState().refreshSnapshot();
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Terminate failed — please try again.');
@@ -390,7 +385,7 @@ export function useProvideInput() {
       if (!res.ok) throw new Error(`provideInput failed: ${String(res.status)}`);
     },
     onSuccess: () => {
-      void useSymphonyStore.getState().refreshSnapshot();
+      void useItervoxStore.getState().refreshSnapshot();
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Failed to send input to agent.');
@@ -407,7 +402,7 @@ export function useDismissInput() {
       if (!res.ok) throw new Error(`dismissInput failed: ${String(res.status)}`);
     },
     onSuccess: () => {
-      void useSymphonyStore.getState().refreshSnapshot();
+      void useItervoxStore.getState().refreshSnapshot();
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Failed to dismiss input request.');

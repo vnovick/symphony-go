@@ -15,6 +15,13 @@ const githubUrl = 'https://github.com/vnovick/itervox';
   <meta property="og:description" content={description} />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://itervox.dev" />
+  <meta property="og:image" content="https://itervox.dev/og-image.svg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Itervox — Your codebase's journey, narrated by agents" />
+  <meta name="twitter:description" content="Orchestrate AI agents across issues, profiles, and machines. Full visibility from dispatch to PR." />
+  <meta name="twitter:image" content="https://itervox.dev/og-image.svg" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
@@ -1327,7 +1334,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       </a>
     </div>
     <!-- Install command -->
-    <div class="install-cmd" onclick="navigator.clipboard.writeText('brew tap vnovick/tap && brew install symphony-go').then(()=>{this.classList.add('copied');setTimeout(()=>this.classList.remove('copied'),1500)})">
+    <div class="install-cmd" onclick="navigator.clipboard.writeText('brew tap vnovick/tap && brew install itervox').then(()=>{this.classList.add('copied');setTimeout(()=>this.classList.remove('copied'),1500)})">
       <div class="install-cmd-bar">
         <span class="terminal-dot terminal-dot--red"></span>
         <span class="terminal-dot terminal-dot--yellow"></span>
@@ -1335,7 +1342,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       </div>
       <div class="install-cmd-body">
         <span style="color:var(--muted);">$</span>
-        <span>brew tap vnovick/tap &amp;&amp; brew install symphony-go</span>
+        <span>brew tap vnovick/tap &amp;&amp; brew install itervox</span>
         <span class="copy-icon" title="Copy to clipboard">
           <svg class="icon-copy" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
           <svg class="icon-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -1488,6 +1495,34 @@ const githubUrl = 'https://github.com/vnovick/itervox';
         <h4>Project Filters</h4>
         <p>Filter issues by Linear project when working across multiple repos. Configure which projects agents should handle in Settings.</p>
       </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--danger);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="9" r="7"/><line x1="9" y1="5" x2="9" y2="9"/><line x1="9" y1="9" x2="12" y2="12"/></svg>
+        </div>
+        <h4>Stall Detection</h4>
+        <p>If an agent produces no output within the stall timeout (default 5 min), the worker is killed and the issue is retried automatically.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--teal);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="9" r="7"/><path d="M7 9l2 2 4-4"/></svg>
+        </div>
+        <h4>Auto-Pause on Open PR</h4>
+        <p>When an existing open PR is detected for an issue, the agent auto-pauses to prevent duplicate work. Force re-analysis from the dashboard.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--accent-strong);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 2v4M5 6h8M3 10h12M6 14h6"/></svg>
+        </div>
+        <h4>Per-Issue Overrides</h4>
+        <p>Change the agent profile or backend for a specific issue at runtime via the dashboard API. No config restart needed.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--success);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="12" height="8" rx="2"/><path d="M6 7V5a3 3 0 0 1 6 0v2"/></svg>
+        </div>
+        <h4>API Authentication</h4>
+        <p>Set <code style="font-size:10px; background:var(--bg-elevated); padding:0 3px; border-radius:2px;">ITERVOX_API_TOKEN</code> to enable Bearer token auth on all API routes. Essential for production deployments.</p>
+      </div>
     </div>
 
     <!-- YOLO mode callout -->
@@ -1531,7 +1566,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
             <code><span class="t-muted">  stack      :</span> <span class="t-teal">Go</span> <span class="t-muted">(go test -race ./..., golangci-lint run)</span></code>
             <code><span class="t-muted">  stack      :</span> <span class="t-teal">React 19 + TypeScript</span> <span class="t-muted">(pnpm test, pnpm run lint)</span></code>
             <code><span class="t-secondary">itervox init: wrote WORKFLOW.md</span></code>
-            <code><span class="t-secondary">itervox init: wrote .symphony/.env</span></code>
+            <code><span class="t-secondary">itervox init: wrote .itervox/.env</span></code>
           </div>
         </div>
       </div>
@@ -1579,8 +1614,8 @@ const githubUrl = 'https://github.com/vnovick/itervox';
             <code><span class="t-dim">09:41:35</span> <span class="t-info">INFO</span> <span class="t-secondary">worker: starting</span> <span class="t-dim">issue_identifier=</span><span class="t-accent">ENG-142</span> <span class="t-dim">backend=</span><span class="t-secondary">claude</span></code>
             <code><span class="t-dim">09:41:36</span> <span class="t-dim">DEBU</span> <span class="t-secondary">orchestrator: tick</span> <span class="t-dim">fetched=</span><span class="t-accent">3</span> <span class="t-dim">running=</span><span class="t-accent">1</span> <span class="t-dim">slots=</span><span class="t-accent">4</span></code>
             <code><span class="t-dim">09:41:36</span> <span class="t-info">INFO</span> <span class="t-secondary">orchestrator: dispatch complete</span> <span class="t-dim">dispatched=</span><span class="t-accent">2</span> <span class="t-dim">running=</span><span class="t-accent">3</span></code>
-            <code><span class="t-dim">09:44:12</span> <span class="t-info">INFO</span> <span class="t-secondary">orchestrator: worker <span class="t-success">succeeded</span></span> <span class="t-dim">id=</span><span class="t-accent">ENG-142</span> <span class="t-dim">turns=</span><span class="t-accent">5</span></code>
-            <code><span class="t-dim">09:44:12</span> <span class="t-info">INFO</span> <span class="t-secondary">worker: PR commented</span> <span class="t-dim">pr=</span><span class="t-accent-s">pull/87</span> <span class="t-dim">tok=</span><span class="t-accent">4.2k</span></code>
+            <code><span class="t-dim">09:44:12</span> <span class="t-info">INFO</span> <span class="t-secondary">orchestrator: worker <span class="t-success">succeeded</span>, claim released</span> <span class="t-dim">issue_identifier=</span><span class="t-accent">ENG-142</span></code>
+            <code><span class="t-dim">09:44:12</span> <span class="t-info">INFO</span> <span class="t-secondary">worker: PR link commented on issue</span> <span class="t-dim">pr_url=</span><span class="t-accent-s">pull/87</span></code>
             <code><span class="t-dim">09:44:12</span> <span class="t-info">INFO</span> <span class="t-secondary">orchestrator: issue transitioned</span> <span class="t-dim">issue_identifier=</span><span class="t-accent">ENG-142</span> <span class="t-dim">to=</span><span class="t-muted">"Done"</span></code>
             <code><span class="t-dim">09:44:15</span> <span class="t-info">INFO</span> <span class="t-secondary">worker: starting</span> <span class="t-dim">issue_identifier=</span><span class="t-accent">ENG-148</span> <span class="t-dim">backend=</span><span class="t-secondary">claude</span></code>
           </div>
@@ -1597,6 +1632,77 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       <div class="section-label">Dashboard</div>
       <h2 class="section-heading">Full visibility into every agent</h2>
       <p class="section-sub">A real-time web dashboard with everything you need</p>
+    </div>
+
+    <!-- Row 0: Dashboard Overview (mockup LEFT, text RIGHT) -->
+    <div class="split" style="margin-bottom: 48px;">
+      <div>
+        <div class="browser">
+          <div class="browser-bar">
+            <span class="terminal-dot terminal-dot--red"></span>
+            <span class="terminal-dot terminal-dot--yellow"></span>
+            <span class="terminal-dot terminal-dot--green"></span>
+            <span class="browser-url">localhost:8090</span>
+          </div>
+          <div class="browser-body" style="padding:12px 16px;">
+            <!-- Hero Stats tiles -->
+            <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:12px;">
+              <div style="background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; text-align:center;">
+                <div style="font-size:18px; font-weight:700; color:var(--success);">3</div>
+                <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Running</div>
+              </div>
+              <div style="background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; text-align:center;">
+                <div style="font-size:18px; font-weight:700; color:var(--warning);">1</div>
+                <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Paused</div>
+              </div>
+              <div style="background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; text-align:center;">
+                <div style="font-size:18px; font-weight:700; color:var(--danger);">1</div>
+                <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Retrying</div>
+              </div>
+              <div style="background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; text-align:center;">
+                <div style="font-size:18px; font-weight:700; color:var(--text);">5/10</div>
+                <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Capacity</div>
+              </div>
+            </div>
+            <!-- Running Sessions mini table -->
+            <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Running Sessions</div>
+            <div style="background:var(--bg); border:1px solid var(--line); border-radius:4px; font-size:9px; font-family:'IBM Plex Mono',monospace;">
+              <div style="display:flex; gap:8px; padding:5px 8px; border-bottom:1px solid var(--line); align-items:center;">
+                <span style="color:var(--success);">&#9679;</span>
+                <span style="color:var(--accent); width:55px;">ENG-142</span>
+                <span style="color:var(--text-secondary); flex:1;">Fix auth token</span>
+                <span style="color:var(--muted);">t5</span>
+                <span style="color:var(--muted);">3m 45s</span>
+              </div>
+              <div style="display:flex; gap:8px; padding:5px 8px; border-bottom:1px solid var(--line); align-items:center;">
+                <span style="color:var(--success);">&#9679;</span>
+                <span style="color:var(--accent); width:55px;">ENG-145</span>
+                <span style="color:var(--text-secondary); flex:1;">Rate limiter</span>
+                <span style="color:var(--muted);">t3</span>
+                <span style="color:var(--muted);">1m 12s</span>
+              </div>
+              <div style="display:flex; gap:8px; padding:5px 8px; align-items:center;">
+                <span style="color:var(--success);">&#9679;</span>
+                <span style="color:var(--accent); width:55px;">ENG-148</span>
+                <span style="color:var(--text-secondary); flex:1;">Update docs</span>
+                <span style="color:var(--muted);">t1</span>
+                <span style="color:var(--muted);">0m 30s</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="split-text">
+        <div class="section-label">Overview</div>
+        <h3>Live dashboard at a glance</h3>
+        <p>The dashboard opens with hero stats showing running, paused, retrying, and capacity counts. Below, the running sessions table shows every active agent with turn count, elapsed time, and expandable inline logs.</p>
+        <ul>
+          <li>Hero stats tiles with color-coded counts</li>
+          <li>Running sessions with expandable log accordion</li>
+          <li>Retry queue with attempt number and due time</li>
+          <li>Narrative feed showing recent agent events</li>
+        </ul>
+      </div>
     </div>
 
     <!-- Row 1: Kanban Board (mockup LEFT, text RIGHT) -->
@@ -1922,6 +2028,52 @@ const githubUrl = 'https://github.com/vnovick/itervox';
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Dashboard polish row: extra views and quality-of-life features -->
+    <div class="int-grid" style="margin-top:48px;">
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--accent);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5h12M3 9h12M3 13h12"/><circle cx="3" cy="5" r="0.5" fill="currentColor"/><circle cx="3" cy="9" r="0.5" fill="currentColor"/><circle cx="3" cy="13" r="0.5" fill="currentColor"/></svg>
+        </div>
+        <h4>List View</h4>
+        <p>Sortable, filterable table view of all issues. Switch from Kanban to List with one click for fast keyboard-driven triage.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--teal);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="14" height="12" rx="2"/><line x1="11" y1="3" x2="11" y2="15"/></svg>
+        </div>
+        <h4>Issue Detail Slide</h4>
+        <p>Click any issue to open a right-side slide-out with full details, comments, labels, blockers, and one-click actions (pause, terminate, AI review).</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--purple);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 2v2M9 14v2M3.5 3.5l1.4 1.4M13.1 13.1l1.4 1.4M2 9h2M14 9h2M3.5 14.5l1.4-1.4M13.1 4.9l1.4-1.4"/><circle cx="9" cy="9" r="3"/></svg>
+        </div>
+        <h4>Light &amp; Dark Themes</h4>
+        <p>Toggle between light and dark modes. Theme preference is persisted per browser. The control-room dark theme is the default.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--success);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="2" width="8" height="14" rx="2"/><line x1="9" y1="13" x2="9" y2="13.5"/></svg>
+        </div>
+        <h4>Mobile Responsive</h4>
+        <p>Full responsive layout with drawer navigation on small screens. Monitor your fleet from your phone while you grab coffee.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--warning);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5h12M3 9h8M3 13h12"/></svg>
+        </div>
+        <h4>Narrative Feed</h4>
+        <p>A real-time feed of agent activity in plain English: "ENG-142 paused", "ENG-145 opened PR #87", "ENG-148 needs input". Like a Slack channel for your fleet.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--accent-strong);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3 7 3 4 14 4 14 7"/><line x1="2" y1="7" x2="16" y2="7"/><path d="M7 7v7a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1V7"/></svg>
+        </div>
+        <h4>REST API + SSE Stream</h4>
+        <p>Every dashboard action is backed by a <a href="/api-reference/" style="color:var(--accent-strong);">documented REST endpoint</a>. Build custom integrations against the same SSE snapshot stream the dashboard uses.</p>
       </div>
     </div>
 

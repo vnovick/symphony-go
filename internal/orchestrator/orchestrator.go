@@ -8,11 +8,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/config"
-	"github.com/vnovick/symphony-go/internal/logbuffer"
-	"github.com/vnovick/symphony-go/internal/tracker"
-	"github.com/vnovick/symphony-go/internal/workspace"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/logbuffer"
+	"github.com/vnovick/itervox/internal/tracker"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 // maxWorkersCap is the absolute upper bound on MaxConcurrentAgents.
@@ -23,7 +23,7 @@ const maxWorkersCap = 50
 // Orchestrator is the single-goroutine state machine that owns all dispatch state.
 type Orchestrator struct {
 	// DryRun disables actual agent execution: issues are claimed but no worker
-	// subprocess is started. Set SYMPHONY_DRY_RUN=1 or assign before calling Run.
+	// subprocess is started. Set ITERVOX_DRY_RUN=1 or assign before calling Run.
 	DryRun bool
 
 	cfg       *config.Config
@@ -109,11 +109,6 @@ type Orchestrator struct {
 	// all history entries produced during a single run of the binary.
 	// Set via SetAppSessionID before calling Run.
 	appSessionID string
-
-	// reviewerWg tracks in-flight reviewer goroutines so Run can wait for them
-	// to finish before returning. Goroutines are added in DispatchReviewer and
-	// Done is called at the end of runReviewerWorker.
-	reviewerWg sync.WaitGroup
 
 	// autoClearWg tracks in-flight auto-clear workspace goroutines so Run can
 	// wait for them before returning.

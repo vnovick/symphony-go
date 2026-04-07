@@ -16,12 +16,12 @@ type TurnResult struct {
 	CachedInputTokens int
 	OutputTokens      int
 	TotalTokens       int
-	LastText      string   // most recent assistant text block
-	AllTextBlocks []string // all assistant text blocks across the turn, for tracker comments
-	Failed        bool
-	InputRequired bool
-	FailureText   string // result field from the error event, or stderr output
-	ResultText    string // result field from a successful result event
+	LastText          string   // most recent assistant text block
+	AllTextBlocks     []string // all assistant text blocks across the turn, for tracker comments
+	Failed            bool
+	InputRequired     bool
+	FailureText       string // result field from the error event, or stderr output
+	ResultText        string // result field from a successful result event
 }
 
 // Logger is a minimal structured logging interface, satisfied by *slog.Logger.

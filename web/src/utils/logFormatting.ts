@@ -26,9 +26,32 @@ export function toTermLine(entry: IssueLogEntry): TermLine {
         try {
           const d = JSON.parse(entry.detail) as Record<string, unknown>;
           const parts: string[] = [];
-          if (d.exit_code !== undefined && d.exit_code !== null) parts.push(`exit:${String(d.exit_code)}`);
-          if (d.output_size) parts.push(String(d.output_size));
-          if (d.status && d.status !== 'success') parts.push(String(d.status));
+          const exitCode = d.exit_code;
+          if (exitCode !== undefined && exitCode !== null) {
+            parts.push(
+              `exit:${typeof exitCode === 'number' || typeof exitCode === 'string' || typeof exitCode === 'boolean' ? String(exitCode) : JSON.stringify(exitCode)}`,
+            );
+          }
+          const outputSize = d.output_size;
+          if (outputSize) {
+            parts.push(
+              typeof outputSize === 'number' ||
+                typeof outputSize === 'string' ||
+                typeof outputSize === 'boolean'
+                ? String(outputSize)
+                : JSON.stringify(outputSize),
+            );
+          }
+          const status = d.status;
+          if (status && status !== 'success') {
+            parts.push(
+              typeof status === 'number' ||
+                typeof status === 'string' ||
+                typeof status === 'boolean'
+                ? String(status)
+                : JSON.stringify(status),
+            );
+          }
           if (parts.length > 0) text = `${text}  ·  ${parts.join(' · ')}`;
         } catch {
           // ignore malformed detail JSON

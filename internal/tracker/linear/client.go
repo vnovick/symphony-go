@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 const defaultEndpoint = "https://api.linear.app/graphql"
@@ -249,7 +249,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	// Step 1: resolve state name → UUID via the issue's team.
 	// Linear workflow states are team-scoped, so we query via issue → team → states.
 	const stateQuery = `
-query SymphonyResolveStateId($issueId: String!, $stateName: String!) {
+query ItervoxResolveStateId($issueId: String!, $stateName: String!) {
   issue(id: $issueId) {
     team {
       states(filter: { name: { eq: $stateName } }, first: 1) {
@@ -280,7 +280,7 @@ query SymphonyResolveStateId($issueId: String!, $stateName: String!) {
 
 	// Step 2: update the issue.
 	const mutation = `
-mutation SymphonyUpdateIssueState($issueId: String!, $stateId: String!) {
+mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
   issueUpdate(id: $issueId, input: { stateId: $stateId }) {
     success
   }
@@ -305,7 +305,7 @@ mutation SymphonyUpdateIssueState($issueId: String!, $stateId: String!) {
 // CreateComment posts a comment body on the given Linear issue ID.
 func (c *Client) CreateComment(ctx context.Context, issueID, body string) error {
 	const mutation = `
-mutation SymphonyCreateComment($issueId: String!, $body: String!) {
+mutation ItervoxCreateComment($issueId: String!, $body: String!) {
   commentCreate(input: {issueId: $issueId, body: $body}) {
     success
   }
@@ -329,7 +329,7 @@ mutation SymphonyCreateComment($issueId: String!, $body: String!) {
 // workers can resume from the correct branch.
 func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
 	const mutation = `
-mutation SymphonySetBranchName($issueId: String!, $branchName: String!) {
+mutation ItervoxSetBranchName($issueId: String!, $branchName: String!) {
   issueUpdate(id: $issueId, input: { branchName: $branchName }) {
     success
   }

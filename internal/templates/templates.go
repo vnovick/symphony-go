@@ -1,4 +1,4 @@
-// Package templates embeds workflow template files for use by symphony init.
+// Package templates embeds workflow template files for use by itervox init.
 package templates
 
 import _ "embed"

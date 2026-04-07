@@ -2,16 +2,16 @@
 tracker:
   kind: github
   api_key: $GITHUB_TOKEN            # export GITHUB_TOKEN=ghp_...
-  project_slug: vnovick/symphony-go
+  project_slug: vnovick/itervox
   # GitHub uses labels to map states. Labels must exist in your repo.
-  # NOTE: GitHub Projects v2 'Status' field is separate from labels — Symphony
+  # NOTE: GitHub Projects v2 'Status' field is separate from labels — Itervox
   #       only reads labels. See README for Projects automation setup.
-  # Create them with: gh label create "todo" --color "0075ca" --repo vnovick/symphony-go
-  #                   gh label create "in-progress" --color "e4e669" --repo vnovick/symphony-go
-  #                   gh label create "in-review" --color "d93f0b" --repo vnovick/symphony-go
-  #                   gh label create "done" --color "0e8a16" --repo vnovick/symphony-go
-  #                   gh label create "cancelled" --color "cccccc" --repo vnovick/symphony-go
-  #                   gh label create "backlog" --color "f9f9f9" --repo vnovick/symphony-go
+  # Create them with: gh label create "todo" --color "0075ca" --repo vnovick/itervox
+  #                   gh label create "in-progress" --color "e4e669" --repo vnovick/itervox
+  #                   gh label create "in-review" --color "d93f0b" --repo vnovick/itervox
+  #                   gh label create "done" --color "0e8a16" --repo vnovick/itervox
+  #                   gh label create "cancelled" --color "cccccc" --repo vnovick/itervox
+  #                   gh label create "backlog" --color "f9f9f9" --repo vnovick/itervox
   active_states: ["todo", "in-progress"]
   terminal_states: ["done", "cancelled"]
   working_state: "in-progress"  # Label applied when an agent starts.
@@ -35,11 +35,11 @@ agent:
   stall_timeout_ms: 300000
 
 workspace:
-  root: ~/.symphony/workspaces/symphony-go
+  root: ~/.itervox/workspaces/itervox
 
 hooks:
   after_create: |
-    git clone git@github.com:vnovick/symphony-go.git .
+    git clone git@github.com:vnovick/itervox.git .
   before_run: |
     git fetch origin
     git checkout -B main origin/main
@@ -49,7 +49,7 @@ server:
   port: 8090
 ---
 
-You are an expert engineer working on **symphony-go**.
+You are an expert engineer working on **itervox**.
 
 ## Your issue
 

@@ -1,0 +1,277 @@
+---
+title: API Reference
+description: Complete REST and SSE API reference for the Itervox dashboard server.
+sidebar:
+  order: 7
+---
+
+Itervox exposes a REST + Server-Sent Events (SSE) API on the dashboard port (default `:8090`). The web dashboard, TUI, and any custom integrations talk to the same endpoints.
+
+## Base URL
+
+```
+http://localhost:8090/api/v1
+```
+
+The host and port are configured in `WORKFLOW.md` under `server.host` and `server.port`.
+
+## Authentication
+
+When the `ITERVOX_API_TOKEN` environment variable is set, all `/api/v1/*` routes (except `/health`) require a bearer token:
+
+```bash
+curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
+  http://localhost:8090/api/v1/state
+```
+
+Without the env var, the API is open. **Strongly recommended** when binding the server to a non-loopback address (`server.host: 0.0.0.0`).
+
+---
+
+## Health & State
+
+### `GET /health`
+
+Liveness probe for load balancers and container orchestrators. Always returns 200 with no body. Bypasses bearer-token auth.
+
+### `GET /state`
+
+Returns the current orchestrator snapshot as JSON. One-shot equivalent of the SSE stream.
+
+**Response:** `StateSnapshot` — running sessions, history, retry queue, paused issues, profiles, models, rate limits, configuration.
+
+```bash
+curl http://localhost:8090/api/v1/state | jq
+```
+
+### `GET /events`
+
+SSE stream of `StateSnapshot` events. Each `data:` frame is a full JSON snapshot. The web dashboard uses this for real-time updates with a 25s keep-alive.
+
+```bash
+curl -N http://localhost:8090/api/v1/events
+```
+
+### `POST /refresh`
+
+Triggers an immediate orchestrator poll cycle. Useful after manual issue state changes when you don't want to wait for the next scheduled tick.
+
+---
+
+## Issues
+
+### `GET /issues`
+
+Returns the full list of tracker issues enriched with orchestrator state (running/retrying/paused/idle).
+
+### `GET /issues/{identifier}`
+
+Returns details for a single issue, including title, description, comments, labels, priority, and orchestrator state.
+
+### `POST /issues/{identifier}/cancel` *(or `DELETE /issues/{identifier}`)*
+
+Pauses a running agent. The agent process is killed, the issue is marked paused, and it will not be re-dispatched until resumed. Returns 200 on success, 404 if the issue is not running.
+
+### `POST /issues/{identifier}/resume`
+
+Resumes a paused issue. The issue becomes eligible for dispatch on the next tick.
+
+### `POST /issues/{identifier}/terminate`
+
+Hard-stops a running or paused agent without pausing it. Releases the claim and moves the issue back to the active state, allowing immediate re-dispatch.
+
+### `POST /issues/{identifier}/reanalyze`
+
+Re-dispatches an issue, **bypassing the open-PR auto-pause guard**. Use this when you've made changes to an existing PR and want the agent to re-analyze it.
+
+### `POST /issues/{identifier}/ai-review`
+
+Dispatches a reviewer agent for the issue. The reviewer runs the configured reviewer profile against the open PR for that issue.
+
+### `POST /issues/{identifier}/profile`
+
+Sets or clears the per-issue agent profile override. Body: `{"profile": "frontend"}` to set, `{"profile": ""}` to clear.
+
+### `POST /issues/{identifier}/backend`
+
+Sets the per-issue backend override (`claude` or `codex`). Body: `{"backend": "claude"}`.
+
+### `POST /issues/{identifier}/provide-input`
+
+Replies to an issue waiting in input-required state. Body: `{"message": "..."}`. The agent session resumes with the provided message injected into the prompt.
+
+### `POST /issues/{identifier}/dismiss-input`
+
+Dismisses an input-required issue without providing input. Moves it to paused state.
+
+---
+
+## Logs
+
+### `GET /issues/{identifier}/logs`
+
+Returns the full per-issue log buffer as a JSON array of structured `IssueLogEntry` objects.
+
+### `GET /issues/{identifier}/log-stream`
+
+SSE stream of new log entries for an issue. Each `event: log` frame carries one parsed `IssueLogEntry`. The dashboard uses this for live log following.
+
+```bash
+curl -N http://localhost:8090/api/v1/issues/PROJ-42/log-stream
+```
+
+### `GET /issues/{identifier}/sublogs`
+
+Returns full session logs written by Claude Code to `CLAUDE_CODE_LOG_DIR`. Covers all subagents spawned during the session, not just the orchestrator-buffered top-level events.
+
+### `DELETE /issues/{identifier}/logs`
+
+Clears the in-memory log buffer for an issue.
+
+### `DELETE /issues/{identifier}/sublogs`
+
+Clears all subagent session logs for an issue.
+
+### `DELETE /issues/{identifier}/sublogs/{sessionId}`
+
+Clears a specific subagent session log.
+
+### `GET /logs/identifiers`
+
+Returns the list of issue identifiers that currently have log data on the server.
+
+### `GET /logs`
+
+Tails the global rotating log file (the daemon log, not per-issue logs).
+
+### `DELETE /logs`
+
+Clears all in-memory log buffers across all issues.
+
+---
+
+## Settings — Runtime Configuration
+
+All settings endpoints persist changes to `WORKFLOW.md` so they survive restarts.
+
+### `POST /settings/workers`
+
+Scale the maximum concurrent agent count. Body: `{"workers": 5}` (absolute) or `{"delta": 1}` (relative).
+
+### `POST /settings/agent-mode`
+
+Switch agent collaboration mode. Body: `{"mode": "solo"}`, `{"mode": "subagents"}`, or `{"mode": "teams"}`.
+
+### `PUT /settings/tracker/states`
+
+Update the active, terminal, completion, and backlog state lists. Body matches the `tracker` block in `WORKFLOW.md`.
+
+### `POST /settings/ssh-hosts`
+
+Add a remote worker host. Body: `{"host": "ssh.example.com", "description": "..."}`.
+
+### `DELETE /settings/ssh-hosts/{host}`
+
+Remove an SSH worker host.
+
+### `PUT /settings/dispatch-strategy`
+
+Change SSH host dispatch strategy. Body: `{"strategy": "round-robin"}` or `{"strategy": "least-loaded"}`.
+
+### `POST /settings/workspace/auto-clear`
+
+Toggle automatic workspace cleanup on completion. Body: `{"enabled": true}`.
+
+### `POST /settings/inline-input`
+
+Toggle inline input mode (input-required prompts in the dashboard vs tracker comments). Body: `{"enabled": true}`.
+
+### `GET /settings/models`
+
+Returns the list of available models per backend (discovered at init time, stored in WORKFLOW.md).
+
+---
+
+## Settings — Profiles & Reviewer
+
+### `GET /settings/profiles`
+
+Returns the full map of named agent profiles from `WORKFLOW.md`.
+
+### `PUT /settings/profiles/{name}`
+
+Create or update a named agent profile. Body: `{"command": "...", "prompt": "...", "backend": "claude"}`.
+
+### `DELETE /settings/profiles/{name}`
+
+Remove a profile.
+
+### `GET /settings/reviewer`
+
+Returns the reviewer profile configuration and `auto_review` flag.
+
+### `PUT /settings/reviewer`
+
+Update reviewer config. Body: `{"profile": "...", "auto_review": true}`.
+
+---
+
+## Projects (Linear only)
+
+These endpoints return `501 Not Implemented` for the GitHub tracker.
+
+### `GET /projects`
+
+Returns the list of accessible projects from the tracker.
+
+### `GET /projects/filter`
+
+Returns the active project filter (array of project slugs, or `null` for default, or `[]` for all).
+
+### `PUT /projects/filter`
+
+Sets the active project filter. Body: `{"slugs": ["alpha", "beta"]}`.
+
+---
+
+## Workspaces
+
+### `DELETE /workspaces`
+
+Removes all worktrees managed by Itervox. Use with caution — agents currently running will fail their next git operation.
+
+---
+
+## SSE Event Reference
+
+### Snapshot stream (`GET /events`)
+
+```
+data: {"running":[...],"history":[...],"retrying":[...],"paused":[...],...}
+
+```
+
+Each frame is a complete `StateSnapshot`. Keep-alive ping every 25 seconds.
+
+### Log stream (`GET /issues/{id}/log-stream`)
+
+```
+event: log
+data: {"event":"action","tool":"bash","message":"grep -r ...","sessionId":"..."}
+
+```
+
+`event` is one of: `text`, `action`, `subagent`, `pr`, `turn`, `error`, `warn`, `info`.
+
+---
+
+## Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `ITERVOX_API_TOKEN` | Bearer token for API authentication. When set, all routes except `/health` require `Authorization: Bearer <token>`. |
+| `LINEAR_API_KEY` | Linear API token (referenced from `WORKFLOW.md` as `$LINEAR_API_KEY`). |
+| `GITHUB_TOKEN` | GitHub Personal Access Token (referenced as `$GITHUB_TOKEN`). |
+| `ITERVOX_DRY_RUN` | Set to `1` to run the orchestrator without dispatching actual agent workers. |
+
+> **Note:** `ITERVOX_*` env var names are legacy from the previous project name and remain supported for backwards compatibility. They will be aliased to `ITERVOX_*` in a future release.
