@@ -59,7 +59,7 @@ You already have the agents. Now orchestrate them. Coding agents are powerful �
 | Wait for the agent, review, open PR | PRs submitted, issues transitioned |
 | Repeat, one at a time | You review and merge — that's it |
 
-Pluggable agent backends — Claude Code and Codex are supported today; new backends require a small Go integration. See [docs/adr/003-adding-a-new-agent-backend.md](docs/adr/003-adding-a-new-agent-backend.md). OpenCode and Gemini CLI are on the roadmap.
+Pluggable agent backends — Claude Code and Codex are supported today; new backends require a small Go integration. OpenCode and Gemini CLI are on the roadmap.
 
 ---
 
@@ -160,7 +160,7 @@ Every setting below is live-editable from the dashboard. No daemon restart, no W
 
 ### View from your phone, anywhere
 
-The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunnel, Tailscale, ngrok, or self-hosted Piko. Full guide: **[itervox.dev/guides/mobile-access/](https://itervox.dev/guides/mobile-access/)**.
+The dashboard runs on your machine. Reach it from your phone over LAN, SSH tunnel, Tailscale, ngrok, or self-hosted Piko. Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/mobile-dashboard.png" width="280" alt="Itervox dashboard on mobile" />
@@ -257,7 +257,7 @@ agent:
   dispatch_strategy: round-robin  # or: least-loaded
 ```
 
-Full guide: **[itervox.dev/guides/ssh-workers/](https://itervox.dev/guides/ssh-workers/)**.
+Full reference: **[itervox.dev/configuration/](https://itervox.dev/configuration/)** (`ssh_hosts`, `dispatch_strategy`) and per-profile examples in **[itervox.dev/guides/agent-profiles/](https://itervox.dev/guides/agent-profiles/)**.
 
 ---
 
