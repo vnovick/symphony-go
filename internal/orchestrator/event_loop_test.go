@@ -1230,7 +1230,11 @@ func TestPausedFilePersistence(t *testing.T) {
 			}
 		}
 	}
-	go orch.Run(ctx) //nolint:errcheck
+	done1 := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(done1)
+	}()
 
 	select {
 	case <-workerVisible:
@@ -1267,12 +1271,23 @@ func TestPausedFilePersistence(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel2()
 
-	go orch2.Run(ctx2) //nolint:errcheck
+	done2 := make(chan struct{})
+	go func() {
+		_ = orch2.Run(ctx2)
+		close(done2)
+	}()
 	time.Sleep(100 * time.Millisecond)
 
 	snap2 := orch2.Snapshot()
 	_, paused := snap2.PausedIdentifiers["ENG-1"]
 	assert.True(t, paused, "paused state should persist to disk and reload")
+
+	// Wait for both orchestrator goroutines to exit before the test returns,
+	// so t.TempDir cleanup doesn't race with paused.json writes.
+	cancel()
+	cancel2()
+	<-done1
+	<-done2
 }
 
 // ---------------------------------------------------------------------------

@@ -11,10 +11,9 @@ Orchestrate AI agents across issues, profiles, and machines. Full visibility fro
 [![Go Report Card](https://goreportcard.com/badge/github.com/vnovick/itervox)](https://goreportcard.com/report/github.com/vnovick/itervox)
 [![Latest Release](https://img.shields.io/github/v/release/vnovick/itervox)](https://github.com/vnovick/itervox/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/Q6FrQSrP)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/ATU5n3yZNX)
 
-**[itervox.dev](https://itervox.dev)** · **[Docs](https://itervox.dev/getting-started/)** · **[Watch the demo](https://www.youtube.com/watch?v=rzBZkc9Cvh0)**
-
+**[itervox.dev](https://itervox.dev)** · **[Docs](https://itervox.dev/getting-started/)**
 <img src="https://raw.githubusercontent.com/vnovick/itervox/main/site/public/screenshots/dashboard-overview.png" width="900" alt="Itervox dashboard — live overview of running agent sessions" />
 
 </div>
@@ -416,7 +415,7 @@ Windows is **unsupported**: Itervox relies on a POSIX shell for hooks and uses w
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, and the pre-commit hook policy. The project uses `make verify` as the single entry point that mirrors CI (fmt, vet, lint, Go tests with `-race`, and web tests).
 
-Bug reports, feature requests, and PRs are welcome. Join the [Discord](https://discord.gg/Q6FrQSrP) to show your `WORKFLOW.md`, ask questions, or propose ideas.
+Bug reports, feature requests, and PRs are welcome. Join the [Discord](https://discord.gg/ATU5n3yZNX) to show your `WORKFLOW.md`, ask questions, or propose ideas.
 
 ---
 
