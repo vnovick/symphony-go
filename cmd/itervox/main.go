@@ -1765,13 +1765,13 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		if len(info.ClaudeModels) > 0 {
 			b.WriteString("    claude:\n")
 			for _, m := range info.ClaudeModels {
-				b.WriteString(fmt.Sprintf("      - { id: %q, label: %q }\n", m.ID, m.Label))
+				fmt.Fprintf(&b, "      - { id: %q, label: %q }\n", m.ID, m.Label)
 			}
 		}
 		if len(info.CodexModels) > 0 {
 			b.WriteString("    codex:\n")
 			for _, m := range info.CodexModels {
-				b.WriteString(fmt.Sprintf("      - { id: %q, label: %q }\n", m.ID, m.Label))
+				fmt.Fprintf(&b, "      - { id: %q, label: %q }\n", m.ID, m.Label)
 			}
 		}
 	}

@@ -63,7 +63,7 @@ func TestValidateCodexCLITimeout(t *testing.T) {
 	script := "#!/bin/sh\nsleep 10" // Will timeout after 5s
 	require.NoError(t, os.WriteFile(fakeCodex, []byte(script), 0o755))
 
-	require.NoError(t, os.Setenv("PATH", tmpDir))
+	require.NoError(t, os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+origPath))
 	err := agent.ValidateCodexCLI()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")

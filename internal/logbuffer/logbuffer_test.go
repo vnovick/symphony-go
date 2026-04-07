@@ -304,7 +304,7 @@ func TestDiskReadTrimsToMaxLines(t *testing.T) {
 	// Write more than 500 lines to a disk file.
 	var sb strings.Builder
 	for i := 0; i < 600; i++ {
-		sb.WriteString(fmt.Sprintf("disk-line-%d\n", i))
+		fmt.Fprintf(&sb, "disk-line-%d\n", i)
 	}
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "BIG.log"),
