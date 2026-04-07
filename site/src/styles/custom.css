@@ -1,0 +1,92 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+/* Dark mode (default) — Starlight uses [data-theme='dark'] */
+:root,
+[data-theme='dark'] {
+  /* Surfaces */
+  --sl-color-bg: #09090b;
+  --sl-color-bg-nav: #09090b;
+  --sl-color-bg-sidebar: #111113;
+  --sl-color-bg-inline-code: #18181b;
+
+  /* Text */
+  --sl-color-text: #fafafa;
+  --sl-color-text-accent: #818cf8;
+
+  /* Accents */
+  --sl-color-accent-low: #1e1b4b;
+  --sl-color-accent: #6366f1;
+  --sl-color-accent-high: #c7d2fe;
+
+  /* Borders */
+  --sl-color-hairline: rgba(255, 255, 255, 0.06);
+  --sl-color-hairline-light: rgba(255, 255, 255, 0.12);
+
+  /* Fonts */
+  --sl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Custom tokens (for landing page) */
+  --bg: #09090b;
+  --bg-soft: #111113;
+  --bg-elevated: #18181b;
+  --accent: #6366f1;
+  --accent-strong: #818cf8;
+  --teal: #14b8a6;
+  --purple: #a855f7;
+  --text: #fafafa;
+  --text-secondary: #a1a1aa;
+  --muted: #71717a;
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.12);
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --gradient-accent: linear-gradient(135deg, #6366f1, #14b8a6);
+  --shadow-glow: 0 0 40px -10px rgba(99, 102, 241, 0.4);
+}
+
+/* Light mode */
+[data-theme='light'] {
+  --sl-color-bg: #fafafa;
+  --sl-color-bg-nav: #ffffff;
+  --sl-color-bg-sidebar: #f4f4f5;
+  --sl-color-bg-inline-code: #e4e4e7;
+
+  --sl-color-text: #09090b;
+  --sl-color-text-accent: #4f46e5;
+
+  --sl-color-accent-low: #e0e7ff;
+  --sl-color-accent: #4f46e5;
+  --sl-color-accent-high: #312e81;
+
+  --sl-color-hairline: rgba(0, 0, 0, 0.08);
+  --sl-color-hairline-light: rgba(0, 0, 0, 0.04);
+
+  --bg: #fafafa;
+  --bg-soft: #f4f4f5;
+  --bg-elevated: #ffffff;
+  --accent: #4f46e5;
+  --accent-strong: #6366f1;
+  --teal: #0d9488;
+  --purple: #9333ea;
+  --text: #09090b;
+  --text-secondary: #3f3f46;
+  --muted: #71717a;
+  --line: rgba(0, 0, 0, 0.08);
+  --line-strong: rgba(0, 0, 0, 0.12);
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --gradient-accent: linear-gradient(135deg, #4f46e5, #0d9488);
+  --shadow-glow: 0 0 40px -10px rgba(79, 70, 229, 0.3);
+}
+
+/* Global font smoothing */
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

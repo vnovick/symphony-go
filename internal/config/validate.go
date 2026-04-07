@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/osteele/liquid"
 )
@@ -42,6 +43,27 @@ func ValidateDispatch(cfg *Config) error {
 		eng := liquid.NewEngine()
 		if _, err := eng.ParseTemplate([]byte(rp)); err != nil {
 			return fmt.Errorf("agent.reviewer_prompt: invalid Liquid template: %w", err)
+		}
+	}
+
+	// Check 7: ssh_hosts must not start with '-' or contain whitespace (prevents SSH flag injection)
+	for _, host := range cfg.Agent.SSHHosts {
+		if strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t") {
+			return fmt.Errorf("invalid ssh host %q: must not start with '-' or contain whitespace", host)
+		}
+	}
+
+	// Check 8: profile commands must not contain shell metacharacters.
+	// Profile commands are passed as the first argument to bash -lc, so
+	// unescaped `;`, `|`, `&`, `` ` ``, `$`, `(`, `)`, `<`, `>` allow
+	// shell code injection via a crafted WORKFLOW.md. Commands are user-
+	// supplied from WORKFLOW.md, but a clear validation error is better than
+	// a silent foot-gun.
+	const shellMetachars = ";|&`$()><"
+	for name, profile := range cfg.Agent.Profiles {
+		if strings.ContainsAny(profile.Command, shellMetachars) {
+			return fmt.Errorf("invalid profile %q: command %q contains shell metacharacters (%s); use a wrapper script instead",
+				name, profile.Command, shellMetachars)
 		}
 	}
 

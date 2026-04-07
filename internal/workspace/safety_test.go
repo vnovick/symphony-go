@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/workspace"
+	"github.com/vnovick/itervox/internal/workspace"
 )
 
 func TestSanitizeKeyAlphanumericPassthrough(t *testing.T) {
@@ -39,7 +39,7 @@ func TestWorkspacePathSanitizesKey(t *testing.T) {
 func TestAssertContainedHappyPath(t *testing.T) {
 	root := t.TempDir()
 	child := filepath.Join(root, "child")
-	require.NoError(t, os.MkdirAll(child, 0755))
+	require.NoError(t, os.MkdirAll(child, 0o755))
 	err := workspace.AssertContained(root, child)
 	assert.NoError(t, err)
 }

@@ -6,9 +6,9 @@ before:
     - sh -c "cd web && pnpm install --frozen-lockfile && pnpm build"
 
 builds:
-  - id: symphony
-    main: ./cmd/symphony
-    binary: symphony
+  - id: itervox
+    main: ./cmd/itervox
+    binary: itervox
     env:
       - CGO_ENABLED=0
     goos:
@@ -48,15 +48,15 @@ changelog:
       - Merge branch
 
 brews:
-  - name: symphony-go
+  - name: itervox
     repository:
       owner: vnovick
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/vnovick/symphony-go"
+    homepage: "https://github.com/vnovick/itervox"
     description: "Autonomous AI agent daemon that drives Linear issues through Claude-powered agentic loops."
     license: "Apache-2.0"
     install: |
-      bin.install "symphony"
+      bin.install "itervox"
     test: |
-      system "#{bin}/symphony", "--version"
+      system "#{bin}/itervox", "--version"

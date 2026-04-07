@@ -13,17 +13,28 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/server"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/server"
 )
 
-func testServer(t *testing.T) *server.Server {
-	t.Helper()
-	snap := server.StateSnapshot{
+func baseSnap() server.StateSnapshot {
+	return server.StateSnapshot{
 		GeneratedAt: time.Now(),
 		Running:     []server.RunningRow{},
 		Retrying:    []server.RetryRow{},
 	}
-	return server.New(func() server.StateSnapshot { return snap }, make(chan struct{}, 1), "", nil, nil, nil, nil)
+}
+
+func makeTestConfig(snap server.StateSnapshot) server.Config {
+	return server.Config{
+		Snapshot:    func() server.StateSnapshot { return snap },
+		RefreshChan: make(chan struct{}, 1),
+	}
+}
+
+func testServer(t *testing.T) *server.Server {
+	t.Helper()
+	return server.New(makeTestConfig(baseSnap()))
 }
 
 func TestStateEndpointReturnsJSON(t *testing.T) {
@@ -38,13 +49,12 @@ func TestStateEndpointReturnsJSON(t *testing.T) {
 	assert.Contains(t, body, "generatedAt")
 }
 
-func TestUnknownIdentifierReturns404(t *testing.T) {
+func TestUnknownRouteReturns404(t *testing.T) {
 	srv := testServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/ENG-999", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/nonexistent-route", nil)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
-	assert.Contains(t, w.Body.String(), "error")
 }
 
 func TestRefreshReturns202(t *testing.T) {
@@ -87,18 +97,6 @@ func TestStateEndpointShape(t *testing.T) {
 	assert.Contains(t, body, "counts")
 }
 
-// testServerWithWorkers creates a server whose snapshot reports n max concurrent agents.
-func testServerWithWorkers(t *testing.T, n int) *server.Server {
-	t.Helper()
-	snap := server.StateSnapshot{
-		GeneratedAt:         time.Now(),
-		Running:             []server.RunningRow{},
-		Retrying:            []server.RetryRow{},
-		MaxConcurrentAgents: n,
-	}
-	return server.New(func() server.StateSnapshot { return snap }, make(chan struct{}, 1), "", nil, nil, nil, nil)
-}
-
 // postJSON is a helper that sends a POST with a JSON body and returns the recorder.
 func postJSON(t *testing.T, srv *server.Server, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -117,15 +115,6 @@ func patchJSON(t *testing.T, srv *server.Server, path, body string) *httptest.Re
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	return w
-}
-
-// TestSetWorkersNotWired verifies that POST /api/v1/settings/workers returns 501 when
-// the worker setter has not been wired.
-func TestSetWorkersNotWired(t *testing.T) {
-	srv := testServer(t)
-	w := postJSON(t, srv, "/api/v1/settings/workers", `{"workers":5}`)
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
-	assert.Contains(t, w.Body.String(), "error")
 }
 
 func TestSetWorkers(t *testing.T) {
@@ -175,9 +164,25 @@ func TestSetWorkers(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := testServerWithWorkers(t, tc.currentWorkers)
 			var called int
-			srv.SetWorkerSetter(func(n int) { called = n })
+			snap := baseSnap()
+			snap.MaxConcurrentAgents = tc.currentWorkers
+			cfg := makeTestConfig(snap)
+			cfg.Client = &server.FuncClient{
+				SetWorkersFn: func(n int) { called = n },
+				BumpWorkersFn: func(delta int) int {
+					next := snap.MaxConcurrentAgents + delta
+					if next < 1 {
+						next = 1
+					}
+					if next > 50 {
+						next = 50
+					}
+					called = next
+					return next
+				},
+			}
+			srv := server.New(cfg)
 
 			w := postJSON(t, srv, "/api/v1/settings/workers", tc.body)
 			assert.Equal(t, tc.wantStatus, w.Code)
@@ -192,15 +197,6 @@ func TestSetWorkers(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestSetIssueProfileNotWired verifies that POST /api/v1/issues/{id}/profile returns 501
-// when the profile setter has not been wired.
-func TestSetIssueProfileNotWired(t *testing.T) {
-	srv := testServer(t)
-	w := postJSON(t, srv, "/api/v1/issues/ENG-1/profile", `{"profile":"fast"}`)
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
-	assert.Contains(t, w.Body.String(), "error")
 }
 
 func TestSetIssueProfile(t *testing.T) {
@@ -238,12 +234,15 @@ func TestSetIssueProfile(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := testServer(t)
 			var gotIdentifier, gotProfile string
-			srv.SetIssueProfileSetter(func(identifier, profile string) {
-				gotIdentifier = identifier
-				gotProfile = profile
-			})
+			cfg := makeTestConfig(baseSnap())
+			cfg.Client = &server.FuncClient{
+				SetIssueProfileFn: func(identifier, profile string) {
+					gotIdentifier = identifier
+					gotProfile = profile
+				},
+			}
+			srv := server.New(cfg)
 
 			path := "/api/v1/issues/" + tc.identifier + "/profile"
 			w := postJSON(t, srv, path, tc.body)
@@ -264,13 +263,29 @@ func TestSetIssueProfile(t *testing.T) {
 	}
 }
 
-// TestUpdateIssueStateNotWired verifies that PATCH /api/v1/issues/{id}/state returns 501
-// when the state updater has not been wired.
-func TestUpdateIssueStateNotWired(t *testing.T) {
-	srv := testServer(t)
-	w := patchJSON(t, srv, "/api/v1/issues/ENG-1/state", `{"state":"In Progress"}`)
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
-	assert.Contains(t, w.Body.String(), "error")
+func TestUpsertProfileIncludesBackend(t *testing.T) {
+	var gotName string
+	var gotDef server.ProfileDef
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		UpsertProfileFn: func(name string, def server.ProfileDef) error {
+			gotName = name
+			gotDef = def
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/profiles/codex-fast", bytes.NewBufferString(`{"command":"run-codex-wrapper","prompt":"fast path","backend":"codex"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "codex-fast", gotName)
+	assert.Equal(t, "run-codex-wrapper", gotDef.Command)
+	assert.Equal(t, "fast path", gotDef.Prompt)
+	assert.Equal(t, "codex", gotDef.Backend)
 }
 
 func TestUpdateIssueState(t *testing.T) {
@@ -313,10 +328,13 @@ func TestUpdateIssueState(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := testServer(t)
-			srv.SetUpdateIssueState(func(ctx context.Context, identifier, stateName string) error {
-				return tc.updaterErr
-			})
+			cfg := makeTestConfig(baseSnap())
+			cfg.Client = &server.FuncClient{
+				UpdateIssueStateFn: func(ctx context.Context, identifier, stateName string) error {
+					return tc.updaterErr
+				},
+			}
+			srv := server.New(cfg)
 
 			path := "/api/v1/issues/" + tc.identifier + "/state"
 			w := patchJSON(t, srv, path, tc.body)
@@ -331,4 +349,1326 @@ func TestUpdateIssueState(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ─── handleIssues ─────────────────────────────────────────────────────────────
+
+func testServerWithFetchIssues(t *testing.T, fn func(ctx context.Context) ([]server.TrackerIssue, error)) *server.Server {
+	t.Helper()
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{FetchIssuesFn: fn}
+	return server.New(cfg)
+}
+
+func TestHandleIssues_ReturnsJSONArray(t *testing.T) {
+	issues := []server.TrackerIssue{
+		{Identifier: "ENG-1", Title: "Fix bug", State: "In Progress"},
+		{Identifier: "ENG-2", Title: "Add feature", State: "Todo"},
+	}
+	srv := testServerWithFetchIssues(t, func(_ context.Context) ([]server.TrackerIssue, error) {
+		return issues, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+
+	var got []server.TrackerIssue
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got, 2)
+	assert.Equal(t, "ENG-1", got[0].Identifier)
+	assert.Equal(t, "ENG-2", got[1].Identifier)
+}
+
+func TestHandleIssues_FetchError_Returns500(t *testing.T) {
+	srv := testServerWithFetchIssues(t, func(_ context.Context) ([]server.TrackerIssue, error) {
+		return nil, errors.New("tracker down")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "error")
+}
+
+// ─── handleIssueDetail ────────────────────────────────────────────────────────
+
+func TestHandleIssueDetail_Found_Returns200(t *testing.T) {
+	issues := []server.TrackerIssue{
+		{Identifier: "ENG-10", Title: "My issue", State: "Todo"},
+	}
+	srv := testServerWithFetchIssues(t, func(_ context.Context) ([]server.TrackerIssue, error) {
+		return issues, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-10", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var got server.TrackerIssue
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, "ENG-10", got.Identifier)
+	assert.Equal(t, "My issue", got.Title)
+}
+
+func TestHandleIssueDetail_NotFound_Returns404(t *testing.T) {
+	srv := testServerWithFetchIssues(t, func(_ context.Context) ([]server.TrackerIssue, error) {
+		return []server.TrackerIssue{}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-999", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Contains(t, w.Body.String(), "not_found")
+}
+
+func TestHandleIssueDetail_FetchError_Returns500(t *testing.T) {
+	srv := testServerWithFetchIssues(t, func(_ context.Context) ([]server.TrackerIssue, error) {
+		return nil, errors.New("db error")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleCancelIssue ────────────────────────────────────────────────────────
+
+func testServerWithCancel(t *testing.T, fn func(string) bool) *server.Server {
+	t.Helper()
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{CancelIssueFn: fn}
+	return server.New(cfg)
+}
+
+func TestHandleCancelIssue_Found_Returns200(t *testing.T) {
+	srv := testServerWithCancel(t, func(id string) bool { return id == "ENG-1" })
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-1", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["cancelled"])
+	assert.Equal(t, "ENG-1", resp["identifier"])
+}
+
+func TestHandleCancelIssue_NotFound_Returns404(t *testing.T) {
+	srv := testServerWithCancel(t, func(id string) bool { return false })
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-999", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Contains(t, w.Body.String(), "not_running")
+}
+
+// ─── handleResumeIssue ────────────────────────────────────────────────────────
+
+func testServerWithResume(t *testing.T, fn func(string) bool) *server.Server {
+	t.Helper()
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ResumeIssueFn: fn}
+	return server.New(cfg)
+}
+
+func TestHandleResumeIssue_Found_Returns200(t *testing.T) {
+	srv := testServerWithResume(t, func(id string) bool { return id == "ENG-5" })
+	w := postJSON(t, srv, "/api/v1/issues/ENG-5/resume", "")
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["resumed"])
+	assert.Equal(t, "ENG-5", resp["identifier"])
+}
+
+func TestHandleResumeIssue_NotPaused_Returns404(t *testing.T) {
+	srv := testServerWithResume(t, func(id string) bool { return false })
+	w := postJSON(t, srv, "/api/v1/issues/ENG-5/resume", "")
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Contains(t, w.Body.String(), "not_paused")
+}
+
+// ─── handleSetAgentMode ───────────────────────────────────────────────────────
+
+func testServerWithAgentMode(t *testing.T, fn func(string) error) *server.Server {
+	t.Helper()
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{SetAgentModeFn: fn}
+	return server.New(cfg)
+}
+
+func TestHandleSetAgentMode_ValidMode_Returns200(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+	}{
+		{"empty mode (off)", ""},
+		{"subagents mode", "subagents"},
+		{"teams mode", "teams"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotMode string
+			srv := testServerWithAgentMode(t, func(mode string) error {
+				gotMode = mode
+				return nil
+			})
+
+			body := `{"mode":"` + tc.mode + `"}`
+			w := postJSON(t, srv, "/api/v1/settings/agent-mode", body)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			assert.Equal(t, true, resp["ok"])
+			assert.Equal(t, tc.mode, resp["agentMode"])
+			assert.Equal(t, tc.mode, gotMode)
+		})
+	}
+}
+
+func TestHandleSetAgentMode_InvalidJSON_Returns400(t *testing.T) {
+	srv := testServerWithAgentMode(t, func(mode string) error { return nil })
+	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "error")
+}
+
+func TestHandleSetAgentMode_InvalidMode_Returns400(t *testing.T) {
+	srv := testServerWithAgentMode(t, func(mode string) error { return nil })
+	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `{"mode":"invalid-mode"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid_mode")
+}
+
+// ─── handleTerminateIssue ─────────────────────────────────────────────────────
+
+func testServerWithTerminate(t *testing.T, fn func(string) bool) *server.Server {
+	t.Helper()
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{TerminateIssueFn: fn}
+	return server.New(cfg)
+}
+
+func putJSON(t *testing.T, srv *server.Server, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	return w
+}
+
+func TestHandleTerminateIssue_Success(t *testing.T) {
+	var got string
+	srv := testServerWithTerminate(t, func(id string) bool { got = id; return true })
+	w := postJSON(t, srv, "/api/v1/issues/ENG-5/terminate", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-5", got)
+}
+
+func TestHandleTerminateIssue_NotFound(t *testing.T) {
+	srv := testServerWithTerminate(t, func(string) bool { return false })
+	w := postJSON(t, srv, "/api/v1/issues/ENG-X/terminate", "")
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// ─── handleReanalyzeIssue ─────────────────────────────────────────────────────
+
+func testServerWithReanalyze(t *testing.T, fn func(string) bool) *server.Server {
+	t.Helper()
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ReanalyzeIssueFn: fn}
+	return server.New(cfg)
+}
+
+func TestHandleReanalyzeIssue_Success(t *testing.T) {
+	var got string
+	srv := testServerWithReanalyze(t, func(id string) bool { got = id; return true })
+	w := postJSON(t, srv, "/api/v1/issues/ENG-7/reanalyze", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-7", got)
+	assert.Contains(t, w.Body.String(), "queued")
+}
+
+func TestHandleReanalyzeIssue_NotPaused(t *testing.T) {
+	srv := testServerWithReanalyze(t, func(string) bool { return false })
+	w := postJSON(t, srv, "/api/v1/issues/ENG-7/reanalyze", "")
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Contains(t, w.Body.String(), "not_paused")
+}
+
+// ─── handleListProfiles / handleDeleteProfile ─────────────────────────────────
+
+func testServerWithProfiles(t *testing.T) (*server.Server, *map[string]server.ProfileDef) {
+	t.Helper()
+	defs := map[string]server.ProfileDef{"fast": {Command: "codex", Backend: "codex"}}
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ProfileDefsFn:   func() map[string]server.ProfileDef { return defs },
+		DeleteProfileFn: func(name string) error { delete(defs, name); return nil },
+	}
+	return server.New(cfg), &defs
+}
+
+func TestHandleListProfiles_ReturnsProfiles(t *testing.T) {
+	srv, _ := testServerWithProfiles(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/profiles", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "fast")
+}
+
+func TestHandleDeleteProfile_Success(t *testing.T) {
+	srv, defs := testServerWithProfiles(t)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/profiles/fast", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NotContains(t, *defs, "fast")
+}
+
+// ─── handleListModels ──────────────────────────────────────────────────────────
+
+func TestHandleListModels_ReturnsModels(t *testing.T) {
+	models := map[string][]server.ModelOption{
+		"claude": {{ID: "claude-sonnet-4-6", Label: "Sonnet 4.6"}, {ID: "claude-opus-4-6", Label: "Opus 4.6"}},
+		"codex":  {{ID: "gpt-5.2-codex", Label: "GPT-5.2 Codex"}},
+	}
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		AvailableModelsFn: func() map[string][]server.ModelOption { return models },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/models", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "claude-sonnet-4-6")
+	assert.Contains(t, w.Body.String(), "gpt-5.2-codex")
+	assert.Contains(t, w.Body.String(), "Sonnet 4.6")
+}
+
+func TestHandleListModels_EmptyReturnsEmptyObject(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/models", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "{}")
+}
+
+// ─── handleGetReviewer / handleSetReviewer ─────────────────────────────────────
+
+func TestHandleGetReviewer_ReturnsConfig(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ReviewerConfigFn: func() (string, bool) { return "code-reviewer", true },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/reviewer", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "code-reviewer")
+	assert.Contains(t, w.Body.String(), "true")
+}
+
+func TestHandleSetReviewer_UpdatesConfig(t *testing.T) {
+	var savedProfile string
+	var savedAutoReview bool
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(profile string, autoReview bool) error {
+			savedProfile = profile
+			savedAutoReview = autoReview
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/reviewer",
+		bytes.NewBufferString(`{"profile":"reviewer","auto_review":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "reviewer", savedProfile)
+	assert.True(t, savedAutoReview)
+}
+
+func TestHandleSetReviewer_DisableReviewer(t *testing.T) {
+	var savedProfile string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(profile string, autoReview bool) error {
+			savedProfile = profile
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/reviewer",
+		bytes.NewBufferString(`{"profile":"","auto_review":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "", savedProfile)
+}
+
+// ─── handleListProjects / handleGetProjectFilter / handleSetProjectFilter ─────
+
+type fakeProjectManager struct {
+	projects []server.Project
+	filter   []string
+}
+
+func (f *fakeProjectManager) FetchProjects(_ context.Context) ([]server.Project, error) {
+	return f.projects, nil
+}
+func (f *fakeProjectManager) GetProjectFilter() []string  { return f.filter }
+func (f *fakeProjectManager) SetProjectFilter(s []string) { f.filter = s }
+
+func testServerWithProjects(t *testing.T) (*server.Server, *fakeProjectManager) {
+	t.Helper()
+	pm := &fakeProjectManager{projects: []server.Project{{Name: "Alpha"}}}
+	cfg := makeTestConfig(baseSnap())
+	cfg.ProjectManager = pm
+	return server.New(cfg), pm
+}
+
+func TestHandleListProjects_NotConfigured(t *testing.T) {
+	srv := testServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+func TestHandleListProjects_ReturnsProjects(t *testing.T) {
+	srv, _ := testServerWithProjects(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "Alpha")
+}
+
+func TestHandleGetProjectFilter_ReturnsFilter(t *testing.T) {
+	srv, pm := testServerWithProjects(t)
+	pm.filter = []string{"proj-1"}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/filter", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "proj-1")
+}
+
+func TestHandleSetProjectFilter_SetsSlugs(t *testing.T) {
+	srv, pm := testServerWithProjects(t)
+	w := putJSON(t, srv, "/api/v1/projects/filter", `{"slugs":["s1","s2"]}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{"s1", "s2"}, pm.filter)
+}
+
+func TestHandleSetProjectFilter_NullSlugsResetsFilter(t *testing.T) {
+	srv, pm := testServerWithProjects(t)
+	pm.filter = []string{"old"}
+	w := putJSON(t, srv, "/api/v1/projects/filter", `{}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	// nil slugs = reset to WORKFLOW.md default (nil)
+	assert.Nil(t, pm.filter)
+}
+
+// ─── handleUpdateTrackerStates ────────────────────────────────────────────────
+
+func TestHandleUpdateTrackerStates_Success(t *testing.T) {
+	var gotActive, gotTerminal []string
+	var gotCompletion string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		UpdateTrackerStatesFn: func(active, terminal []string, completion string) error {
+			gotActive = active
+			gotTerminal = terminal
+			gotCompletion = completion
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/states",
+		`{"activeStates":["Todo","In Progress"],"terminalStates":["Done"],"completionState":"Done"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, []string{"Todo", "In Progress"}, gotActive)
+	assert.Equal(t, []string{"Done"}, gotTerminal)
+	assert.Equal(t, "Done", gotCompletion)
+}
+
+func TestHandleUpdateTrackerStates_InvalidJSON(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{UpdateTrackerStatesFn: func(_, _ []string, _ string) error { return nil }}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/states", `{bad json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// ─── Notify / broadcaster ─────────────────────────────────────────────────────
+
+func TestNotifyDoesNotPanicWithNoSubscribers(t *testing.T) {
+	srv := testServer(t)
+	// Must not panic; no-op when broadcaster has no subscribers.
+	assert.NotPanics(t, func() {
+		srv.Notify()
+	})
+}
+
+// ─── handleIssueLogs / handleClearIssueLogs ───────────────────────────────────
+
+func testServerWithIssueLogs(t *testing.T, fetchLogs func(string) []string) *server.Server {
+	t.Helper()
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{FetchLogsFn: fetchLogs}
+	return server.New(cfg)
+}
+
+func TestHandleIssueLogs_ReturnsEntries(t *testing.T) {
+	srv := testServerWithIssueLogs(t, func(id string) []string {
+		return []string{`{"level":"INFO","msg":"claude: text","time":"10:00:00","text":"something happened"}`}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/logs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	var entries []any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &entries))
+	// Non-skipped lines get parsed.
+	assert.NotEmpty(t, entries)
+}
+
+func TestHandleIssueLogs_EmptyLogs(t *testing.T) {
+	srv := testServerWithIssueLogs(t, func(string) []string { return nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/logs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "[]", strings.TrimSpace(w.Body.String()))
+}
+
+func TestHandleClearIssueLogs_Success(t *testing.T) {
+	var cleared string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ClearLogsFn: func(id string) error { cleared = id; return nil }}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-9/logs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-9", cleared)
+}
+
+// ─── handleAIReview ───────────────────────────────────────────────────────────
+
+func TestHandleAIReview_Success(t *testing.T) {
+	var got string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{DispatchReviewerFn: func(id string) error { got = id; return nil }}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/ENG-42/ai-review", "")
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Equal(t, "ENG-42", got)
+}
+
+func TestHandleAIReview_DispatchError(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{DispatchReviewerFn: func(string) error { return errors.New("reviewer busy") }}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/ai-review", "")
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleSetIssueBackend(t *testing.T) {
+	tests := []struct {
+		name       string
+		identifier string
+		body       string
+		wantCode   int
+	}{
+		{"set codex", "PROJ-1", `{"backend":"codex"}`, 200},
+		{"set claude", "PROJ-1", `{"backend":"claude"}`, 200},
+		{"clear", "PROJ-1", `{"backend":""}`, 200},
+		{"bad json", "PROJ-1", `{invalid`, 400},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := baseSnap()
+			srv := server.New(makeTestConfig(snap))
+			path := "/api/v1/issues/" + tc.identifier + "/backend"
+			req := httptest.NewRequest("POST", path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, req)
+			if w.Code != tc.wantCode {
+				t.Errorf("got %d, want %d", w.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+// ─── handleHealth ────────────────────────────────────────────────────────────
+
+func TestHandleHealth_Returns200(t *testing.T) {
+	srv := testServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Header().Get("Content-Type"), "application/json")
+	assert.Contains(t, w.Body.String(), `"status":"ok"`)
+}
+
+func TestHandleHealth_NoAuthRequired(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.APIToken = "secret-token"
+	srv := server.New(cfg)
+
+	// Health endpoint should succeed WITHOUT a bearer token.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "ok")
+}
+
+// ─── Bearer auth middleware ──────────────────────────────────────────────────
+
+func TestBearerAuth_MissingToken_Returns401(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.APIToken = "my-secret"
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "unauthorized")
+}
+
+func TestBearerAuth_WrongToken_Returns401(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.APIToken = "my-secret"
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestBearerAuth_CorrectToken_Returns200(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.APIToken = "my-secret"
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	req.Header.Set("Authorization", "Bearer my-secret")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestBearerAuth_MissingBearerPrefix_Returns401(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.APIToken = "my-secret"
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+	req.Header.Set("Authorization", "my-secret") // no "Bearer " prefix
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// ─── SSE endpoint ────────────────────────────────────────────────────────────
+
+func TestHandleEvents_ReturnsSSEContentType(t *testing.T) {
+	srv := testServer(t)
+	// Create a request with a cancellable context so the SSE handler returns.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so handler exits after initial event
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, "text/event-stream", w.Header().Get("Content-Type"))
+	assert.Contains(t, w.Body.String(), "data:")
+}
+
+// ─── handleIssueDetail via FetchIssue fast path ──────────────────────────────
+
+func TestHandleIssueDetail_FetchIssueFastPath_Found(t *testing.T) {
+	issue := &server.TrackerIssue{Identifier: "ENG-42", Title: "Fast path", State: "Done"}
+	cfg := makeTestConfig(baseSnap())
+	cfg.FetchIssue = func(_ context.Context, id string) (*server.TrackerIssue, error) {
+		if id == "ENG-42" {
+			return issue, nil
+		}
+		return nil, nil
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-42", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "ENG-42")
+	assert.Contains(t, w.Body.String(), "Fast path")
+}
+
+func TestHandleIssueDetail_FetchIssueFastPath_NotFound(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.FetchIssue = func(_ context.Context, id string) (*server.TrackerIssue, error) {
+		return nil, nil
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/NOPE-1", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Contains(t, w.Body.String(), "not_found")
+}
+
+func TestHandleIssueDetail_FetchIssueFastPath_Error(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.FetchIssue = func(_ context.Context, id string) (*server.TrackerIssue, error) {
+		return nil, errors.New("tracker timeout")
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "fetch_failed")
+}
+
+// ─── handleSetInlineInput ────────────────────────────────────────────────────
+
+func TestHandleSetInlineInput_InvalidJSON_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/inline-input", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleSetInlineInput_NoopClient_Returns500(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{} // SetInlineInput returns errNotConfigured
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/inline-input", `{"enabled":true}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleSetDispatchStrategy ───────────────────────────────────────────────
+
+func TestHandleSetDispatchStrategy_ValidStrategies(t *testing.T) {
+	tests := []struct {
+		strategy string
+		wantCode int
+	}{
+		{"round-robin", http.StatusOK},
+		{"least-loaded", http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.strategy, func(t *testing.T) {
+			cfg := makeTestConfig(baseSnap())
+			cfg.Client = &server.FuncClient{
+				SetDispatchStrategyFn: func(s string) error { return nil },
+			}
+			srv := server.New(cfg)
+			w := putJSON(t, srv, "/api/v1/settings/dispatch-strategy", `{"strategy":"`+tc.strategy+`"}`)
+			assert.Equal(t, tc.wantCode, w.Code)
+		})
+	}
+}
+
+func TestHandleSetDispatchStrategy_InvalidStrategy_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetDispatchStrategyFn: func(s string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/dispatch-strategy", `{"strategy":"random"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "bad_request")
+}
+
+func TestHandleSetDispatchStrategy_InvalidJSON_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetDispatchStrategyFn: func(s string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/dispatch-strategy", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleSetDispatchStrategy_ServerError(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetDispatchStrategyFn: func(s string) error { return errors.New("disk full") },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/dispatch-strategy", `{"strategy":"round-robin"}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleSetAutoClearWorkspace ─────────────────────────────────────────────
+
+func TestHandleSetAutoClearWorkspace_Enable(t *testing.T) {
+	var gotVal bool
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetAutoClearWorkspaceFn: func(enabled bool) error { gotVal = enabled; return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/workspace/auto-clear", `{"enabled":true}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, gotVal)
+}
+
+func TestHandleSetAutoClearWorkspace_Disable(t *testing.T) {
+	var gotVal bool
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetAutoClearWorkspaceFn: func(enabled bool) error { gotVal = enabled; return nil },
+	}
+	srv := server.New(cfg)
+	gotVal = true // ensure it gets set to false
+	w := postJSON(t, srv, "/api/v1/settings/workspace/auto-clear", `{"enabled":false}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.False(t, gotVal)
+}
+
+func TestHandleSetAutoClearWorkspace_MissingEnabled_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetAutoClearWorkspaceFn: func(bool) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/workspace/auto-clear", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "enabled field is required")
+}
+
+func TestHandleSetAutoClearWorkspace_InvalidJSON_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetAutoClearWorkspaceFn: func(bool) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/workspace/auto-clear", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleSetAutoClearWorkspace_ServerError(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetAutoClearWorkspaceFn: func(bool) error { return errors.New("write failed") },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/workspace/auto-clear", `{"enabled":true}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleClearAllWorkspaces ────────────────────────────────────────────────
+
+func TestHandleClearAllWorkspaces_Returns202(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ClearAllWorkspacesFn: func() error { return nil },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/workspaces", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Contains(t, w.Body.String(), "ok")
+}
+
+// ─── handleAddSSHHost / handleRemoveSSHHost ──────────────────────────────────
+
+func TestHandleAddSSHHost_Success(t *testing.T) {
+	var gotHost, gotDesc string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		AddSSHHostFn: func(host, desc string) error { gotHost = host; gotDesc = desc; return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/ssh-hosts", `{"host":"worker-1","description":"fast box"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "worker-1", gotHost)
+	assert.Equal(t, "fast box", gotDesc)
+}
+
+func TestHandleAddSSHHost_EmptyHost_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		AddSSHHostFn: func(string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/ssh-hosts", `{"host":"","description":"no host"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleAddSSHHost_WhitespaceHost_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		AddSSHHostFn: func(string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/ssh-hosts", `{"host":"   ","description":"spaces"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleAddSSHHost_InvalidJSON_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		AddSSHHostFn: func(string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/ssh-hosts", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleAddSSHHost_ServerError(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		AddSSHHostFn: func(string, string) error { return errors.New("duplicate host") },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/ssh-hosts", `{"host":"w1"}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleRemoveSSHHost_Success(t *testing.T) {
+	var gotHost string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		RemoveSSHHostFn: func(host string) error { gotHost = host; return nil },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/ssh-hosts/worker-1", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "worker-1", gotHost)
+}
+
+func TestHandleRemoveSSHHost_ServerError(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		RemoveSSHHostFn: func(string) error { return errors.New("not found") },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/ssh-hosts/nope", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleSubLogs ───────────────────────────────────────────────────────────
+
+func TestHandleSubLogs_ReturnsEntries(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(id string) ([]domain.IssueLogEntry, error) {
+			return []domain.IssueLogEntry{{Event: "text", Message: "hello"}}, nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "hello")
+}
+
+func TestHandleSubLogs_EmptyReturnsEmptyArray(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) { return nil, nil },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "[]", strings.TrimSpace(w.Body.String()))
+}
+
+func TestHandleSubLogs_Error_Returns500(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) { return nil, errors.New("io error") },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublogs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleClearAllLogs ──────────────────────────────────────────────────────
+
+func TestHandleClearAllLogs_Success(t *testing.T) {
+	called := false
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ClearAllLogsFn: func() error { called = true; return nil }}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/logs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
+func TestHandleClearAllLogs_Error(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ClearAllLogsFn: func() error { return errors.New("rm failed") }}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/logs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleClearIssueSubLogs ─────────────────────────────────────────────────
+
+func TestHandleClearIssueSubLogs_Success(t *testing.T) {
+	var gotID string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ClearIssueSubLogsFn: func(id string) error { gotID = id; return nil }}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-5/sublogs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-5", gotID)
+}
+
+func TestHandleClearIssueSubLogs_Error(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ClearIssueSubLogsFn: func(string) error { return errors.New("fail") }}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-5/sublogs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleClearSessionSublog ────────────────────────────────────────────────
+
+func TestHandleClearSessionSublog_Success(t *testing.T) {
+	var gotID, gotSession string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ClearSessionSublogFn: func(id, sess string) error { gotID = id; gotSession = sess; return nil },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-3/sublogs/sess-abc", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-3", gotID)
+	assert.Equal(t, "sess-abc", gotSession)
+}
+
+func TestHandleClearSessionSublog_Error(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		ClearSessionSublogFn: func(string, string) error { return errors.New("not found") },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-3/sublogs/sess-abc", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleLogIdentifiers ────────────────────────────────────────────────────
+
+func TestHandleLogIdentifiers_ReturnsIDs(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		FetchLogIdentifiersFn: func() []string { return []string{"ENG-1", "ENG-2"} },
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/identifiers", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "ENG-1")
+	assert.Contains(t, w.Body.String(), "ENG-2")
+}
+
+func TestHandleLogIdentifiers_EmptyReturnsEmptyArray(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{} // FetchLogIdentifiersFn is nil -> returns nil
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/logs/identifiers", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "[]", strings.TrimSpace(w.Body.String()))
+}
+
+// ─── handleSetReviewer edge cases ────────────────────────────────────────────
+
+func TestHandleSetReviewer_InvalidJSON_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{SetReviewerConfigFn: func(string, bool) error { return nil }}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/settings/reviewer", bytes.NewBufferString(`not-json`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleSetReviewer_ServerError(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(string, bool) error { return errors.New("write failed") },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/reviewer", `{"profile":"rev","auto_review":true}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleGetReviewer defaults ──────────────────────────────────────────────
+
+func TestHandleGetReviewer_DefaultsWhenNoFn(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{} // ReviewerConfigFn nil -> returns "", false
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/reviewer", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "", resp["profile"])
+	assert.Equal(t, false, resp["auto_review"])
+}
+
+// ─── handleProvideInput / handleDismissInput ─────────────────────────────────
+
+func TestHandleProvideInput_NotFound(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{} // ProvideInput always returns false
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":"fix it"}`)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestHandleProvideInput_EmptyMessage_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `{"message":""}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleProvideInput_InvalidJSON_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/provide-input", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleDismissInput_NotFound(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{} // DismissInput always returns false
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/dismiss-input", "")
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// ─── handleUpsertProfile edge cases ──────────────────────────────────────────
+
+func TestHandleUpsertProfile_MissingCommand_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{UpsertProfileFn: func(string, server.ProfileDef) error { return nil }}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/profiles/test", `{"prompt":"hi"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "command field required")
+}
+
+func TestHandleUpsertProfile_InvalidJSON_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{UpsertProfileFn: func(string, server.ProfileDef) error { return nil }}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/profiles/test", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleUpsertProfile_ServerError(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		UpsertProfileFn: func(string, server.ProfileDef) error { return errors.New("disk full") },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/profiles/test", `{"command":"claude"}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleUpdateTrackerStates edge cases ────────────────────────────────────
+
+func TestHandleUpdateTrackerStates_EmptyActiveStates_Returns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{UpdateTrackerStatesFn: func(_, _ []string, _ string) error { return nil }}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/states",
+		`{"activeStates":[],"terminalStates":["Done"],"completionState":"Done"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "activeStates must not be empty")
+}
+
+func TestHandleUpdateTrackerStates_ServerError(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		UpdateTrackerStatesFn: func(_, _ []string, _ string) error { return errors.New("write error") },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/states",
+		`{"activeStates":["Todo"],"terminalStates":["Done"],"completionState":"Done"}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleSetAgentMode server error ─────────────────────────────────────────
+
+func TestHandleSetAgentMode_ServerError(t *testing.T) {
+	srv := testServerWithAgentMode(t, func(string) error { return errors.New("write failed") })
+	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `{"mode":"teams"}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleClearIssueLogs error path ─────────────────────────────────────────
+
+func TestHandleClearIssueLogs_Error(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{ClearLogsFn: func(string) error { return errors.New("rm failed") }}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/issues/ENG-1/logs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleDeleteProfile error path ──────────────────────────────────────────
+
+func TestHandleDeleteProfile_Error(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{DeleteProfileFn: func(string) error { return errors.New("not found") }}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/settings/profiles/missing", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+// ─── handleGetProjectFilter / handleSetProjectFilter without ProjectManager ──
+
+func TestHandleGetProjectFilter_NotConfigured(t *testing.T) {
+	srv := testServer(t) // no ProjectManager
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/filter", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+func TestHandleSetProjectFilter_NotConfigured(t *testing.T) {
+	srv := testServer(t) // no ProjectManager
+	w := putJSON(t, srv, "/api/v1/projects/filter", `{"slugs":["a"]}`)
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+func TestHandleSetProjectFilter_InvalidJSON_Returns400(t *testing.T) {
+	srv, _ := testServerWithProjects(t)
+	w := putJSON(t, srv, "/api/v1/projects/filter", `not-json`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// ─── Validate ────────────────────────────────────────────────────────────────
+
+func TestValidate_MissingSnapshot(t *testing.T) {
+	cfg := server.Config{RefreshChan: make(chan struct{}, 1)}
+	srv := server.New(cfg)
+	err := srv.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Snapshot")
+}
+
+func TestValidate_MissingRefreshChan(t *testing.T) {
+	cfg := server.Config{Snapshot: func() server.StateSnapshot { return baseSnap() }}
+	srv := server.New(cfg)
+	err := srv.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "RefreshChan")
+}
+
+func TestValidate_AllPresent(t *testing.T) {
+	srv := testServer(t)
+	assert.NoError(t, srv.Validate())
+}
+
+// ─── handleIssueLogs with skipped entries ────────────────────────────────────
+
+func TestHandleIssueLogs_SkipsDebugAndLifecycleEntries(t *testing.T) {
+	srv := testServerWithIssueLogs(t, func(string) []string {
+		return []string{
+			`{"level":"DEBUG","msg":"internal detail"}`,
+			`{"level":"INFO","msg":"claude: session started"}`,
+			`{"level":"INFO","msg":"claude: text","text":"visible line"}`,
+			`not-json-line`,
+		}
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/logs", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+	var entries []map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &entries))
+	// Only the "claude: text" entry should survive; DEBUG, lifecycle, and non-JSON are skipped.
+	require.Len(t, entries, 1)
+	assert.Equal(t, "text", entries[0]["event"])
+	assert.Equal(t, "visible line", entries[0]["message"])
+}
+
+// ─── POST /api/v1/issues/{id}/cancel alias ───────────────────────────────────
+
+func TestHandleCancelIssue_PostAlias(t *testing.T) {
+	srv := testServerWithCancel(t, func(id string) bool { return id == "ENG-1" })
+	w := postJSON(t, srv, "/api/v1/issues/ENG-1/cancel", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "cancelled")
 }

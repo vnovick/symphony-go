@@ -169,6 +169,18 @@ func PatchIntField(path, key string, n int) error {
 // If the key already exists it is updated in place; if it does not exist it is appended
 // inside the agent: block. Setting enabled=false removes the key entirely.
 func PatchAgentBoolField(path, key string, enabled bool) error {
+	return patchBlockBoolField(path, "agent", key, enabled)
+}
+
+// PatchWorkspaceBoolField sets a boolean key under the workspace: block of the YAML front matter.
+// Behaves identically to PatchAgentBoolField but targets the workspace: block.
+func PatchWorkspaceBoolField(path, key string, enabled bool) error {
+	return patchBlockBoolField(path, "workspace", key, enabled)
+}
+
+// patchBlockBoolField is the shared implementation used by PatchAgentBoolField
+// and PatchWorkspaceBoolField.
+func patchBlockBoolField(path, block, key string, enabled bool) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("workflow patch bool: read %s: %w", path, err)
@@ -179,32 +191,41 @@ func PatchAgentBoolField(path, key string, enabled bool) error {
 		return fmt.Errorf("workflow patch bool: no front matter in %s", path)
 	}
 
-	// Look for the key inside the agent: block (lines with exactly 2-space indent).
 	keyLine := "  " + key + ": "
 	keyFound := -1
-	agentLine := -1
+	blockLine := -1
+	// Find the target block header, then search for the key only within that
+	// block (i.e. lines after the header that start with two-space indent,
+	// stopping at the next top-level key or end of front matter).
 	for i, l := range frontLines {
-		if l == "agent:" {
-			agentLine = i
-		}
-		if strings.HasPrefix(l, keyLine) {
-			keyFound = i
+		if l == block+":" {
+			blockLine = i
+			// Scan forward within this block for the key.
+			for j := i + 1; j < len(frontLines); j++ {
+				line := frontLines[j]
+				// A line with no leading spaces is the start of the next block.
+				if len(line) > 0 && line[0] != ' ' {
+					break
+				}
+				if strings.HasPrefix(line, keyLine) {
+					keyFound = j
+					break
+				}
+			}
 			break
 		}
 	}
 
 	if keyFound >= 0 {
 		if !enabled {
-			// Remove the line.
 			frontLines = append(frontLines[:keyFound], frontLines[keyFound+1:]...)
 		} else {
 			frontLines[keyFound] = keyLine + "true"
 		}
 	} else if enabled {
-		// Insert after the agent: line (or at end of front matter).
 		insertAt := len(frontLines)
-		if agentLine >= 0 {
-			insertAt = agentLine + 1
+		if blockLine >= 0 {
+			insertAt = blockLine + 1
 		}
 		newLines := make([]string, 0, len(frontLines)+1)
 		newLines = append(newLines, frontLines[:insertAt]...)
@@ -212,7 +233,6 @@ func PatchAgentBoolField(path, key string, enabled bool) error {
 		newLines = append(newLines, frontLines[insertAt:]...)
 		frontLines = newLines
 	}
-	// else: !enabled and key not found — nothing to do
 
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -289,6 +309,8 @@ type ProfileEntry struct {
 	// Prompt is an optional role description for this sub-agent, shown to the
 	// orchestrating agent when agent teams are enabled.
 	Prompt string
+	// Backend is an optional explicit runner selection override.
+	Backend string
 }
 
 // PatchProfilesBlock replaces (or inserts) the agent.profiles block in the YAML
@@ -353,6 +375,9 @@ func PatchProfilesBlock(path string, profiles map[string]ProfileEntry) error {
 			cmd = strings.TrimPrefix(cmd, "command:")
 			replacement = append(replacement, "    "+name+":")
 			replacement = append(replacement, "      command: "+cmd)
+			if entry.Backend != "" {
+				replacement = append(replacement, "      backend: "+entry.Backend)
+			}
 			if entry.Prompt != "" {
 				replacement = append(replacement, "      prompt: "+strconv.Quote(entry.Prompt))
 			}

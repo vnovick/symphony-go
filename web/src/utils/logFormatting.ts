@@ -1,4 +1,5 @@
-import type { IssueLogEntry } from '../types/symphony';
+import type { IssueLogEntry } from '../types/schemas';
+import type { LogLevel, LogEntry } from '../components/ui/Terminal/Terminal';
 
 export interface TermLine {
   prefix: string;
@@ -19,14 +20,51 @@ export function toTermLine(entry: IssueLogEntry): TermLine {
         text: entry.message,
         textColor: '#e5e7eb',
       } as TermLine;
-    case 'action':
+    case 'action': {
+      let text = entry.message;
+      if (entry.detail) {
+        try {
+          const d = JSON.parse(entry.detail) as Record<string, unknown>;
+          const parts: string[] = [];
+          const exitCode = d.exit_code;
+          if (exitCode !== undefined && exitCode !== null) {
+            parts.push(
+              `exit:${typeof exitCode === 'number' || typeof exitCode === 'string' || typeof exitCode === 'boolean' ? String(exitCode) : JSON.stringify(exitCode)}`,
+            );
+          }
+          const outputSize = d.output_size;
+          if (outputSize) {
+            parts.push(
+              typeof outputSize === 'number' ||
+                typeof outputSize === 'string' ||
+                typeof outputSize === 'boolean'
+                ? String(outputSize)
+                : JSON.stringify(outputSize),
+            );
+          }
+          const status = d.status;
+          if (status && status !== 'success') {
+            parts.push(
+              typeof status === 'number' ||
+                typeof status === 'string' ||
+                typeof status === 'boolean'
+                ? String(status)
+                : JSON.stringify(status),
+            );
+          }
+          if (parts.length > 0) text = `${text}  ·  ${parts.join(' · ')}`;
+        } catch {
+          // ignore malformed detail JSON
+        }
+      }
       return {
         ...base,
         prefix: '$',
         prefixColor: '#facc15',
-        text: entry.tool ? `${entry.tool}  ${entry.message}` : entry.message,
+        text,
         textColor: '#d1d5db',
       } as TermLine;
+    }
     case 'subagent':
       return {
         ...base,
@@ -71,9 +109,9 @@ export function toTermLine(entry: IssueLogEntry): TermLine {
       return {
         ...base,
         prefix: '·',
-        prefixColor: '#374151',
+        prefixColor: '#71717a',
         text: entry.message,
-        textColor: '#6b7280',
+        textColor: '#a1a1aa',
       } as TermLine;
   }
 }
@@ -103,4 +141,27 @@ const FALLBACK_STYLE: EntryStyle = {
 export function entryStyle(event: string, level?: string): EntryStyle {
   if (level === 'ERROR') return EVENT_STYLES.error;
   return EVENT_STYLES[event] ?? FALLBACK_STYLE;
+}
+
+// ─── Terminal adapter helpers ────────────────────────────────────────────────
+
+/**
+ * Map an IssueLogEntry's event/level to the Terminal's LogLevel union.
+ * Consolidated from SessionAccordion.toTermLevel and Logs.entryToLevel.
+ */
+export function eventToLogLevel(event: string, level?: string): LogLevel {
+  if (event === 'action') return 'action';
+  if (event === 'subagent') return 'subagent';
+  if (event === 'warn' || level === 'warn') return 'warn';
+  if (event === 'error' || level === 'ERROR' || level === 'error') return 'error';
+  return 'info';
+}
+
+/**
+ * Convert an IssueLogEntry to a Terminal LogEntry.
+ * Consolidated from SessionAccordion.toTermEntries and Logs.entryToLogEntry.
+ */
+export function issueLogToTerminal(entry: IssueLogEntry, idx: number): LogEntry {
+  const text = entry.tool ? `${entry.tool}  ${entry.message}` : entry.message;
+  return { ts: idx, level: eventToLogLevel(entry.event, entry.level), message: text };
 }

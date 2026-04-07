@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 const defaultEndpoint = "https://api.linear.app/graphql"
@@ -26,11 +28,11 @@ type ClientConfig struct {
 	Endpoint       string
 }
 
-// LinearProject is one item returned by FetchProjects.
-type LinearProject struct { //nolint:revive
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Slug string `json:"slug"`
+// linearProject is the internal representation of a Linear project.
+type linearProject struct {
+	ID   string
+	Name string
+	Slug string
 }
 
 // rateLimitSnapshot holds the most recently observed API rate limit headers.
@@ -97,7 +99,8 @@ func (c *Client) GetProjectFilter() []string {
 
 // FetchProjects returns all projects accessible to the API key.
 // Used by the interactive project picker in the TUI and web dashboard.
-func (c *Client) FetchProjects(ctx context.Context) ([]LinearProject, error) {
+// Implements tracker.ProjectManager.
+func (c *Client) FetchProjects(ctx context.Context) ([]domain.Project, error) {
 	body, err := c.graphql(ctx, QueryListProjects, nil)
 	if err != nil {
 		return nil, fmt.Errorf("linear_fetch_projects: %w", err)
@@ -114,7 +117,7 @@ func (c *Client) FetchProjects(ctx context.Context) ([]LinearProject, error) {
 	if !ok {
 		return nil, fmt.Errorf("linear_fetch_projects: missing nodes")
 	}
-	result := make([]LinearProject, 0, len(nodes))
+	result := make([]linearProject, 0, len(nodes))
 	for _, n := range nodes {
 		node, ok := n.(map[string]any)
 		if !ok {
@@ -126,9 +129,13 @@ func (c *Client) FetchProjects(ctx context.Context) ([]LinearProject, error) {
 		if id == "" || name == "" {
 			continue
 		}
-		result = append(result, LinearProject{ID: id, Name: name, Slug: slug})
+		result = append(result, linearProject{ID: id, Name: name, Slug: slug})
 	}
-	return result, nil
+	out := make([]domain.Project, len(result))
+	for i, p := range result {
+		out[i] = domain.Project{ID: p.ID, Name: p.Name, Slug: p.Slug}
+	}
+	return out, nil
 }
 
 // RateLimits returns the last observed API rate limit snapshot, or nil if unknown.
@@ -140,6 +147,22 @@ func (c *Client) RateLimits() (reqLimit, reqRemaining int, reset *time.Time, com
 	}
 	return c.lastRateLimit.requestsLimit, c.lastRateLimit.requestsRemaining, c.lastRateLimit.requestsReset,
 		c.lastRateLimit.complexityLimit, c.lastRateLimit.complexityRemaining
+}
+
+// RateLimitSnapshot implements tracker.RateLimiter so callers can type-assert
+// Tracker to tracker.RateLimiter without importing this concrete package.
+func (c *Client) RateLimitSnapshot() *tracker.RateLimitSnapshot {
+	reqLim, reqRem, reset, cplxLim, cplxRem := c.RateLimits()
+	if reqLim == 0 && cplxLim == 0 {
+		return nil
+	}
+	return &tracker.RateLimitSnapshot{
+		RequestsLimit:       reqLim,
+		RequestsRemaining:   reqRem,
+		Reset:               reset,
+		ComplexityLimit:     cplxLim,
+		ComplexityRemaining: cplxRem,
+	}
 }
 
 // FetchCandidateIssues returns paginated active-state issues respecting the
@@ -226,7 +249,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	// Step 1: resolve state name → UUID via the issue's team.
 	// Linear workflow states are team-scoped, so we query via issue → team → states.
 	const stateQuery = `
-query SymphonyResolveStateId($issueId: String!, $stateName: String!) {
+query ItervoxResolveStateId($issueId: String!, $stateName: String!) {
   issue(id: $issueId) {
     team {
       states(filter: { name: { eq: $stateName } }, first: 1) {
@@ -257,7 +280,7 @@ query SymphonyResolveStateId($issueId: String!, $stateName: String!) {
 
 	// Step 2: update the issue.
 	const mutation = `
-mutation SymphonyUpdateIssueState($issueId: String!, $stateId: String!) {
+mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
   issueUpdate(id: $issueId, input: { stateId: $stateId }) {
     success
   }
@@ -282,7 +305,7 @@ mutation SymphonyUpdateIssueState($issueId: String!, $stateId: String!) {
 // CreateComment posts a comment body on the given Linear issue ID.
 func (c *Client) CreateComment(ctx context.Context, issueID, body string) error {
 	const mutation = `
-mutation SymphonyCreateComment($issueId: String!, $body: String!) {
+mutation ItervoxCreateComment($issueId: String!, $body: String!) {
   commentCreate(input: {issueId: $issueId, body: $body}) {
     success
   }
@@ -306,7 +329,7 @@ mutation SymphonyCreateComment($issueId: String!, $body: String!) {
 // workers can resume from the correct branch.
 func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
 	const mutation = `
-mutation SymphonySetBranchName($issueId: String!, $branchName: String!) {
+mutation ItervoxSetBranchName($issueId: String!, $branchName: String!) {
   issueUpdate(id: $issueId, input: { branchName: $branchName }) {
     success
   }
@@ -358,7 +381,7 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				if b == "" {
 					continue
 				}
-				c := domain.Comment{Body: b, CreatedAt: parseTime(node["createdAt"])}
+				c := domain.Comment{Body: b, CreatedAt: tracker.ParseTime(node["createdAt"])}
 				if user, ok := node["user"].(map[string]any); ok {
 					c.AuthorName, _ = user["name"].(string)
 				}
@@ -369,35 +392,49 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 	return issue, nil
 }
 
+// FetchIssueByIdentifier returns a single issue by its human-readable identifier
+// (e.g. "ENG-42"). The Linear GraphQL `issue(id:)` field accepts both UUIDs and
+// identifier strings, so this delegates directly to FetchIssueDetail.
+func (c *Client) FetchIssueByIdentifier(ctx context.Context, identifier string) (*domain.Issue, error) {
+	return c.FetchIssueDetail(ctx, identifier)
+}
+
+// maxPaginationPages is the maximum number of pages fetched per query to prevent
+// unbounded iteration when a tracker response always returns hasNextPage=true.
+const maxPaginationPages = 200
+
 // fetchByStatesPage is a generic paginator for any candidate-issues query.
 // query is the GraphQL query string; baseVars are merged with pagination vars each page.
+// Iterative (not recursive) to avoid stack overflow on deep pagination.
 func (c *Client) fetchByStatesPage(ctx context.Context, query string, baseVars map[string]any, afterCursor *string, acc []domain.Issue) ([]domain.Issue, error) {
-	vars := make(map[string]any, len(baseVars)+2)
-	for k, v := range baseVars {
-		vars[k] = v
-	}
-	vars["first"] = pageSize
-	vars["after"] = afterCursor
+	cursor := afterCursor
+	for range maxPaginationPages {
+		vars := make(map[string]any, len(baseVars)+2)
+		maps.Copy(vars, baseVars)
+		vars["first"] = pageSize
+		vars["after"] = cursor
 
-	body, err := c.graphql(ctx, query, vars)
-	if err != nil {
-		return nil, err
-	}
+		body, err := c.graphql(ctx, query, vars)
+		if err != nil {
+			return nil, err
+		}
 
-	issues, pi, err := decodePageResponse(body)
-	if err != nil {
-		return nil, err
-	}
+		issues, pi, err := decodePageResponse(body)
+		if err != nil {
+			return nil, err
+		}
 
-	acc = append(acc, issues...)
+		acc = append(acc, issues...)
 
-	if pi.HasNextPage {
+		if !pi.HasNextPage {
+			return acc, nil
+		}
 		if pi.EndCursor == "" {
 			return nil, fmt.Errorf("linear_missing_end_cursor: hasNextPage=true but endCursor is empty")
 		}
-		return c.fetchByStatesPage(ctx, query, baseVars, &pi.EndCursor, acc)
+		cursor = &pi.EndCursor
 	}
-	return acc, nil
+	return nil, fmt.Errorf("linear_pagination_limit: exceeded %d pages", maxPaginationPages)
 }
 
 // fetchByProjectSlug fetches paginated issues filtered to a specific project slug.
@@ -410,32 +447,32 @@ func (c *Client) fetchByProjectSlug(ctx context.Context, states []string, slug s
 }
 
 // fetchByIDsPage fetches issues by ID list in batches.
+// Iterative (not recursive) to avoid stack overflow on large ID lists.
 func (c *Client) fetchByIDsPage(ctx context.Context, ids []string, acc []domain.Issue) ([]domain.Issue, error) {
-	batch := ids
-	rest := []string{}
-	if len(ids) > pageSize {
-		batch = ids[:pageSize]
-		rest = ids[pageSize:]
-	}
+	for len(ids) > 0 {
+		batch := ids
+		if len(ids) > pageSize {
+			batch = ids[:pageSize]
+			ids = ids[pageSize:]
+		} else {
+			ids = nil
+		}
 
-	vars := map[string]any{
-		"ids":           batch,
-		"first":         len(batch),
-		"relationFirst": pageSize,
-	}
-	body, err := c.graphql(ctx, QueryIssuesByIDs, vars)
-	if err != nil {
-		return nil, err
-	}
+		vars := map[string]any{
+			"ids":           batch,
+			"first":         len(batch),
+			"relationFirst": pageSize,
+		}
+		body, err := c.graphql(ctx, QueryIssuesByIDs, vars)
+		if err != nil {
+			return nil, err
+		}
 
-	issues, err := decodeResponse(body)
-	if err != nil {
-		return nil, err
-	}
-	acc = append(acc, issues...)
-
-	if len(rest) > 0 {
-		return c.fetchByIDsPage(ctx, rest, acc)
+		issues, err := decodeResponse(body)
+		if err != nil {
+			return nil, err
+		}
+		acc = append(acc, issues...)
 	}
 	return acc, nil
 }
@@ -476,7 +513,7 @@ func decodeResponse(body map[string]any) ([]domain.Issue, error) {
 
 func decodeError(body map[string]any) error {
 	if errs, ok := body["errors"]; ok {
-		return fmt.Errorf("linear_graphql_errors: %v", errs)
+		return &tracker.GraphQLError{Message: fmt.Sprintf("%v", errs)}
 	}
 	return fmt.Errorf("linear_unknown_payload: %v", body)
 }
@@ -534,7 +571,7 @@ func (c *Client) graphql(ctx context.Context, query string, variables map[string
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("linear_api_status: %d", resp.StatusCode)
+		return nil, &tracker.APIStatusError{Adapter: "linear", Status: resp.StatusCode}
 	}
 
 	// Capture rate limit headers when present.

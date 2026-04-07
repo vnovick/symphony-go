@@ -2,9 +2,9 @@ package linear
 
 import (
 	"strings"
-	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 const pageSize = 50
@@ -26,14 +26,14 @@ func normalizeIssue(raw map[string]any) *domain.Issue {
 		State:      stateName(raw),
 		Labels:     extractLabels(raw),
 		BlockedBy:  extractBlockers(raw),
-		CreatedAt:  parseTime(raw["createdAt"]),
-		UpdatedAt:  parseTime(raw["updatedAt"]),
+		CreatedAt:  tracker.ParseTime(raw["createdAt"]),
+		UpdatedAt:  tracker.ParseTime(raw["updatedAt"]),
 	}
 
 	if desc, ok := raw["description"].(string); ok && desc != "" {
 		issue.Description = &desc
 	}
-	if prio, ok := toIntVal(raw["priority"]); ok {
+	if prio, ok := tracker.ToIntVal(raw["priority"]); ok {
 		issue.Priority = &prio
 	}
 	if branch, ok := raw["branchName"].(string); ok && branch != "" {
@@ -117,28 +117,4 @@ func extractBlockers(raw map[string]any) []domain.BlockerRef {
 		result = append(result, ref)
 	}
 	return result
-}
-
-func parseTime(v any) *time.Time {
-	s, ok := v.(string)
-	if !ok || s == "" {
-		return nil
-	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return nil
-	}
-	return &t
-}
-
-func toIntVal(v any) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	case float64:
-		return int(n), true
-	}
-	return 0, false
 }

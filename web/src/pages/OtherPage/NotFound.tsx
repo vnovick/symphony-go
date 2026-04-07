@@ -6,7 +6,7 @@ export default function NotFound() {
   return (
     <>
       <PageMeta
-        title="404 Not Found | Simphony"
+        title="404 Not Found | Itervox"
         description="The page you are looking for could not be found."
       />
       <div className="relative z-1 flex min-h-screen flex-col items-center justify-center overflow-hidden p-6">
@@ -32,7 +32,7 @@ export default function NotFound() {
         </div>
         {/* <!-- Footer --> */}
         <p className="absolute bottom-6 left-1/2 -translate-x-1/2 text-center text-sm text-gray-500 dark:text-gray-400">
-          &copy; {new Date().getFullYear()} symphony-go contributors
+          &copy; {new Date().getFullYear()} itervox contributors
         </p>
       </div>
     </>

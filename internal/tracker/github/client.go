@@ -16,7 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vnovick/symphony-go/internal/domain"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 const defaultEndpoint = "https://api.github.com"
@@ -27,9 +28,6 @@ var linkNextRe = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
 
 // ErrMissingPageLink is returned when a non-empty Link header contains no rel="next" entry.
 var ErrMissingPageLink = errors.New("github_missing_page_link")
-
-// ErrNotFound is returned by get() when the API responds with HTTP 404.
-var ErrNotFound = errors.New("github_not_found")
 
 // ClientConfig holds configuration for the GitHub REST tracker adapter.
 type ClientConfig struct {
@@ -155,6 +153,28 @@ func (c *Client) FetchIssuesByStates(ctx context.Context, stateNames []string) (
 	return all, nil
 }
 
+// maxConcurrentFetches caps concurrent goroutines in boundedDo.
+const maxConcurrentFetches = 8
+
+// boundedDo runs fn for each item in items with at most maxConcurrentFetches
+// goroutines in flight simultaneously. fn receives the item index and value.
+// The caller is responsible for goroutine-safe result collection (e.g. a
+// pre-allocated slice or a buffered channel closed after boundedDo returns).
+func boundedDo[T any](ctx context.Context, items []T, fn func(ctx context.Context, idx int, item T)) {
+	sem := make(chan struct{}, maxConcurrentFetches)
+	var wg sync.WaitGroup
+	for i, item := range items {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, it T) {
+			defer func() { <-sem }()
+			defer wg.Done()
+			fn(ctx, i, it)
+		}(i, item)
+	}
+	wg.Wait()
+}
+
 // FetchIssueStatesByIDs fetches each issue individually (GitHub has no batch endpoint).
 // If any single request fails, the entire operation returns an error.
 func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
@@ -169,24 +189,16 @@ func (c *Client) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (
 	}
 
 	ch := make(chan fetchResult, len(issueIDs))
-	var wg sync.WaitGroup
-
-	for i, id := range issueIDs {
-		wg.Add(1)
-		go func(idx int, issueID string) {
-			defer wg.Done()
-			issue, err := c.fetchSingleIssue(ctx, issueID)
-			ch <- fetchResult{issue: issue, err: err, idx: idx}
-		}(i, id)
-	}
-
-	wg.Wait()
+	boundedDo(ctx, issueIDs, func(ctx context.Context, idx int, issueID string) {
+		issue, err := c.fetchSingleIssue(ctx, issueID)
+		ch <- fetchResult{issue: issue, err: err, idx: idx}
+	})
 	close(ch)
 
 	issues := make([]domain.Issue, len(issueIDs))
 	for r := range ch {
 		if r.err != nil {
-			if errors.Is(r.err, ErrNotFound) {
+			if errors.Is(r.err, tracker.ErrNotFound) {
 				continue // deleted or transferred — reconciler will stop the worker
 			}
 			return nil, r.err
@@ -247,9 +259,9 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 			if body == "" {
 				continue
 			}
-			// Extract branch name from hidden symphony marker; skip adding to Comments.
-			if strings.HasPrefix(body, symphonyBranchPrefix) {
-				branch := strings.TrimPrefix(body, symphonyBranchPrefix)
+			// Extract branch name from hidden itervox marker; skip adding to Comments.
+			if strings.HasPrefix(body, itervoxBranchPrefix) {
+				branch := strings.TrimPrefix(body, itervoxBranchPrefix)
 				branch = strings.TrimSuffix(strings.TrimSpace(branch), "-->")
 				branch = strings.TrimSpace(branch)
 				if branch != "" {
@@ -264,7 +276,7 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 			}
 			comment := domain.Comment{
 				Body:       body,
-				CreatedAt:  parseTime(cm["created_at"]),
+				CreatedAt:  tracker.ParseTime(cm["created_at"]),
 				AuthorName: authorName,
 			}
 			issue.Comments = append(issue.Comments, comment)
@@ -389,6 +401,7 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 			slog.Warn("github_update_state: unexpected status removing label (ignored)",
 				"label", label, "issue_id", issueID, "status", resp.StatusCode)
 		}
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 	}
 
@@ -416,16 +429,23 @@ func (c *Client) UpdateIssueState(ctx context.Context, issueID, stateName string
 	return nil
 }
 
-// symphonyBranchPrefix is used to embed the branch name in a hidden HTML
+// itervoxBranchPrefix is used to embed the branch name in a hidden HTML
 // comment so it survives round-trips without polluting the issue UI.
-const symphonyBranchPrefix = "<!-- symphony:branch:"
+const itervoxBranchPrefix = "<!-- itervox:branch:"
 
 // SetIssueBranch posts a hidden HTML comment recording the branch name on the
 // GitHub issue. FetchIssueDetail scans for this comment to restore BranchName
 // on subsequent fetches, enabling retried workers to resume the correct branch.
 func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
-	body := symphonyBranchPrefix + branchName + " -->"
+	body := itervoxBranchPrefix + branchName + " -->"
 	return c.CreateComment(ctx, issueID, body)
+}
+
+// FetchIssueByIdentifier returns a single issue by its human-readable identifier
+// (e.g. "#42"). The leading "#" is stripped before calling FetchIssueDetail.
+func (c *Client) FetchIssueByIdentifier(ctx context.Context, identifier string) (*domain.Issue, error) {
+	issueID := strings.TrimPrefix(identifier, "#")
+	return c.FetchIssueDetail(ctx, issueID)
 }
 
 // CreateComment posts a comment on the GitHub issue identified by issueID.
@@ -473,10 +493,10 @@ func (c *Client) get(ctx context.Context, url string) (any, string, error) {
 	c.snapshotRateLimit(resp)
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, "", ErrNotFound
+		return nil, "", &tracker.NotFoundError{Adapter: "github"}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("github_api_status: %d", resp.StatusCode)
+		return nil, "", &tracker.APIStatusError{Adapter: "github", Status: resp.StatusCode}
 	}
 
 	rawBody, err := io.ReadAll(resp.Body)
@@ -524,6 +544,20 @@ func (c *Client) RateLimits() (limit, remaining int, reset *time.Time) {
 	return c.lastRateLimit.limit, c.lastRateLimit.remaining, c.lastRateLimit.reset
 }
 
+// RateLimitSnapshot implements tracker.RateLimiter so callers can type-assert
+// Tracker to tracker.RateLimiter without importing this concrete package.
+func (c *Client) RateLimitSnapshot() *tracker.RateLimitSnapshot {
+	limit, remaining, reset := c.RateLimits()
+	if limit == 0 && remaining == 0 {
+		return nil
+	}
+	return &tracker.RateLimitSnapshot{
+		RequestsLimit:     limit,
+		RequestsRemaining: remaining,
+		Reset:             reset,
+	}
+}
+
 // populateBlockerStates fetches the current state for each blocker referenced in issues
 // and backfills BlockerRef.State. On fetch error (including 404), the blocker is treated
 // as "closed" so it never silently blocks dispatch.
@@ -549,20 +583,14 @@ func (c *Client) populateBlockerStates(ctx context.Context, issues []domain.Issu
 		state string
 	}
 	ch := make(chan result, len(ids))
-	var wg sync.WaitGroup
-	for _, id := range ids {
-		wg.Add(1)
-		go func(id string) {
-			defer wg.Done()
-			issue, err := c.fetchSingleIssue(ctx, id)
-			if err != nil || issue == nil {
-				ch <- result{id: id, state: "closed"}
-				return
-			}
-			ch <- result{id: id, state: issue.State}
-		}(id)
-	}
-	wg.Wait()
+	boundedDo(ctx, ids, func(ctx context.Context, _ int, id string) {
+		issue, err := c.fetchSingleIssue(ctx, id)
+		if err != nil || issue == nil {
+			ch <- result{id: id, state: "closed"}
+			return
+		}
+		ch <- result{id: id, state: issue.State}
+	})
 	close(ch)
 
 	stateMap := make(map[string]string, len(ids))

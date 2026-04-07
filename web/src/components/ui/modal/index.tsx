@@ -1,13 +1,19 @@
 import { useRef, useEffect } from 'react';
+import { useFocusTrap } from '../../../hooks/useFocusTrap';
 
 interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
   className?: string;
   children: React.ReactNode;
-  showCloseButton?: boolean; // New prop to control close button visibility
-  isFullscreen?: boolean; // Default to false for backwards compatibility
+  showCloseButton?: boolean;
+  isFullscreen?: boolean;
+  /** When true, adds standard p-6 padding to the content area. */
+  padded?: boolean;
 }
+
+export { ConfirmModal } from './ConfirmModal';
+export { ModalFooter } from './ModalFooter';
 
 export const Modal: React.FC<ModalProps> = ({
   isOpen,
@@ -16,8 +22,11 @@ export const Modal: React.FC<ModalProps> = ({
   className,
   showCloseButton = true, // Default to true for backwards compatibility
   isFullscreen = false,
+  padded = false,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(modalRef, isOpen);
 
   useEffect(() => {
     const handleEscape = (event: KeyboardEvent) => {
@@ -51,19 +60,22 @@ export const Modal: React.FC<ModalProps> = ({
 
   const contentClasses = isFullscreen
     ? 'w-full h-full'
-    : 'relative w-full rounded-3xl bg-white  dark:bg-gray-900';
+    : 'relative w-full max-h-[85vh] overflow-y-auto rounded-[var(--radius-lg)]';
 
   return (
     <div className="modal fixed inset-0 z-99999 flex items-center justify-center overflow-y-auto">
       {!isFullscreen && (
         <div
-          className="fixed inset-0 h-full w-full bg-gray-400/50 backdrop-blur-[32px]"
+          className="fixed inset-0 h-full w-full bg-black/50 backdrop-blur-sm"
           onClick={onClose}
         ></div>
       )}
       <div
         ref={modalRef}
-        className={`${contentClasses} ${className ?? ''}`}
+        role="dialog"
+        aria-modal="true"
+        className={`${contentClasses} ${className ?? ''} border-theme-line bg-theme-bg-elevated border`}
+        style={{ boxShadow: 'var(--shadow-lg)' }}
         onClick={(e) => {
           e.stopPropagation();
         }}
@@ -71,7 +83,8 @@ export const Modal: React.FC<ModalProps> = ({
         {showCloseButton && (
           <button
             onClick={onClose}
-            className="absolute top-3 right-3 z-999 flex h-9.5 w-9.5 items-center justify-center rounded-full bg-gray-100 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 sm:top-6 sm:right-6 sm:h-11 sm:w-11 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 dark:hover:text-white"
+            aria-label="Close"
+            className="bg-theme-bg-soft text-theme-muted absolute top-3 right-3 z-999 flex h-8 w-8 items-center justify-center rounded-full transition-colors sm:top-4 sm:right-4"
           >
             <svg
               width="24"
@@ -89,7 +102,7 @@ export const Modal: React.FC<ModalProps> = ({
             </svg>
           </button>
         )}
-        <div>{children}</div>
+        <div className={padded ? 'p-6' : ''}>{children}</div>
       </div>
     </div>
   );

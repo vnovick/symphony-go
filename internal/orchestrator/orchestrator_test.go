@@ -9,11 +9,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/agent"
-	"github.com/vnovick/symphony-go/internal/agent/agenttest"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/orchestrator"
-	"github.com/vnovick/symphony-go/internal/tracker"
+	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/agent/agenttest"
+	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 func singleIssueTracker(t *testing.T, state string) *tracker.MemoryTracker {
@@ -220,7 +221,7 @@ func TestCancelIssue_Running(t *testing.T) {
 	require.True(t, ok, "cancel should return true for a running worker")
 }
 
-func TestDispatchReviewer_IssueNotFound(t *testing.T) {
+func TestDispatchReviewer_NoProfileConfigured(t *testing.T) {
 	cfg := baseConfig()
 	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 	fake := agenttest.NewFakeRunner(nil)
@@ -233,7 +234,7 @@ func TestDispatchReviewer_IssueNotFound(t *testing.T) {
 
 	err := orch.DispatchReviewer("NONEXISTENT-1")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.Contains(t, err.Error(), "no reviewer_profile configured")
 }
 
 // trackingRunner wraps a Runner and signals done on the first RunTurn call.
@@ -243,14 +244,48 @@ type trackingRunner struct {
 	done chan struct{}
 }
 
-func (r *trackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+func (r *trackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
 	r.once.Do(func() { close(r.done) })
-	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, readTimeoutMs, turnTimeoutMs)
+	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+}
+
+type capturingRunner struct {
+	agent.Runner
+	mu      sync.Mutex
+	once    sync.Once
+	done    chan struct{}
+	command string
+	prompt  string
+}
+
+func (r *capturingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+	r.mu.Lock()
+	r.command = command
+	r.prompt = prompt
+	r.mu.Unlock()
+	r.once.Do(func() { close(r.done) })
+	return r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+}
+
+func (r *capturingRunner) LastCommand() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.command
+}
+
+func (r *capturingRunner) LastPrompt() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.prompt
 }
 
 func TestDispatchReviewer_Success(t *testing.T) {
 	cfg := baseConfig()
-	cfg.Tracker.ActiveStates = append(cfg.Tracker.ActiveStates, "In Review")
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude", Prompt: "You are a code reviewer."},
+	}
 	issue := makeIssue("id1", "ENG-1", "In Review", nil, nil)
 	mt := tracker.NewMemoryTracker(
 		[]domain.Issue{issue},
@@ -277,8 +312,236 @@ func TestDispatchReviewer_Success(t *testing.T) {
 
 	select {
 	case <-done:
-		// reviewer RunTurn completed — no panic, no deadlock
+		// reviewer RunTurn completed through the regular worker queue
 	case <-ctx.Done():
 		t.Fatal("reviewer did not complete within 3s")
 	}
+}
+
+func TestDispatchUsesProfileBackendOverride(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.Command = "claude"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"codex-fast": {
+			Command: "run-codex-wrapper",
+			Backend: "codex",
+		},
+	}
+	mt := singleIssueTracker(t, "In Progress")
+	wrapped := &capturingRunner{
+		Runner: &agenttest.FakeRunner{Stall: true},
+		done:   make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch.SetIssueProfile("ENG-1", "codex-fast")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	workerVisible := make(chan struct{}, 1)
+	orch.OnStateChange = func() {
+		if len(orch.Snapshot().Running) > 0 {
+			select {
+			case workerVisible <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	go orch.Run(ctx) //nolint:errcheck
+
+	select {
+	case <-workerVisible:
+	case <-ctx.Done():
+		t.Fatal("worker did not appear in snapshot within 2s")
+	}
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("runner was not invoked within 2s")
+	}
+
+	snap := orch.Snapshot()
+	require.Len(t, snap.Running, 1)
+	for _, entry := range snap.Running {
+		assert.Equal(t, "codex", entry.Backend)
+	}
+	assert.Equal(t, agent.CommandWithBackendHint("run-codex-wrapper", "codex"), wrapped.LastCommand())
+}
+
+func TestDispatchUsesDefaultBackendOverride(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.Command = "run-codex-wrapper"
+	cfg.Agent.Backend = "codex"
+	mt := singleIssueTracker(t, "In Progress")
+	wrapped := &capturingRunner{
+		Runner: &agenttest.FakeRunner{Stall: true},
+		done:   make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	workerVisible := make(chan struct{}, 1)
+	orch.OnStateChange = func() {
+		if len(orch.Snapshot().Running) > 0 {
+			select {
+			case workerVisible <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	go orch.Run(ctx) //nolint:errcheck
+
+	select {
+	case <-workerVisible:
+	case <-ctx.Done():
+		t.Fatal("worker did not appear in snapshot within 2s")
+	}
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("runner was not invoked within 2s")
+	}
+
+	snap := orch.Snapshot()
+	require.Len(t, snap.Running, 1)
+	for _, entry := range snap.Running {
+		assert.Equal(t, "codex", entry.Backend)
+	}
+	assert.Equal(t, agent.CommandWithBackendHint("run-codex-wrapper", "codex"), wrapped.LastCommand())
+}
+
+func TestTeamsModeUsesResolvedProfileBackendForSubagentContext(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.Command = "claude"
+	cfg.Agent.AgentMode = "teams"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"codex-fast": {
+			Command: "run-codex-wrapper",
+			Backend: "codex",
+		},
+		"research": {
+			Command: "claude --model claude-sonnet-4-6",
+			Prompt:  "Deep research support.",
+		},
+	}
+	mt := singleIssueTracker(t, "In Progress")
+	wrapped := &capturingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}),
+	}
+	orch := orchestrator.New(cfg, mt, wrapped, nil)
+	orch.SetIssueProfile("ENG-1", "codex-fast")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+
+	select {
+	case <-wrapped.done:
+	case <-ctx.Done():
+		t.Fatal("runner was not invoked within 2s")
+	}
+
+	assert.Contains(t, wrapped.LastPrompt(), "spawn_agent tool")
+	assert.NotContains(t, wrapped.LastPrompt(), "Task tool")
+}
+
+// --- Getter/setter unit tests ---
+
+func newOrch() *orchestrator.Orchestrator {
+	cfg := baseConfig()
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	return orchestrator.New(cfg, mt, nil, nil)
+}
+
+func TestMaxWorkersClamped(t *testing.T) {
+	o := newOrch()
+	o.SetMaxWorkers(0)
+	assert.Equal(t, 1, o.MaxWorkers())
+
+	o.SetMaxWorkers(100)
+	assert.Equal(t, 50, o.MaxWorkers())
+
+	o.SetMaxWorkers(5)
+	assert.Equal(t, 5, o.MaxWorkers())
+}
+
+func TestAgentModeCfgRoundtrip(t *testing.T) {
+	o := newOrch()
+	o.SetAgentModeCfg("codex")
+	assert.Equal(t, "codex", o.AgentModeCfg())
+}
+
+func TestProfilesCfgRoundtrip(t *testing.T) {
+	o := newOrch()
+	profiles := map[string]config.AgentProfile{
+		"fast": {Command: "codex", Backend: "codex"},
+	}
+	o.SetProfilesCfg(profiles)
+	got := o.ProfilesCfg()
+	require.Contains(t, got, "fast")
+	assert.Equal(t, "codex", got["fast"].Command)
+}
+
+func TestTrackerStatesCfgRoundtrip(t *testing.T) {
+	o := newOrch()
+	o.SetTrackerStatesCfg([]string{"Todo"}, []string{"Done"}, "Done")
+	active, terminal, completion := o.TrackerStatesCfg()
+	assert.Equal(t, []string{"Todo"}, active)
+	assert.Equal(t, []string{"Done"}, terminal)
+	assert.Equal(t, "Done", completion)
+}
+
+func TestGetRunningIssueNotFound(t *testing.T) {
+	o := newOrch()
+	result := o.GetRunningIssue("ENG-99")
+	assert.Nil(t, result)
+}
+
+func TestRunHistoryEmpty(t *testing.T) {
+	o := newOrch()
+	assert.Empty(t, o.RunHistory())
+}
+
+func TestSetHistoryFile(t *testing.T) {
+	o := newOrch()
+	// Just verify no panic; the orchestrator isn't running.
+	o.SetHistoryFile(filepath.Join(t.TempDir(), "history.json"))
+}
+
+func TestRefreshNonBlocking(t *testing.T) {
+	o := newOrch()
+	// Refresh is non-blocking; calling it multiple times without a reader must not deadlock.
+	o.Refresh()
+	o.Refresh()
+}
+
+func TestSetLogBuffer(t *testing.T) {
+	o := newOrch()
+	// Just verify it doesn't panic when a nil buffer is passed.
+	o.SetLogBuffer(nil)
+}
+
+func TestTerminateIssue_NotRunning(t *testing.T) {
+	o := newOrch()
+	// Neither running nor paused — should return false.
+	assert.False(t, o.TerminateIssue("ENG-99"))
+}
+
+func TestGetPausedOpenPRs_Empty(t *testing.T) {
+	o := newOrch()
+	result := o.GetPausedOpenPRs()
+	assert.NotNil(t, result)
+	assert.Empty(t, result)
 }

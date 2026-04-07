@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/domain"
-	"github.com/vnovick/symphony-go/internal/prompt"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/prompt"
 )
 
 func baseIssue() domain.Issue {
@@ -100,4 +100,21 @@ func TestRenderWhitespaceOnlyTemplateReturnsDefault(t *testing.T) {
 	result, err := prompt.Render("   \n  ", baseIssue(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, prompt.DefaultPrompt, result)
+}
+
+func TestRenderIncludesComments(t *testing.T) {
+	now := time.Now()
+	issue := domain.Issue{
+		ID:         "i1",
+		Identifier: "ENG-1",
+		Title:      "Fix bug",
+		State:      "Todo",
+		Comments: []domain.Comment{
+			{Body: "Please fix the crash", AuthorName: "alice", CreatedAt: &now},
+		},
+	}
+	tmpl := "{% for c in issue.comments %}{{c.author_name}}: {{c.body}}{% endfor %}"
+	out, err := prompt.Render(tmpl, issue, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "alice: Please fix the crash", out)
 }

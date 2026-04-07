@@ -1,14 +1,16 @@
 import { useEffect } from 'react';
-import { useSymphonyStore } from '../store/symphonyStore';
+import { useItervoxStore } from '../store/itervoxStore';
 
 /**
  * Streams log lines from /api/v1/logs into the Zustand store.
  * Accepts an optional identifier to filter logs server-side.
  */
 export function useLogStream(identifier?: string) {
-  const appendLog = useSymphonyStore((s) => s.appendLog);
-
   useEffect(() => {
+    // Read appendLog via getState() so this effect never re-runs due to store
+    // action reference changes (same pattern as useItervoxSSE).
+    const { appendLog } = useItervoxStore.getState();
+
     let es: EventSource | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
@@ -21,7 +23,13 @@ export function useLogStream(identifier?: string) {
       es = new EventSource(url);
 
       es.addEventListener('log', (e: MessageEvent<string>) => {
-        appendLog(e.data);
+        try {
+          appendLog(e.data);
+        } catch (err) {
+          if (import.meta.env.DEV) {
+            console.warn('[itervox] useLogStream: appendLog threw', err);
+          }
+        }
       });
 
       es.onerror = () => {
@@ -39,5 +47,5 @@ export function useLogStream(identifier?: string) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (es) es.close();
     };
-  }, [identifier, appendLog]);
+  }, [identifier]); // appendLog omitted — stable via getState(), no reconnect needed on action change
 }

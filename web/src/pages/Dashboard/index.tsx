@@ -1,328 +1,103 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import {
-  DndContext,
-  DragOverlay,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
-  type DragOverEvent,
-} from '@dnd-kit/core';
+import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
-import RateLimitBar from '../../components/symphony/RateLimitBar';
-import RunningSessionsTable from '../../components/symphony/RunningSessionsTable';
-import StatusStrip from '../../components/symphony/StatusStrip';
-import IssueCard from '../../components/symphony/IssueCard';
-import BoardColumn from '../../components/symphony/BoardColumn';
-import Badge from '../../components/ui/badge/Badge';
-import { useSymphonyStore } from '../../store/symphonyStore';
-import type { TrackerIssue } from '../../types/symphony';
+import RunningSessionsTable from '../../components/itervox/RunningSessionsTable';
+import RetryQueueTable from '../../components/itervox/RetryQueueTable';
+import { ReviewQueueSection } from '../../components/itervox/ReviewQueueSection';
+import { HostPool } from '../../components/itervox/HostPool';
+import { ProjectSelector } from '../../components/itervox/ProjectSelector';
+import { NarrativeFeed } from '../../components/itervox/NarrativeFeed';
+import AgentQueueView from '../../components/itervox/AgentQueueView';
+import { FilterPills, type FilterPill } from '../../components/itervox/FilterPills';
+import { useItervoxStore } from '../../store/itervoxStore';
+import { useUIStore } from '../../store/uiStore';
+import { useToastStore } from '../../store/toastStore';
 import {
   useIssues,
   useInvalidateIssues,
   useUpdateIssueState,
-  useCancelIssue,
-  useResumeIssue,
+  useSetIssueProfile,
 } from '../../queries/issues';
-import { orchDotClass, stateBadgeColor } from '../../utils/format';
+import { useSettingsActions } from '../../hooks/useSettingsActions';
 
-// ─── Board view ───────────────────────────────────────────────────────────────
+import { BoardView } from './components/BoardView';
+import { ListView } from './components/ListView';
+import { HeroStats } from './components/HeroStats';
 
-interface BoardProps {
-  issues: TrackerIssue[];
-  onSelect: (id: string) => void;
-  onStateChange: (identifier: string, newState: string) => void;
-}
-
-function BoardView({ issues, onSelect, onStateChange }: BoardProps) {
-  const snapshot = useSymphonyStore((s) => s.snapshot);
-  const snapshotLoaded = snapshot !== null;
-  const [activeIssue, setActiveIssue] = useState<TrackerIssue | null>(null);
-  const [overId, setOverId] = useState<string | null>(null);
-
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
-
-  const columnNames = useMemo(() => {
-    const backlog = snapshot?.backlogStates ?? [];
-    const active = snapshot?.activeStates ?? [];
-    const completion = snapshot?.completionState ? [snapshot.completionState] : [];
-    const terminal = snapshot?.terminalStates ?? [];
-    // Deduplicate while preserving order: backlog → active → completion → terminal
-    const seen = new Set<string>();
-    const cols: string[] = [];
-    for (const s of [...backlog, ...active, ...completion, ...terminal]) {
-      if (!seen.has(s)) {
-        seen.add(s);
-        cols.push(s);
-      }
-    }
-    // If snapshot not loaded yet, fall back to unique states from issues
-    if (cols.length === 0) {
-      return [...new Set(issues.map((i) => i.state))];
-    }
-    return cols;
-  }, [snapshot, issues]);
-
-  const columns = useMemo<[string, TrackerIssue[]][]>(() => {
-    const byState = new Map<string, TrackerIssue[]>();
-    for (const name of columnNames) byState.set(name, []);
-    for (const issue of issues) {
-      if (byState.has(issue.state)) {
-        (byState.get(issue.state) as TrackerIssue[]).push(issue);
-      } else {
-        // state exists in issues but not in config — add a column for it
-        byState.set(issue.state, []);
-        (byState.get(issue.state) as TrackerIssue[]).push(issue);
-      }
-    }
-    return [...byState.entries()];
-  }, [columnNames, issues]);
-
-  const onDragStart = useCallback((e: DragStartEvent) => {
-    setActiveIssue((e.active.data.current as { issue: TrackerIssue }).issue);
-  }, []);
-
-  const onDragOver = useCallback((e: DragOverEvent) => {
-    setOverId(e.over ? String(e.over.id) : null);
-  }, []);
-
-  const onDragEnd = useCallback(
-    (e: DragEndEvent) => {
-      setActiveIssue(null);
-      setOverId(null);
-      if (!e.over) return;
-      const newState = String(e.over.id);
-      const oldState = (e.active.data.current as { issue: TrackerIssue }).issue.state;
-      if (newState !== oldState) {
-        onStateChange(String(e.active.id), newState);
-      }
-    },
-    [onStateChange],
-  );
-
-  if (columns.length === 0) {
-    return (
-      <div className="rounded-2xl border border-gray-200 bg-white px-6 py-12 text-center text-sm text-gray-400 dark:border-gray-800 dark:bg-white/[0.03]">
-        {!snapshotLoaded ? 'Connecting to Symphony…' : 'No issues match the current filters'}
-      </div>
-    );
-  }
-
-  return (
-    <DndContext
-      sensors={sensors}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDragEnd={onDragEnd}
-    >
-      <div className="flex gap-4 overflow-x-auto pb-4">
-        {columns.map(([state, colIssues]) => (
-          <BoardColumn
-            key={state}
-            state={state}
-            issues={colIssues}
-            isOver={overId === state}
-            onSelect={onSelect}
-          />
-        ))}
-      </div>
-      <DragOverlay>
-        {activeIssue && <IssueCard issue={activeIssue} isDragging onSelect={() => {}} />}
-      </DragOverlay>
-    </DndContext>
-  );
-}
-
-// ─── List view ────────────────────────────────────────────────────────────────
-
-type SortKey = 'identifier' | 'title' | 'state';
-type SortDir = 'asc' | 'desc';
-
-function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
-  return (
-    <span className={`ml-1 ${active ? 'text-brand-500' : 'text-gray-300 dark:text-gray-600'}`}>
-      {active ? (dir === 'asc' ? '↑' : '↓') : '↕'}
-    </span>
-  );
-}
-
-function ListView({
-  issues,
-  onSelect,
-}: {
-  issues: TrackerIssue[];
-  onSelect: (id: string) => void;
-}) {
-  const [sortKey, setSortKey] = useState<SortKey>('identifier');
-  const [sortDir, setSortDir] = useState<SortDir>('asc');
-  const cancelIssueMutation = useCancelIssue();
-  const resumeIssueMutation = useResumeIssue();
-
-  const handleSort = (key: SortKey) => {
-    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    else {
-      setSortKey(key);
-      setSortDir('asc');
-    }
-  };
-
-  const sorted = useMemo(
-    () =>
-      [...issues].sort((a, b) => {
-        const aVal = sortKey === 'identifier' ? a.identifier : a[sortKey].toLowerCase();
-        const bVal = sortKey === 'identifier' ? b.identifier : b[sortKey].toLowerCase();
-        const cmp = aVal.localeCompare(bVal);
-        return sortDir === 'asc' ? cmp : -cmp;
-      }),
-    [issues, sortKey, sortDir],
-  );
-
-  const th =
-    'px-4 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider select-none cursor-pointer hover:text-gray-700 dark:hover:text-gray-200';
-
-  return (
-    <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 dark:bg-gray-900/50">
-            <tr>
-              <th
-                className={th}
-                onClick={() => {
-                  handleSort('identifier');
-                }}
-              >
-                Identifier <SortIcon active={sortKey === 'identifier'} dir={sortDir} />
-              </th>
-              <th
-                className={th}
-                onClick={() => {
-                  handleSort('title');
-                }}
-              >
-                Title <SortIcon active={sortKey === 'title'} dir={sortDir} />
-              </th>
-              <th
-                className={th}
-                onClick={() => {
-                  handleSort('state');
-                }}
-              >
-                State <SortIcon active={sortKey === 'state'} dir={sortDir} />
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase dark:text-gray-400">
-                Agent
-              </th>
-              <th className="px-4 py-3 text-left text-xs font-medium tracking-wider text-gray-500 uppercase dark:text-gray-400">
-                Actions
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-            {sorted.length === 0 && (
-              <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-sm text-gray-400">
-                  No issues match the current filters
-                </td>
-              </tr>
-            )}
-            {sorted.map((issue) => (
-              <tr
-                key={issue.identifier}
-                className="cursor-pointer transition-colors hover:bg-gray-50 dark:hover:bg-gray-900/30"
-                onClick={() => {
-                  onSelect(issue.identifier);
-                }}
-              >
-                <td className="px-4 py-3 whitespace-nowrap">
-                  {issue.url ? (
-                    <a
-                      href={issue.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-mono text-sm font-medium text-blue-600 hover:underline dark:text-blue-400"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                      }}
-                    >
-                      {issue.identifier}
-                    </a>
-                  ) : (
-                    <span className="font-mono text-sm font-medium text-gray-900 dark:text-white">
-                      {issue.identifier}
-                    </span>
-                  )}
-                </td>
-                <td className="max-w-xs truncate px-4 py-3 text-gray-700 dark:text-gray-300">
-                  {issue.title}
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <Badge size="sm" color={stateBadgeColor(issue.state)}>
-                    {issue.state}
-                  </Badge>
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap">
-                  <span className={`inline-flex items-center gap-1 text-xs`}>
-                    <span
-                      className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`}
-                    />
-                    {issue.orchestratorState}
-                  </span>
-                </td>
-                <td
-                  className="px-4 py-3 whitespace-nowrap"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                  }}
-                >
-                  {issue.orchestratorState === 'running' && (
-                    <button
-                      onClick={() => {
-                        cancelIssueMutation.mutate(issue.identifier);
-                      }}
-                      className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400"
-                    >
-                      ⏸ Pause
-                    </button>
-                  )}
-                  {issue.orchestratorState === 'paused' && (
-                    <button
-                      onClick={() => {
-                        resumeIssueMutation.mutate(issue.identifier);
-                      }}
-                      className="rounded border border-green-300 px-2 py-1 text-xs text-green-700 hover:bg-green-50 dark:border-green-700 dark:text-green-400"
-                    >
-                      ▶ Resume
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-// ─── Main Dashboard ───────────────────────────────────────────────────────────
+// ─── Stable fallbacks ─────────────────────────────────────────────────────────
+import { EMPTY_PROFILES, EMPTY_STATES, EMPTY_RUNNING, EMPTY_HISTORY } from '../../utils/constants';
+const EMPTY_BACKLOG_STATES = EMPTY_STATES;
+const EMPTY_ACTIVE_STATES = EMPTY_STATES;
+const EMPTY_TERMINAL_STATES = EMPTY_STATES;
 
 export default function Dashboard() {
   const { data: issues = [] } = useIssues();
-  const snapshot = useSymphonyStore((s) => s.snapshot);
-  const invalidateIssues = useInvalidateIssues();
-  const setSelectedIdentifier = useSymphonyStore((s) => s.setSelectedIdentifier);
-  const updateIssueStateMutation = useUpdateIssueState();
+  const {
+    hasSnapshot,
+    availableProfiles,
+    backlogStates,
+    activeStates,
+    terminalStates,
+    completionState,
+    profileDefs,
+    availableModels,
+    defaultBackend,
+    running,
+    runHistory,
+  } = useItervoxStore(
+    useShallow((s) => ({
+      hasSnapshot: s.snapshot !== null,
+      availableProfiles: s.snapshot?.availableProfiles ?? EMPTY_PROFILES,
+      backlogStates: s.snapshot?.backlogStates ?? EMPTY_BACKLOG_STATES,
+      activeStates: s.snapshot?.activeStates ?? EMPTY_ACTIVE_STATES,
+      terminalStates: s.snapshot?.terminalStates ?? EMPTY_TERMINAL_STATES,
+      completionState: s.snapshot?.completionState ?? '',
+      profileDefs: s.snapshot?.profileDefs,
+      availableModels: s.snapshot?.availableModels,
+      defaultBackend: s.snapshot?.defaultBackend,
+      running: s.snapshot?.running ?? EMPTY_RUNNING,
+      runHistory: s.snapshot?.history ?? EMPTY_HISTORY,
+    })),
+  );
+  const backlogStateSet = useMemo(() => new Set(backlogStates), [backlogStates]);
+  const runningBackendByIdentifier = useMemo(() => {
+    const map: Record<string, string> = {};
+    const backlogIdentifiers = new Set(
+      issues.filter((i) => backlogStateSet.has(i.state)).map((i) => i.identifier),
+    );
+    for (const h of runHistory) {
+      if (h.backend && !backlogIdentifiers.has(h.identifier)) map[h.identifier] = h.backend;
+    }
+    for (const r of running) {
+      if (r.backend) map[r.identifier] = r.backend;
+    }
+    return map;
+  }, [running, runHistory, issues, backlogStateSet]);
 
-  const [viewMode, setViewMode] = useState<'board' | 'list'>('board');
-  const [search, setSearch] = useState('');
-  const [stateFilter, setStateFilter] = useState('all');
+  const invalidateIssues = useInvalidateIssues();
+  const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
+  const { mutateAsync: updateIssueState } = useUpdateIssueState();
+  const setIssueProfileMutation = useSetIssueProfile();
+
+  // UI preferences — persisted in Zustand so they survive navigation
+  const viewMode = useUIStore((s) => s.dashboardViewMode);
+  const setViewMode = useUIStore((s) => s.setDashboardViewMode);
+  const search = useUIStore((s) => s.dashboardSearch);
+  const setSearch = useUIStore((s) => s.setDashboardSearch);
+  const stateFilter = useUIStore((s) => s.dashboardStateFilter);
+  const setStateFilter = useUIStore((s) => s.setDashboardStateFilter);
+
   const [loading, setLoading] = useState(false);
   const [apiOffline, setApiOffline] = useState(false);
+  const handleIssueSelect = useCallback(
+    (identifier: string) => {
+      setSelectedIdentifier(identifier);
+    },
+    [setSelectedIdentifier],
+  );
 
   useEffect(() => {
-    if (snapshot) {
+    if (hasSnapshot) {
       setApiOffline(false);
       return;
     }
@@ -332,12 +107,32 @@ export default function Dashboard() {
     return () => {
       clearTimeout(t);
     };
-  }, [snapshot]);
+  }, [hasSnapshot]);
 
-  const uniqueStates = useMemo(
-    () => Array.from(new Set(issues.map((i) => i.state))).sort(),
-    [issues],
-  );
+  // Build Linear-style filter pills from snapshot states
+  const filterPills = useMemo<FilterPill[]>(() => {
+    const pills: FilterPill[] = [{ id: 'all', label: 'All Issues', states: [] }];
+    if (activeStates.length > 0) {
+      pills.push({ id: 'active', label: 'Active', states: activeStates });
+    }
+    if (backlogStates.length > 0) {
+      pills.push({ id: 'backlog', label: 'Backlog', states: backlogStates });
+    }
+    if (completionState) {
+      pills.push({ id: 'review', label: completionState, states: [completionState] });
+    }
+    if (terminalStates.length > 0) {
+      pills.push({ id: 'done', label: 'Done', states: terminalStates });
+    }
+    return pills;
+  }, [activeStates, backlogStates, terminalStates, completionState]);
+
+  // Find matching pill states for filtering
+  const activePillStates = useMemo(() => {
+    if (stateFilter === 'all') return null;
+    const pill = filterPills.find((p) => p.id === stateFilter);
+    return pill?.states ?? null;
+  }, [stateFilter, filterPills]);
 
   const filtered = useMemo(
     () =>
@@ -349,10 +144,13 @@ export default function Dashboard() {
           !issue.title.toLowerCase().includes(q)
         )
           return false;
-        if (stateFilter !== 'all' && issue.state !== stateFilter) return false;
+        if (activePillStates !== null) {
+          const match = activePillStates.some((s) => s.toLowerCase() === issue.state.toLowerCase());
+          if (!match) return false;
+        }
         return true;
       }),
-    [issues, search, stateFilter],
+    [issues, search, activePillStates],
   );
 
   const handleRefresh = useCallback(async () => {
@@ -360,8 +158,9 @@ export default function Dashboard() {
     try {
       await fetch('/api/v1/refresh', { method: 'POST' });
       await invalidateIssues();
+      await useItervoxStore.getState().refreshSnapshot();
     } catch {
-      /* network error */
+      useToastStore.getState().addToast('Refresh failed — check the server.', 'error');
     } finally {
       setLoading(false);
     }
@@ -369,154 +168,198 @@ export default function Dashboard() {
 
   const handleStateChange = useCallback(
     async (identifier: string, newState: string) => {
-      await updateIssueStateMutation.mutateAsync({ identifier, state: newState });
-      // Invalidation handled by the mutation's onSuccess
+      try {
+        await updateIssueState({ identifier, state: newState });
+      } catch {
+        // mutation's onError already rolls back optimistic update
+      }
     },
-    [updateIssueStateMutation],
+    [updateIssueState],
   );
 
-  const btnBase = 'px-3 py-1.5 text-xs font-medium rounded-full transition-colors';
-  const btnActive = `${btnBase} bg-brand-500 text-white`;
-  const btnInactive = `${btnBase} text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700`;
+  const handleProfileChange = useCallback(
+    (identifier: string, profile: string) => {
+      setIssueProfileMutation.mutate({ identifier, profile });
+    },
+    [setIssueProfileMutation],
+  );
+
+  const { upsertProfile } = useSettingsActions();
+  const handleEditProfile = useCallback(
+    async (name: string, def: { command: string; backend?: string; prompt?: string }) => {
+      await upsertProfile(name, def.command, def.backend, def.prompt);
+    },
+    [upsertProfile],
+  );
 
   return (
     <>
-      <PageMeta title="Symphony | Dashboard" description="Symphony agent orchestration dashboard" />
-      <div className="space-y-5">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
-              Simphony
-              <span className="bg-brand-50 text-brand-600 dark:bg-brand-900/30 dark:text-brand-400 border-brand-100 dark:border-brand-800 ml-2 inline-flex items-center rounded-full border px-2 py-0.5 align-middle text-xs font-medium">
-                live
-              </span>
-            </h1>
-            <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-              Parallel Claude Code agent orchestration
-            </p>
+      <PageMeta title="Itervox | Dashboard" description="Itervox agent orchestration dashboard" />
+      <div className="space-y-[14px]">
+        <ProjectSelector />
+
+        {/* Hero-compact banner — responsive: stacks on mobile */}
+        <div className="border-theme-line bg-theme-bg-elevated relative overflow-hidden rounded-[var(--radius-lg)] border px-4 py-4 sm:px-[22px] sm:py-[18px]">
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                'radial-gradient(ellipse at top left, var(--accent-soft) 0%, transparent 60%)',
+            }}
+          />
+          <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <div className="min-w-0">
+              <div className="mb-2">
+                <span className="bg-theme-accent-soft text-theme-accent-strong inline-flex items-center rounded-full px-3 py-[5px] text-[11px] font-semibold tracking-[0.03em] uppercase">
+                  Itervox
+                </span>
+              </div>
+              <h1
+                className="text-xl leading-tight font-bold tracking-[-0.03em] sm:text-2xl"
+                style={{
+                  background: 'var(--gradient-accent)',
+                  WebkitBackgroundClip: 'text',
+                  WebkitTextFillColor: 'transparent',
+                }}
+              >
+                Parallel agent orchestration
+              </h1>
+              <p className="text-theme-text-secondary mt-2 text-[13px] leading-relaxed">
+                Manage running agents and track issues across states.
+              </p>
+            </div>
+            <HeroStats />
           </div>
         </div>
 
-        {/* API offline banner */}
         {apiOffline && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-            <p className="mb-1 font-semibold">Cannot reach the Symphony API</p>
-            <p className="mb-2 text-amber-700 dark:text-amber-400">
+          <div className="border-theme-warning-soft bg-theme-warning-soft text-theme-warning rounded-[var(--radius-md)] border p-4 text-sm">
+            <p className="mb-1 font-semibold">Cannot reach the Itervox API</p>
+            <p className="mb-2 opacity-80">
               Make sure your{' '}
-              <code className="rounded bg-amber-100 px-1 font-mono dark:bg-amber-900/40">
-                WORKFLOW.md
-              </code>{' '}
-              front matter includes the following and the symphony binary is running:
+              <code className="bg-theme-bg-elevated rounded px-1 font-mono">WORKFLOW.md</code> front
+              matter includes the following and the itervox binary is running:
             </p>
-            <pre className="rounded bg-amber-100 p-2 font-mono text-xs dark:bg-amber-900/40">
+            <pre className="bg-theme-bg-elevated rounded p-2 font-mono text-xs">
               {'server:\n  port: 8090'}
             </pre>
           </div>
         )}
 
-        {/* Status strip */}
-        <StatusStrip />
-
-        {/* Running sessions with logs and subagent details */}
+        <HostPool />
         <RunningSessionsTable />
+        <ReviewQueueSection />
+        <RetryQueueTable />
 
-        {/* Rate limits — collapsible */}
-        <details className="rounded-xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-white/[0.03]">
-          <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-2 text-sm font-medium text-gray-700 select-none dark:text-gray-300">
-            <span>API Rate Limits</span>
-            <span className="text-xs text-gray-400">▸</span>
-          </summary>
-          <div className="px-4 pb-3">
-            <RateLimitBar />
-          </div>
-        </details>
+        {/* Issues panel */}
+        <div className="border-theme-line bg-theme-bg-elevated shadow-theme-sm overflow-hidden rounded-[var(--radius-lg)] border">
+          {/* Panel header — search always visible */}
+          <div className="border-theme-line flex flex-col gap-3 border-b px-4 py-3 sm:px-[18px] sm:py-[14px]">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-theme-text flex items-center gap-2 text-sm font-semibold tracking-tight">
+                  Issues
+                  <span className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-1.5 py-0.5 text-[10px] font-bold">
+                    {filtered.length}
+                  </span>
+                </h2>
+              </div>
+              <div className="flex flex-shrink-0 items-center gap-2">
+                {/* View toggle — segmented */}
+                <div className="bg-theme-bg-elevated border-theme-line inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border p-[3px]">
+                  {(
+                    ['board', 'list', ...(availableProfiles.length > 0 ? ['agents'] : [])] as (
+                      | 'board'
+                      | 'list'
+                      | 'agents'
+                    )[]
+                  ).map((mode) => (
+                    <button
+                      key={mode}
+                      onClick={() => {
+                        setViewMode(mode);
+                      }}
+                      className={`rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-semibold transition-all ${
+                        viewMode === mode ? 'bg-theme-accent text-white' : 'text-theme-muted'
+                      }`}
+                    >
+                      {mode === 'board' ? 'Board' : mode === 'list' ? 'List' : 'Agents'}
+                    </button>
+                  ))}
+                </div>
 
-        {/* Issues board */}
-        <div>
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-3 sm:flex-nowrap">
-            <div className="min-w-0">
-              <h2 className="flex items-center gap-2 text-base font-semibold text-gray-900 dark:text-white">
-                Issues
-                <span className="inline-flex items-center rounded-full bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
-                  {filtered.length}
-                </span>
-              </h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                {issues.length} total
-                {filtered.length !== issues.length ? ` · ${String(filtered.length)} shown` : ''}
-              </p>
-            </div>
-            <div className="flex flex-shrink-0 items-center gap-2">
-              {/* View toggle */}
-              <div className="flex items-center gap-0.5 rounded-lg bg-gray-100 p-1 dark:bg-gray-800">
+                {/* Refresh */}
                 <button
-                  className={viewMode === 'board' ? btnActive : btnInactive}
-                  onClick={() => {
-                    setViewMode('board');
-                  }}
+                  onClick={handleRefresh}
+                  disabled={loading}
+                  className="border-theme-line text-theme-text-secondary flex h-7 w-7 items-center justify-center rounded-lg border text-sm transition-colors disabled:opacity-50"
+                  title={loading ? 'Refreshing…' : 'Refresh issues'}
+                  aria-label="Refresh issues"
                 >
-                  ⊞ Board
-                </button>
-                <button
-                  className={viewMode === 'list' ? btnActive : btnInactive}
-                  onClick={() => {
-                    setViewMode('list');
-                  }}
-                >
-                  ☰ List
+                  {loading ? '…' : '↻'}
                 </button>
               </div>
-              {/* Refresh */}
-              <button
-                onClick={handleRefresh}
-                disabled={loading}
-                className="bg-brand-500 hover:bg-brand-600 flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium whitespace-nowrap text-white transition-colors disabled:opacity-50"
-              >
-                ↻ {loading ? 'Refreshing…' : 'Refresh'}
-              </button>
             </div>
+
+            {/* Filter pills + search — hidden in agents view (agents group by profile, not state) */}
+            {viewMode !== 'agents' && (
+              <>
+                <FilterPills pills={filterPills} activeId={stateFilter} onChange={setStateFilter} />
+                <div className="flex gap-3">
+                  <input
+                    type="text"
+                    placeholder="Search identifier or title…"
+                    value={search}
+                    onChange={(e) => {
+                      setSearch(e.target.value);
+                    }}
+                    className="border-theme-line bg-theme-bg-elevated text-theme-text min-w-0 flex-1 rounded-lg border px-3 py-1.5 text-sm focus:outline-none"
+                  />
+                </div>
+              </>
+            )}
           </div>
 
-          {/* Filters */}
-          <div className="mb-4 flex flex-wrap gap-3">
-            <input
-              type="text"
-              placeholder="Search identifier or title…"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-              }}
-              className="focus:ring-brand-500 min-w-48 flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:ring-2 focus:outline-none dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder-gray-500"
-            />
-            <select
-              value={stateFilter}
-              onChange={(e) => {
-                setStateFilter(e.target.value);
-              }}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-900 dark:text-white"
-            >
-              <option value="all">All States</option>
-              {uniqueStates.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {viewMode === 'board' ? (
-            <div className="-mx-4 overflow-x-auto px-4 pb-2 md:-mx-6 md:px-6">
+          <div className="px-4 pt-3 pb-4 sm:px-[18px] sm:pt-[14px] sm:pb-[18px]">
+            {viewMode === 'board' && (
               <BoardView
                 issues={filtered}
-                onSelect={setSelectedIdentifier}
+                onSelect={handleIssueSelect}
                 onStateChange={handleStateChange}
+                availableProfiles={availableProfiles}
+                onProfileChange={handleProfileChange}
               />
-            </div>
-          ) : (
-            <ListView issues={filtered} onSelect={setSelectedIdentifier} />
-          )}
+            )}
+            {viewMode === 'list' && (
+              <ListView
+                issues={filtered}
+                onSelect={handleIssueSelect}
+                availableProfiles={availableProfiles}
+                profileDefs={profileDefs}
+                runningBackendByIdentifier={runningBackendByIdentifier}
+                defaultBackend={defaultBackend}
+                backlogStates={backlogStates}
+                onProfileChange={handleProfileChange}
+              />
+            )}
+            {viewMode === 'agents' && (
+              <div className="-mx-4 overflow-x-auto px-4 pb-2 md:-mx-6 md:px-6">
+                <AgentQueueView
+                  issues={issues}
+                  backlogStates={backlogStates}
+                  availableProfiles={availableProfiles}
+                  profileDefs={profileDefs}
+                  availableModels={availableModels}
+                  onProfileChange={handleProfileChange}
+                  onSelect={handleIssueSelect}
+                  onEditProfile={handleEditProfile}
+                />
+              </div>
+            )}
+          </div>
         </div>
+
+        <NarrativeFeed />
       </div>
     </>
   );

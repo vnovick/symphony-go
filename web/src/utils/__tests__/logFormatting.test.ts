@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { toTermLine, entryStyle } from '../logFormatting';
-import type { IssueLogEntry } from '../../types/symphony';
+import type { IssueLogEntry } from '../../types/schemas';
 
 function entry(event: string, message = 'msg', tool?: string, level = 'INFO'): IssueLogEntry {
   return { level, event, message, tool, time: '12:00:00' };
@@ -15,10 +15,37 @@ describe('toTermLine', () => {
     expect(line.time).toBe('12:00:00');
   });
 
-  it('includes tool name in action events', () => {
-    const line = toTermLine(entry('action', 'wrote file', 'Write'));
+  it('uses message as-is for action events (tool name already in message from backend)', () => {
+    const line = toTermLine(entry('action', 'Write — wrote file', 'Write'));
     expect(line.prefix).toBe('$');
-    expect(line.text).toBe('Write  wrote file');
+    expect(line.text).toBe('Write — wrote file');
+  });
+
+  it('appends detail info for action events when detail is present', () => {
+    const entryWithDetail: IssueLogEntry = {
+      level: 'INFO',
+      event: 'action',
+      message: 'Bash — sleep 10',
+      tool: 'Bash',
+      time: '12:00:00',
+      detail: JSON.stringify({ exit_code: 0, output_size: 512 }),
+    };
+    const line = toTermLine(entryWithDetail);
+    expect(line.text).toBe('Bash — sleep 10  ·  exit:0 · 512');
+  });
+
+  it('omits detail when status is success', () => {
+    const entryWithDetail: IssueLogEntry = {
+      level: 'INFO',
+      event: 'action',
+      message: 'Write — file.ts',
+      tool: 'Write',
+      time: '12:00:00',
+      detail: JSON.stringify({ exit_code: 0, status: 'success' }),
+    };
+    const line = toTermLine(entryWithDetail);
+    // status=success is omitted; exit_code=0 renders as exit:0
+    expect(line.text).toBe('Write — file.ts  ·  exit:0');
   });
 
   it('omits tool name when absent in action events', () => {

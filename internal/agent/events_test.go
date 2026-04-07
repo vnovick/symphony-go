@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/vnovick/symphony-go/internal/agent"
+	"github.com/vnovick/itervox/internal/agent"
 )
 
 func TestParseLineSystemEvent(t *testing.T) {
@@ -48,6 +48,55 @@ func TestParseLineResultInputRequired(t *testing.T) {
 	ev, err := agent.ParseLine(line)
 	require.NoError(t, err)
 	assert.True(t, ev.IsError)
+}
+
+func TestIsContentInputRequired(t *testing.T) {
+	// IsContentInputRequired is a thin wrapper over IsSentinelInputRequired —
+	// the agent MUST emit the <!-- itervox:needs-input --> sentinel to signal
+	// input-required. No heuristic pattern matching, no LLM classification.
+	// The prompt template in WORKFLOW.md instructs the agent how/when to emit
+	// the sentinel; the detector's only job is to look for the literal token.
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"empty string", "", false},
+		{"plain output no sentinel", "I've fixed the bug and pushed the changes.", false},
+		{"questions without sentinel are ignored", "How would you like to proceed?", false},
+		{"question mark alone", "Is the test passing?", false},
+		{"sentinel alone", "<!-- itervox:needs-input -->", true},
+		{"sentinel with question", "All done.\n<!-- itervox:needs-input -->\nWhich path do you prefer?", true},
+		{"sentinel at end of long text", string(make([]byte, 5000)) + "\n<!-- itervox:needs-input -->", true},
+		{"sentinel at start of text", "<!-- itervox:needs-input -->\nShould I continue?", true},
+		{"sentinel is case sensitive", "<!-- ITERVOX:NEEDS-INPUT -->", false},
+		{"sentinel with trailing whitespace", "<!-- itervox:needs-input -->   \n", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, agent.IsContentInputRequired(tc.text), tc.name)
+		})
+	}
+}
+
+func TestIsSentinelInputRequired(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"empty", "", false},
+		{"no sentinel", "just some output with a question?", false},
+		{"sentinel alone", agent.InputRequiredSentinel, true},
+		{"sentinel mid stream", "before\n" + agent.InputRequiredSentinel + "\nafter", true},
+		{"sentinel with trailing whitespace", agent.InputRequiredSentinel + "   \n", true},
+		{"heuristic-only phrase does not match sentinel detector", "Questions for you:", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, agent.IsSentinelInputRequired(tc.text), tc.name)
+		})
+	}
 }
 
 func TestParseLineNonJSONReturnsError(t *testing.T) {

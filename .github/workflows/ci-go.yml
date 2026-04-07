@@ -42,6 +42,12 @@ jobs:
       - name: Show coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
+      - name: Enforce coverage gate (≥ 50%)
+        run: |
+          pct=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "Total coverage: ${pct}%"
+          awk -v pct="$pct" 'BEGIN { if (pct+0 < 50) { print "Coverage " pct "% is below the 50% gate"; exit 1 } }'
+
       - name: Vet
         run: go vet ./...
 

@@ -32,6 +32,18 @@ export default tseslint.config(
         'error',
         { checksVoidReturn: { attributes: false } },
       ],
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/types/itervox'],
+              message:
+                "Import from '../types/schemas' or '../types/itervox-types' instead — types/itervox.ts is @deprecated.",
+            },
+          ],
+        },
+      ],
     },
   },
   {

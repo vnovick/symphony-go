@@ -1,0 +1,162 @@
+---
+title: Linear Setup
+description: Set up Itervox to automatically resolve Linear issues with AI agents.
+sidebar:
+  order: 3
+---
+
+This guide walks you through connecting Itervox to your Linear workspace so AI agents can pick up issues and resolve them automatically.
+
+## Prerequisites
+
+- A Linear workspace with at least one team and project
+- A Linear Personal API key (see below)
+- The `itervox` binary installed and available on your `$PATH`
+- The repository you want agents to work in checked out locally
+
+## Get a Linear API key
+
+1. Open Linear and go to **Settings → API**.
+2. Under **Personal API keys**, click **Create new API key**.
+3. Give the key a descriptive label (e.g. `itervox-local`) and click **Create**.
+4. Copy the key immediately — it will not be shown again.
+
+Store the key in an environment variable rather than hard-coding it:
+
+```bash
+export LINEAR_API_KEY="lin_api_xxxxxxxxxxxxxxxxxxxx"
+```
+
+## Find your project slug
+
+The project slug identifies which Linear project Itervox should poll. You can find it in two ways:
+
+1. **From Linear URLs** — it is the short identifier shown in issue prefixes (e.g. issues prefixed `ENG-` belong to the `ENG` project slug)
+2. **From the dashboard** — start the daemon without a `project_slug` and use the TUI project selector (press `p`) or the web dashboard's project dropdown to browse available projects interactively
+
+## Initialize WORKFLOW.md
+
+Run the init command from the root of your repository:
+
+```bash
+itervox init --tracker linear
+```
+
+This creates a `WORKFLOW.md` file with YAML front matter and a default Liquid prompt template. Open the file and fill in the required fields.
+
+## Configure states
+
+Linear workflows are fully customisable, so you need to tell Itervox which states mean "work to do", which mean "finished", and which states to surface in the dashboard.
+
+A typical configuration looks like this:
+
+```yaml
+---
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY        # resolved from env at runtime
+  project_slug: my-project        # the slug from the previous step
+
+  # States that trigger agent dispatch (issues in these states get picked up)
+  active_states:
+    - Todo
+
+  # State to transition the issue to when an agent starts working on it
+  working_state: "In Progress"
+
+  # State to transition the issue to when the agent finishes successfully
+  completion_state: "In Review"
+
+  # States that permanently stop the issue from being re-dispatched
+  terminal_states:
+    - Done
+    - Cancelled
+    - Duplicate
+
+  # States shown as the leftmost column(s) in the dashboard (defaults to ["Backlog"])
+  backlog_states:
+    - Backlog
+
+  # State to move issues to when max retries are exhausted (optional)
+  failed_state: "Blocked"
+
+agent:
+  max_concurrent_agents: 3
+
+polling:
+  interval_ms: 30000              # poll every 30 seconds
+---
+
+You are an AI agent resolving Linear issue {{ issue.identifier }}: {{ issue.title }}.
+
+{{ issue.description }}
+
+Complete the task, push your changes, and open a pull request.
+```
+
+### State fields reference
+
+| Field | Default | Description |
+|---|---|---|
+| `active_states` | `["Todo", "In Progress"]` | Issues in these states are dispatched to agents |
+| `working_state` | `"In Progress"` | Issue is moved here when an agent starts |
+| `completion_state` | *(empty)* | Issue is moved here on success; leave empty to skip |
+| `terminal_states` | `["Closed", "Cancelled", "Canceled", "Duplicate", "Done"]` | Issues in these states are never re-dispatched |
+| `backlog_states` | `["Backlog"]` | Shown in the leftmost dashboard column(s) |
+| `failed_state` | *(empty)* | Issue is moved here after max retries; leave empty to pause instead |
+
+## Run Itervox
+
+From the directory containing `WORKFLOW.md`:
+
+```bash
+itervox
+```
+
+Itervox starts polling Linear every `interval_ms` milliseconds. When it finds an issue in an `active_states` state it spawns an agent and transitions the issue to `working_state`.
+
+Open the dashboard at [http://localhost:8090](http://localhost:8090) to watch issues move through the board in real time.
+
+## State transition flow
+
+```
+Backlog  ──(manual move)──►  Todo  ──(Itervox picks up)──►  In Progress
+                                                                   │
+                                          ┌────────────────────────┤
+                                          │                        │
+                                     (success)               (max retries)
+                                          │                        │
+                                          ▼                        ▼
+                                       In Review               Blocked
+                                          │
+                                     (human merges)
+                                          │
+                                          ▼
+                                         Done
+```
+
+## Tips
+
+### Limit concurrency per state
+
+If you want at most one agent running in `In Progress` at any time:
+
+```yaml
+agent:
+  max_concurrent_agents: 10
+  max_concurrent_agents_by_state:
+    "In Progress": 1
+```
+
+### Set a failed state
+
+Without `failed_state`, issues that exhaust their retry budget are paused — they stay in their current state but Itervox stops dispatching them. Setting `failed_state` gives them a dedicated state so they are easy to find in Linear.
+
+### Tune the polling interval
+
+The default is 30 seconds (`30000` ms). For faster feedback during development you can lower it, but be mindful of Linear API rate limits.
+
+```yaml
+polling:
+  interval_ms: 10000  # poll every 10 seconds
+```

@@ -1,0 +1,215 @@
+---
+title: Remote Access & Mobile Dashboard
+description: How to access the Itervox dashboard from your phone or another machine — LAN bind, SSH tunnel, Tailscale, and Piko (self-hosted reverse tunnel).
+sidebar:
+  order: 4
+---
+
+By default Itervox binds the HTTP server to `127.0.0.1:8090` — only reachable
+from the same machine that runs the daemon. To view the dashboard from your
+phone or another computer, you have five options.
+
+:::caution
+**Always set `ITERVOX_API_TOKEN` before exposing the dashboard outside loopback.**
+The dashboard has no built-in authentication on `127.0.0.1`. As soon as the
+server binds to anything reachable from another device, you must enable bearer
+token auth.
+
+```bash
+export ITERVOX_API_TOKEN=$(openssl rand -hex 32)
+```
+
+The token must be sent in the `Authorization: Bearer <token>` header by every
+API request. The dashboard frontend reads it from a query parameter on first
+load and stores it locally.
+:::
+
+---
+
+## Option 1 — LAN bind (same WiFi)
+
+The simplest path. Edit your `WORKFLOW.md`:
+
+```yaml
+server:
+  host: 0.0.0.0
+  port: 8090
+```
+
+Restart `itervox`. The dashboard is now reachable from any device on the same
+network. Find your laptop's LAN IP:
+
+```bash
+# macOS / Linux
+ipconfig getifaddr en0      # Wi-Fi on macOS
+hostname -I                  # Linux
+```
+
+On your phone, browse to `http://<laptop-ip>:8090?token=<your-token>`.
+
+**Pros:** zero setup, works on home/office WiFi, real-time SSE streaming.
+**Cons:** only works on the same network. Doesn't survive when your phone
+leaves WiFi or your laptop sleeps.
+
+---
+
+## Option 2 — SSH tunnel (developer-friendly)
+
+If you're already SSHing into a machine that runs Itervox, forward the port:
+
+```bash
+ssh -L 8090:localhost:8090 user@remote-host
+```
+
+Then browse to `http://localhost:8090` in your local browser. On iOS/Android,
+apps like Termius and Blink Shell support port forwarding.
+
+**Pros:** familiar to developers, no daemon config changes needed.
+**Cons:** mobile SSH clients are awkward; the tunnel dies when the SSH session
+disconnects.
+
+---
+
+## Option 3 — Tailscale (recommended for remote work)
+
+[Tailscale](https://tailscale.com) is a zero-config WireGuard mesh VPN. Install
+it on both your laptop and your phone, log into the same account, and your
+phone can reach the laptop directly via its `<laptop-name>.<tailnet>.ts.net`
+hostname — from anywhere in the world.
+
+```yaml
+# WORKFLOW.md
+server:
+  host: 0.0.0.0   # bind to all interfaces — Tailscale handles auth + encryption
+  port: 8090
+```
+
+On your phone: `http://laptop.tail-scale-name.ts.net:8090`.
+
+**Pros:** works from anywhere, end-to-end encrypted, no port forwarding, no
+public exposure. NAT-traversal is automatic.
+**Cons:** requires installing Tailscale on every device; the free tier is
+generous but is a third-party dependency.
+
+---
+
+## Option 4 — ngrok (managed public URL)
+
+[ngrok](https://ngrok.com) is the original tunnelling-as-a-service. One
+command and you get a public HTTPS URL that proxies to your local dashboard.
+
+### Setup
+
+1. Install ngrok and authenticate (`ngrok config add-authtoken <token>`).
+2. Start the Itervox daemon as usual (default `127.0.0.1:8090` is fine — ngrok
+   talks to localhost).
+3. In a separate terminal:
+
+   ```bash
+   ngrok http 8090
+   ```
+
+   ngrok prints a public URL like `https://abcd-1234.ngrok-free.app`.
+4. On your phone, open
+   `https://abcd-1234.ngrok-free.app?token=<your-token>`.
+
+### Lock down the public URL
+
+The free tier exposes a random URL on every restart. Use ngrok's built-in
+basic auth or OAuth to keep random visitors out:
+
+```bash
+ngrok http 8090 --basic-auth="you:strongpassword"
+```
+
+Or restrict by IP / Google email on a paid plan. Always set
+`ITERVOX_API_TOKEN` as well — defence in depth.
+
+**Pros:** the fastest path to a public URL, automatic HTTPS, works through any
+NAT or firewall, ships with built-in auth options.
+**Cons:** depends on a paid SaaS for stable subdomains; free-tier URLs change
+on every restart; a third-party sees your traffic in transit (though it's
+end-to-end TLS to your machine).
+
+---
+
+## Option 5 — Piko (self-hosted reverse tunnel)
+
+[Piko](https://github.com/andydunstall/piko) is an open-source, MIT-licensed
+reverse tunnel that you can self-host. It works like ngrok or Cloudflare
+Tunnel, but the server is yours — no SaaS, no rate limits, no third-party in
+the data path.
+
+This is the recommended option if you want a public URL for your dashboard
+without depending on any vendor.
+
+### Setup
+
+1. **Run a Piko server somewhere with a public IP** (a $5 VPS works fine).
+   Piko ships as a single Go binary and supports clustering for high
+   availability if you need it.
+
+   ```bash
+   piko server --proxy.bind-addr :8000 --upstream.bind-addr :8001
+   ```
+
+2. **On your laptop**, run the Piko agent pointing at your local Itervox
+   dashboard:
+
+   ```bash
+   piko agent http itervox-dashboard 8090 \
+     --connect.url ws://your-piko-server:8001
+   ```
+
+   This opens an outbound connection to the Piko server and registers the
+   endpoint name `itervox-dashboard`.
+
+3. **Configure DNS** so that `itervox-dashboard.your-domain.com` (or whichever
+   subdomain you choose) points to the Piko server's proxy port.
+
+4. **On your phone**, browse to
+   `http://itervox-dashboard.your-domain.com?token=<your-token>`.
+   The Piko server routes the request through the outbound tunnel to your
+   laptop's Itervox dashboard.
+
+### Why Piko fits Itervox
+
+- **MIT-licensed and self-hostable** — same ethos as Itervox itself. No
+  vendor in the loop, no SaaS dependency, no rate limits.
+- **Outbound-only tunnels** — your laptop never needs an inbound port open or
+  port forwarding on your home router.
+- **Survives network changes** — agents reconnect automatically when your
+  laptop changes networks (coffee shop → home → office).
+- **Single binary** — fits the Itervox philosophy of "one binary, one config
+  file."
+
+**Pros:** completely self-hosted, no vendor lock-in, public URL that survives
+network changes, free apart from VPS hosting.
+**Cons:** requires a small VPS with a public IP and a domain name; one-time
+setup is more involved than Tailscale.
+
+---
+
+## Comparison
+
+| Option | Same WiFi | Remote | Self-hosted | Setup | Best for |
+|---|---|---|---|---|---|
+| **LAN bind** | ✅ | ❌ | ✅ | 1 min | Home / office, single user |
+| **SSH tunnel** | ✅ | ✅ | ✅ | 2 min | Developers SSHing into a server |
+| **Tailscale** | ✅ | ✅ | ⚠️ third-party | 5 min | Personal use, multi-device |
+| **ngrok** | ✅ | ✅ | ❌ SaaS | 2 min | Quickest public URL, demos |
+| **Piko** | ✅ | ✅ | ✅ | 30 min | Teams, vendor-independent setups |
+
+---
+
+## Always set the API token
+
+Whichever option you pick, do not skip this:
+
+```bash
+export ITERVOX_API_TOKEN=$(openssl rand -hex 32)
+```
+
+Without it, anything that can reach `:8090` can read your issues, dispatch
+agents, and modify configuration. The token is mandatory for any non-loopback
+exposure and is logged as a warning if you bind to `0.0.0.0` without setting it.

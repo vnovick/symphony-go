@@ -1,0 +1,313 @@
+---
+title: Agent Profiles
+description: Configure multiple AI agent profiles, team collaboration, and SSH remote execution.
+sidebar:
+  order: 5
+---
+
+Itervox supports three agent collaboration models, named profiles with per-profile commands and role prompts, SSH-based remote execution, and a configurable reviewer prompt. This guide covers all of these.
+
+## Agent modes
+
+The `agent_mode` field controls how agents collaborate on each issue.
+
+| Mode | `agent_mode` value | Description |
+|---|---|---|
+| Solo | `""` (empty, default) | One agent runs alone. If a profile is assigned, its prompt is appended to the issue prompt. |
+| Subagents | `"subagents"` | The main agent may use its native helper/subagent tool. If a profile is assigned, its prompt is appended. |
+| Teams | `"teams"` | All profile role descriptions are injected as a sub-agent roster, so the main agent knows which specialists it can delegate to by name. |
+
+Set `agent_mode` in the `agent:` section of `WORKFLOW.md`:
+
+```yaml
+agent:
+  agent_mode: teams
+```
+
+---
+
+## Solo mode (default)
+
+In solo mode a single agent processes each issue from start to finish. If a profile is assigned to the issue (via the Agent Board), that profile's prompt is still appended — giving the agent role-specific instructions even without team coordination. This is the simplest configuration and works well for most projects.
+
+```yaml
+---
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  project_slug: my-project
+  active_states:
+    - Todo
+  working_state: "In Progress"
+  completion_state: "In Review"
+  terminal_states:
+    - Done
+    - Cancelled
+
+agent:
+  command: claude               # default; can be "codex" or any CLI runner
+  max_concurrent_agents: 5
+  max_turns: 20
+  turn_timeout_ms: 3600000     # 1 hour hard limit per session
+  stall_timeout_ms: 300000     # 5 minutes of inactivity triggers a retry
+---
+
+You are an AI agent resolving {{ issue.identifier }}: {{ issue.title }}.
+
+{{ issue.description }}
+
+Push your changes and open a pull request when complete.
+```
+
+---
+
+## Subagents mode
+
+Subagents mode lets the main agent use its runner's built-in tool for spawning sub-agents (e.g. Claude Code's `Agent` tool). If a profile is assigned to the issue, its prompt is appended — giving the agent role context even while delegating internally.
+
+```yaml
+agent:
+  agent_mode: subagents
+  command: claude
+  max_concurrent_agents: 3
+  profiles:
+    backend:
+      command: claude
+      prompt: >
+        You are a backend specialist. Focus on Go, APIs, and database code.
+```
+
+Use subagents mode when you want to leverage a model's native orchestration capabilities. Profile prompts are still injected, so the agent has role context — but unlike teams mode, the sub-agent roster is not appended.
+
+:::note
+In all three modes, if an issue has a profile assigned (via the Agent Board or API), that profile's `prompt` field is rendered through the Liquid template engine (with full access to issue variables) and appended to the rendered workflow prompt. The difference with teams mode is that it also injects a roster of all available profiles so the agent can delegate by name.
+:::
+
+### Liquid variables in profile prompts
+
+Profile prompts support the same Liquid template variables as the main `WORKFLOW.md` prompt. This lets you write dynamic, issue-aware role descriptions:
+
+```yaml
+profiles:
+  backend:
+    command: claude
+    prompt: >
+      You are the backend specialist working on {{ issue.identifier }}: {{ issue.title }}.
+      {% if issue.priority == "urgent" %}Treat this as high priority.{% endif %}
+      Focus on Go, APIs, and database code.
+```
+
+| Variable | Type | Description |
+|---|---|---|
+| `issue.identifier` | string | Issue ID (e.g. `"ENG-42"`, `"#123"`) |
+| `issue.title` | string | Issue title |
+| `issue.description` | string | Issue body (may be empty) |
+| `issue.url` | string | Full URL to the issue |
+| `issue.branch_name` | string | Suggested git branch name |
+| `issue.labels` | string[] | Labels attached to the issue |
+| `issue.priority` | string | Priority label |
+| `issue.comments` | object[] | Comments (`author_name`, `body`) |
+| `issue.state` | string | Current issue state |
+| `issue.blocked_by` | object[] | Blocking issues (`id`, `identifier`, `state`) |
+| `attempt` | int\|null | Current retry attempt (`null` on first attempt) |
+
+Plain-text prompts (without any `{{ }}` syntax) work exactly as before — they are passed through unchanged.
+
+---
+
+## Teams mode with named profiles
+
+Teams mode is the most powerful option. You define named profiles, each with its own command and role description. Itervox injects all role descriptions into the main agent's prompt so it can spawn the right specialist for each sub-task.
+
+### Example: backend, frontend, and devops profiles
+
+```yaml
+---
+tracker:
+  kind: github
+  api_key: $GITHUB_TOKEN
+  project_slug: owner/repo
+  active_states:
+    - open
+  terminal_states:
+    - closed
+
+agent:
+  agent_mode: teams
+  command: claude               # default runner for the orchestrating agent
+  max_concurrent_agents: 4
+
+  profiles:
+    backend:
+      command: claude --model claude-opus-4-5
+      prompt: >
+        You are the backend specialist. You handle API design, database schemas,
+        server-side business logic, and performance optimisation. You write Go,
+        Python, or Node.js code as appropriate for the project.
+
+    frontend:
+      command: claude --model claude-sonnet-4-5
+      prompt: >
+        You are the frontend specialist. You handle React components, CSS,
+        accessibility, and browser compatibility. You write TypeScript and follow
+        the project's design system.
+
+    devops:
+      command: claude --model claude-haiku-4-5
+      prompt: >
+        You are the devops specialist. You handle CI/CD pipelines, Docker,
+        infrastructure-as-code, and deployment configuration. You write YAML,
+        Bash, and Terraform as needed.
+---
+
+You are the lead AI agent for {{ issue.identifier }}: {{ issue.title }}.
+
+{{ issue.description }}
+
+You have access to the following specialists. Delegate sub-tasks to them as needed:
+- **backend** — API, database, and server-side logic
+- **frontend** — UI components and browser code
+- **devops** — CI/CD, Docker, and infrastructure
+
+Coordinate their work, integrate the results, and open a pull request when complete.
+```
+
+### Mixing runners across profiles
+
+Each profile can use a different runner binary. This lets you route different sub-tasks to Codex, Claude, or any other CLI-compatible agent:
+
+```yaml
+agent:
+  agent_mode: teams
+  command: claude               # orchestrator uses Claude
+
+  profiles:
+    coder:
+      command: codex            # sub-tasks routed to Codex
+      backend: codex            # explicit backend hint (optional)
+      prompt: >
+        You are the coding specialist. Write implementation code only —
+        no scaffolding, no tests.
+
+    tester:
+      command: claude --model claude-haiku-4-5
+      prompt: >
+        You are the testing specialist. Write unit and integration tests
+        for code produced by the coder.
+```
+
+The `backend` field is an optional hint that overrides automatic runner detection. Use it when the command string is a wrapper script that Itervox cannot introspect:
+
+```yaml
+profiles:
+  wrapped:
+    command: ./scripts/run-codex.sh
+    backend: codex              # tell Itervox to use the Codex event format
+    prompt: Specialised Codex sub-agent.
+```
+
+---
+
+## SSH remote execution
+
+Itervox can dispatch agent turns to remote hosts over SSH. This is useful for running agents on powerful cloud machines while keeping the orchestrator local.
+
+### Configure SSH hosts
+
+```yaml
+agent:
+  ssh_hosts:
+    - builder-1.example.com
+    - builder-2.example.com:2222   # custom port
+
+  dispatch_strategy: round-robin   # or "least-loaded"
+```
+
+### Dispatch strategies
+
+| Strategy | Value | Description |
+|---|---|---|
+| Round-robin | `"round-robin"` (default) | Issues are assigned to hosts in rotation. Simple and predictable. |
+| Least-loaded | `"least-loaded"` | Issues are assigned to the host with the fewest active agents. Balances load dynamically. |
+
+### SSH requirements
+
+- The Itervox process must be able to reach each host over SSH without a password prompt. Use SSH agent forwarding or pre-shared keys.
+- The target host must have the agent runner binary (`claude`, `codex`, etc.) installed and on `$PATH`.
+- The repository must be accessible on the remote host (either pre-cloned or mounted via NFS/SSHFS).
+- If `workspace.worktree` is enabled, the bare git clone must already exist at `workspace.root` on each remote host.
+
+### Example with worktree mode
+
+```yaml
+workspace:
+  root: /mnt/shared/itervox/workspaces
+  worktree: true
+  clone_url: git@github.com:owner/repo.git
+  base_branch: main
+
+agent:
+  ssh_hosts:
+    - gpu-node-1.internal
+    - gpu-node-2.internal
+  dispatch_strategy: least-loaded
+  max_concurrent_agents: 8
+```
+
+---
+
+## Reviewer prompt
+
+Itervox can dispatch a reviewer agent to check PRs before marking issues complete. The reviewer uses the `reviewer_prompt` template from your config, detects the open PR branch automatically, and runs on the same worktree as the original worker.
+
+Configure it in `WORKFLOW.md`:
+
+```yaml
+agent:
+  reviewer_prompt: |
+    You are an AI code reviewer for issue {{ issue.identifier }}.
+
+    Steps:
+    1. Run: gh pr diff --repo owner/repo to read the PR on branch {{ issue.branch_name }}
+    2. Check for: correctness, test coverage, security issues, and adherence to our style guide.
+    3. If problems are found:
+       - Fix them directly in the workspace
+       - Commit and push: git add -A && git commit -m "fix: reviewer corrections" && git push
+       - Post a tracker comment summarising what you fixed
+       - Move issue {{ issue.identifier }} to state "Rework"
+    4. If the PR looks good:
+       - Post an approval comment: "AI review passed — no issues found"
+       - Move issue {{ issue.identifier }} to state "Merging"
+
+    Be concise. Flag real bugs, not style preferences.
+```
+
+### Available template variables in the reviewer prompt
+
+| Variable | Description |
+|---|---|
+| `issue.identifier` | Issue ID (e.g. `ENG-42` for Linear, `#42` for GitHub) |
+| `issue.title` | Issue title |
+| `issue.branch_name` | Git branch created for this issue |
+| `issue.description` | Issue body / description |
+
+---
+
+## Summary: all agent config fields
+
+| Field | Default | Description |
+|---|---|---|
+| `agent_mode` | `""` | Collaboration model: `""`, `"subagents"`, or `"teams"` |
+| `command` | `"claude"` | Default agent runner command |
+| `backend` | `""` | Override runner detection (`"claude"` or `"codex"`) |
+| `max_concurrent_agents` | `10` | Maximum simultaneous agents |
+| `max_turns` | `20` | Maximum turns per agent session |
+| `turn_timeout_ms` | `3600000` | Hard time limit per session (ms) |
+| `stall_timeout_ms` | `300000` | Inactivity timeout before retry (ms) |
+| `max_retry_backoff_ms` | `300000` | Cap on exponential retry back-off (ms) |
+| `max_retries` | `5` | Max retries before moving to `failed_state` |
+| `ssh_hosts` | `[]` | Remote hosts for SSH dispatch |
+| `dispatch_strategy` | `"round-robin"` | SSH routing: `"round-robin"` or `"least-loaded"` |
+| `profiles` | `{}` | Named agent profiles (teams mode) |
+| `reviewer_prompt` | *(built-in)* | Liquid template for AI review workers |
+| `inline_input` | `false` | Post input-required questions as tracker comments |

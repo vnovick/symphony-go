@@ -2,6 +2,40 @@ package domain
 
 import "time"
 
+// BufLogEntry is the JSON-encoded log buffer entry shared between the orchestrator
+// (written by formatBufLine) and the server (read by parseLogLine).
+// The JSON schema is stable; changing field names or omitempty tags requires
+// updating both write and read paths simultaneously.
+type BufLogEntry struct {
+	Level       string `json:"level"`
+	Msg         string `json:"msg"`
+	Time        string `json:"time"`
+	Text        string `json:"text,omitempty"`
+	Tool        string `json:"tool,omitempty"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status,omitempty"`
+	ExitCode    string `json:"exit_code,omitempty"`
+	OutputSize  string `json:"output_size,omitempty"`
+	Task        string `json:"task,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+}
+
+// IssueLogEntry is the normalized log entry returned by the sublogs API.
+// It matches the JSON schema expected by the frontend (same as the existing
+// /api/v1/issues/{id}/logs response).
+type IssueLogEntry struct {
+	Level     string `json:"level"`
+	Event     string `json:"event"`
+	Message   string `json:"message"`
+	Tool      string `json:"tool,omitempty"`
+	Time      string `json:"time,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	SessionID string `json:"sessionId,omitempty"`
+}
+
 // Comment — a comment on a tracker issue.
 type Comment struct {
 	Body       string
@@ -31,4 +65,12 @@ type BlockerRef struct {
 	ID         *string
 	Identifier *string
 	State      *string
+}
+
+// Project is a generic project/team/repository grouping returned by trackers
+// that support project-level filtering (e.g. Linear workspaces).
+type Project struct {
+	ID   string
+	Name string
+	Slug string
 }

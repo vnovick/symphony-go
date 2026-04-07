@@ -2,7 +2,7 @@
 .worktrees/
 
 # Go build artifacts
-/symphony
+/itervox
 *.test
 
 # Node / Web
@@ -18,9 +18,16 @@ log/
 
 # Env
 .env
+.itervox/.env
 .superpowers/
 
 # Planning docs (local only)
 planning/
 docs/superpowers/
 coverage.out
+coverage.html
+
+# Site
+site/node_modules/
+site/dist/
+site/.astro/
