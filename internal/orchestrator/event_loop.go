@@ -108,6 +108,8 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			}
 			delete(state.PausedIdentifiers, issue.Identifier)
 			delete(state.PausedOpenPRs, issue.Identifier)
+			// Keep PausedSessions so that auto-resume from a tracker state change
+			// can also reuse the captured session ID. Dispatch will consume it.
 			slog.Info("orchestrator: auto-resumed issue re-activated in tracker",
 				"identifier", issue.Identifier, "state", issue.State)
 			if o.logBuf != nil {
@@ -461,7 +463,16 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	// by session ID to isolate each run's logs. Clearing here would destroy the
 	// log history of cancelled/terminated runs before users can inspect them.
 
-	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck)
+	// If this issue is being resumed from manual pause and we captured a session
+	// ID, pass it through so the agent continues the same session via --resume.
+	resumeSessionID := ""
+	if entry, ok := state.PausedSessions[issue.Identifier]; ok && entry != nil {
+		resumeSessionID = entry.SessionID
+		// Consume the entry — once dispatched, the session info is no longer
+		// needed (the worker now owns the session via its RunEntry).
+		delete(state.PausedSessions, issue.Identifier)
+	}
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeSessionID)
 	return state
 }
 
@@ -532,7 +543,7 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	o.issueProfiles[issue.Identifier] = profileName
 	o.issueProfilesMu.Unlock()
 
-	go o.runWorker(workerCtx, issue, attempt, "", runnerCommand, backend, profileName, false)
+	go o.runWorker(workerCtx, issue, attempt, "", runnerCommand, backend, profileName, false, "")
 }
 
 // transitionToWorking moves the issue to the configured working state (e.g. "In Progress").
@@ -576,12 +587,18 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			if ev.RunEntry.SessionID != "" {
 				entry.SessionID = ev.RunEntry.SessionID
 			}
+			if ev.RunEntry.AgentSessionID != "" {
+				entry.AgentSessionID = ev.RunEntry.AgentSessionID
+			}
 		}
 
 	case EventForceReanalyze:
 		// Runs in the event loop goroutine — safe to mutate state maps directly.
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
+			// Force-reanalyze starts fresh — drop any captured session so dispatch
+			// runs runWorker without --resume.
+			delete(state.PausedSessions, ev.Identifier)
 			state.ForceReanalyze[ev.Identifier] = struct{}{}
 			// Persist immediately so a crash between ticks doesn't re-pause the issue.
 			o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
@@ -605,6 +622,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventTerminatePaused:
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
+			// Terminate discards the issue entirely; drop any captured session.
+			delete(state.PausedSessions, ev.Identifier)
 			o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
 			slog.Info("orchestrator: paused issue terminated (claim released)", "identifier", ev.Identifier)
 			// Move the issue back to Backlog (or first active state if no backlog
@@ -802,9 +821,42 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 
 		if wasCancelledByUser {
 			state.PausedIdentifiers[issue.Identifier] = issue.ID
+			// Capture session info so resume can continue the same agent session
+			// via --resume / `exec resume` instead of starting from scratch.
+			// Only meaningful when the agent has actually established a session
+			// (AgentSessionID is non-empty — set by the worker after the agent
+			// reports its session ID on the first turn).
+			if liveEntry != nil && liveEntry.AgentSessionID != "" {
+				state.PausedSessions[issue.Identifier] = &PausedSessionInfo{
+					IssueID:    issue.ID,
+					SessionID:  liveEntry.AgentSessionID,
+					WorkerHost: liveEntry.WorkerHost,
+					Backend:    liveEntry.Backend,
+				}
+				// Resolve command + profile for resume. The live RunEntry doesn't
+				// store these, so look them up from cfg + per-issue overrides the
+				// same way dispatch() does.
+				o.cfgMu.RLock()
+				resumeCommand := o.cfg.Agent.Command
+				profiles := o.cfg.Agent.Profiles
+				o.cfgMu.RUnlock()
+				profileName := state.IssueProfiles[issue.Identifier]
+				if profileName != "" {
+					if profile, ok := profiles[profileName]; ok && profile.Command != "" {
+						resumeCommand = profile.Command
+					}
+				}
+				state.PausedSessions[issue.Identifier].Command = resumeCommand
+				state.PausedSessions[issue.Identifier].ProfileName = profileName
+			}
 			delete(state.Claimed, ev.IssueID)
+			savedSession := ""
+			if entry := state.PausedSessions[issue.Identifier]; entry != nil {
+				savedSession = entry.SessionID
+			}
 			slog.Info("orchestrator: issue paused by user kill",
-				"issue_id", ev.IssueID, "identifier", issue.Identifier)
+				"issue_id", ev.IssueID, "identifier", issue.Identifier,
+				"session_id", savedSession)
 			o.recordHistory(liveEntry, issue, now, "cancelled")
 			return state
 		}

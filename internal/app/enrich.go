@@ -66,11 +66,13 @@ func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg
 		if re.Error != nil {
 			ti.Error = *re.Error
 		}
-	} else if _, paused := snap.PausedIdentifiers[issue.Identifier]; paused {
-		ti.OrchestratorState = "paused"
 	} else if entry, inputReq := snap.InputRequiredIssues[issue.Identifier]; inputReq {
+		// input_required wins over paused: an issue waiting on a human is the
+		// more actionable signal, even though the worker has technically paused.
 		ti.OrchestratorState = "input_required"
 		ti.Error = entry.Context
+	} else if _, paused := snap.PausedIdentifiers[issue.Identifier]; paused {
+		ti.OrchestratorState = "paused"
 	} else {
 		ti.OrchestratorState = "idle"
 		// IneligibleReason: only for active-state idle issues.

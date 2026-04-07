@@ -305,6 +305,17 @@ func copyStringMap(m map[string]string) map[string]string {
 	return cp
 }
 
+// copyPausedSessionsMap returns a shallow copy of the PausedSessions map.
+// Entries are pointers but PausedSessionInfo is immutable after capture, so
+// sharing the entry pointers across goroutines is safe.
+func copyPausedSessionsMap(m map[string]*PausedSessionInfo) map[string]*PausedSessionInfo {
+	cp := make(map[string]*PausedSessionInfo, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
 // copyStructMap returns a copy of a map[string]struct{}.
 func copyStructMap(m map[string]struct{}) map[string]struct{} {
 	cp := make(map[string]struct{}, len(m))
@@ -396,6 +407,7 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.Claimed = copyStructMap(s.Claimed)
 	snap.RetryAttempts = copyRetryMap(s.RetryAttempts)
 	snap.PausedIdentifiers = copyStringMap(s.PausedIdentifiers)
+	snap.PausedSessions = copyPausedSessionsMap(s.PausedSessions)
 	snap.IssueProfiles = copyStringMap(s.IssueProfiles)
 	snap.IssueBackends = copyStringMap(s.IssueBackends)
 	snap.PausedOpenPRs = copyStringMap(s.PausedOpenPRs)

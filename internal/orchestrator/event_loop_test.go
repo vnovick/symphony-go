@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1642,9 +1643,9 @@ func TestReanalyzeIssueNotPaused(t *testing.T) {
 func TestSortForDispatchNilCreatedAt(t *testing.T) {
 	t1 := time.Unix(1000, 0)
 	issues := []domain.Issue{
-		makeIssue("a", "ENG-1", "Todo", prio(1), nil),   // nil created_at
-		makeIssue("b", "ENG-2", "Todo", prio(1), &t1),   // has created_at
-		makeIssue("c", "ENG-3", "Todo", prio(1), nil),   // nil created_at
+		makeIssue("a", "ENG-1", "Todo", prio(1), nil), // nil created_at
+		makeIssue("b", "ENG-2", "Todo", prio(1), &t1), // has created_at
+		makeIssue("c", "ENG-3", "Todo", prio(1), nil), // nil created_at
 	}
 	sorted := orchestrator.SortForDispatch(issues)
 	// ENG-2 (has created_at) should come before ENG-1 and ENG-3 (nil created_at)
@@ -1704,4 +1705,188 @@ func TestInputRequiredFilePersistence(t *testing.T) {
 
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+// ---------------------------------------------------------------------------
+// Manual pause + resume preserves the agent session ID
+// ---------------------------------------------------------------------------
+
+// resumeTestRunner is a test double that:
+//  1. First call: returns immediately with a session ID and non-zero tokens
+//     (so the worker continues the loop instead of breaking on 0-token turn).
+//  2. Second call (turn 2): stalls until ctx is cancelled. By this point the
+//     orchestrator has captured the session ID into state.Running.
+//  3. Third call (after resume): records the inbound sessionID and exits.
+type resumeTestRunner struct {
+	mu         sync.Mutex
+	calls      int
+	sessionIDs []string // sessionID pointer values seen on each call
+}
+
+func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+	r.mu.Lock()
+	r.calls++
+	callNum := r.calls
+	sid := ""
+	if sessionID != nil {
+		sid = *sessionID
+	}
+	r.sessionIDs = append(r.sessionIDs, sid)
+	r.mu.Unlock()
+
+	switch callNum {
+	case 1:
+		// Return a session ID + non-zero tokens so the worker stores it and
+		// continues to turn 2.
+		return agent.TurnResult{
+			SessionID:    "agent-session-xyz",
+			InputTokens:  10,
+			OutputTokens: 10,
+			TotalTokens:  20,
+			ResultText:   "in-progress",
+		}, nil
+	case 2:
+		// Second turn: stall so the worker is active when the user pauses.
+		<-ctx.Done()
+		return agent.TurnResult{Failed: true}, ctx.Err()
+	default:
+		// Resumed call: succeed with no work.
+		return agent.TurnResult{
+			SessionID:    "agent-session-xyz",
+			InputTokens:  5,
+			OutputTokens: 5,
+			TotalTokens:  10,
+			ResultText:   "resumed",
+		}, nil
+	}
+}
+
+func TestManualPauseResumePreservesSession(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	mt := singleIssueTracker(t, "In Progress")
+	runner := &resumeTestRunner{}
+	orch := orchestrator.New(cfg, mt, runner, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Track when the agent session ID has been captured into Running state
+	// AND the worker has actually started (so cancellation has a worker to kill).
+	sessionCaptured := make(chan struct{}, 1)
+	orch.OnStateChange = func() {
+		snap := orch.Snapshot()
+		if entry, ok := snap.Running["id1"]; ok && entry.AgentSessionID == "agent-session-xyz" {
+			select {
+			case sessionCaptured <- struct{}{}:
+			default:
+			}
+		}
+	}
+
+	go orch.Run(ctx) //nolint:errcheck
+
+	select {
+	case <-sessionCaptured:
+	case <-time.After(3 * time.Second):
+		t.Fatal("agent session ID was not captured into Running state within 3s")
+	}
+
+	// User clicks Pause.
+	require.True(t, orch.CancelIssue("ENG-1"))
+
+	// Wait for the issue to land in PausedSessions with the captured session.
+	deadline := time.After(3 * time.Second)
+	for {
+		snap := orch.Snapshot()
+		if entry, ok := snap.PausedSessions["ENG-1"]; ok && entry != nil && entry.SessionID == "agent-session-xyz" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("PausedSessions did not capture session ID; snap=%+v", orch.Snapshot().PausedSessions)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	// User clicks Resume.
+	require.True(t, orch.ResumeIssue("ENG-1"))
+
+	// Wait for the runner to be called a second time.
+	deadline = time.After(3 * time.Second)
+	for {
+		runner.mu.Lock()
+		callCount := runner.calls
+		var lastSid string
+		if len(runner.sessionIDs) >= 2 {
+			lastSid = runner.sessionIDs[1]
+		}
+		runner.mu.Unlock()
+		if callCount >= 2 {
+			// CRITICAL ASSERTION: the second call must have received the
+			// captured session ID via the resumeSessionID parameter.
+			require.Equal(t, "agent-session-xyz", lastSid,
+				"resumed worker must call RunTurn with the captured session ID")
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("runner was not called a second time after resume; calls=%d", callCount)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func TestManualPauseResumeWithoutSession(t *testing.T) {
+	// When pause happens before the agent reports a session ID, PausedSessions
+	// should NOT have an entry, and resume should fall back to a fresh dispatch
+	// (no --resume).
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	mt := singleIssueTracker(t, "In Progress")
+	fake := &agenttest.FakeRunner{Stall: true}
+	orch := orchestrator.New(cfg, mt, fake, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	workerVisible := make(chan struct{}, 1)
+	orch.OnStateChange = func() {
+		snap := orch.Snapshot()
+		if len(snap.Running) > 0 {
+			select {
+			case workerVisible <- struct{}{}:
+			default:
+			}
+		}
+	}
+	go orch.Run(ctx) //nolint:errcheck
+
+	select {
+	case <-workerVisible:
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker not visible within 3s")
+	}
+
+	// Cancel before any session ID has been captured.
+	require.True(t, orch.CancelIssue("ENG-1"))
+
+	// Wait for paused.
+	deadline := time.After(3 * time.Second)
+	for {
+		snap := orch.Snapshot()
+		if _, paused := snap.PausedIdentifiers["ENG-1"]; paused {
+			// PausedSessions should be empty for this issue.
+			_, hasSession := snap.PausedSessions["ENG-1"]
+			require.False(t, hasSession,
+				"PausedSessions must NOT have an entry when no session ID was captured")
+			cancel()
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("issue did not become paused within 3s")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }

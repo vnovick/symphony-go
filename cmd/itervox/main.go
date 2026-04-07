@@ -33,6 +33,7 @@ import (
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/statusui"
+	"github.com/vnovick/itervox/internal/templates"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
@@ -1904,6 +1905,11 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 		b.WriteString("- All conventions in `CLAUDE.md` apply — do not deviate without a documented reason.\n")
 	}
 	b.WriteString("\n")
+
+	// Append the static "Asking for human input" block. Sourced from the
+	// templates package so the sentinel contract has a single source of truth
+	// instead of drifting between inline strings here and the markdown files.
+	b.Write(templates.HumanInput)
 
 	return b.String()
 }

@@ -1,6 +1,9 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 // Event type constants emitted by a supported agent CLI stream.
 const (
@@ -42,6 +45,41 @@ type Logger interface {
 // TurnResult so callers can stream live token/message updates to the dashboard.
 type Runner interface {
 	RunTurn(ctx context.Context, log Logger, onProgress func(TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (TurnResult, error)
+}
+
+// FinalizeResult performs end-of-turn checks on an accumulated TurnResult.
+// It scans the assistant text blocks for the input-required sentinel token
+// and sets r.InputRequired accordingly.
+//
+// The project's WORKFLOW.md instructs agents to emit the
+// <!-- itervox:needs-input --> sentinel on its own line when they need
+// human input before continuing. This is a contract between the prompt
+// template and the orchestrator — no LLM classifiers, no heuristic pattern
+// matching, no API keys. The agent tells us when it's blocked.
+//
+// Detection order:
+//  1. Parser already set InputRequired (e.g. codex turn.failed "human turn") — keep it
+//  2. Sentinel token in assistant text or result text
+//
+// This unifies detection across all backends — Claude and Codex both
+// finalize their TurnResults the same way.
+func FinalizeResult(r TurnResult) TurnResult {
+	if r.InputRequired {
+		return r
+	}
+	if len(r.AllTextBlocks) == 0 && r.ResultText == "" {
+		return r
+	}
+	// Build the check text from text blocks (where the sentinel appears)
+	// plus the result text (some agents put the sentinel in the summary).
+	combined := strings.Join(r.AllTextBlocks, "\n")
+	if r.ResultText != "" {
+		combined += "\n" + r.ResultText
+	}
+	if IsSentinelInputRequired(combined) {
+		r.InputRequired = true
+	}
+	return r
 }
 
 // ApplyEvent merges a StreamEvent into the accumulated TurnResult.

@@ -41,7 +41,7 @@ beforeEach(() => {
       }) => unknown,
     ) => sel({ setSnapshot: mockSetSnapshot, setSseConnected: mockSetSseConnected }),
   );
-  // useSymphonySSE calls useItervoxStore.getState() directly to read actions
+  // useItervoxSSE calls useItervoxStore.getState() directly to read actions
   Object.assign(useItervoxStore, {
     getState: () => ({ setSnapshot: mockSetSnapshot, setSseConnected: mockSetSseConnected }),
   });

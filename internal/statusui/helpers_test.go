@@ -366,7 +366,7 @@ func TestApplyPickerFilter_NilSetProjectFilter(t *testing.T) {
 func TestApplyPickerFilter_AllSelected(t *testing.T) {
 	var applied []string
 	m := Model{
-		cfg: Config{SetProjectFilter: func(slugs []string) { applied = slugs }},
+		cfg:       Config{SetProjectFilter: func(slugs []string) { applied = slugs }},
 		pickerSel: map[string]bool{"": true, "alpha": true},
 	}
 	m.applyPickerFilter()
@@ -376,7 +376,7 @@ func TestApplyPickerFilter_AllSelected(t *testing.T) {
 func TestApplyPickerFilter_SpecificSlugs(t *testing.T) {
 	var applied []string
 	m := Model{
-		cfg: Config{SetProjectFilter: func(slugs []string) { applied = slugs }},
+		cfg:       Config{SetProjectFilter: func(slugs []string) { applied = slugs }},
 		pickerSel: map[string]bool{"alpha": true, "beta": false, "gamma": true},
 	}
 	m.applyPickerFilter()
@@ -388,7 +388,7 @@ func TestApplyPickerFilter_SpecificSlugs(t *testing.T) {
 func TestApplyPickerFilter_NoSelection(t *testing.T) {
 	var applied []string
 	m := Model{
-		cfg: Config{SetProjectFilter: func(slugs []string) { applied = slugs }},
+		cfg:       Config{SetProjectFilter: func(slugs []string) { applied = slugs }},
 		pickerSel: map[string]bool{},
 	}
 	m.applyPickerFilter()

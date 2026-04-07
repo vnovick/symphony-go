@@ -575,7 +575,7 @@ func TestUpdateIssueState(t *testing.T) {
 	}
 
 	srv := queryDispatcher(t, map[string]interface{}{
-		"ItervoxResolveStateId":    resolveResp,
+		"ItervoxResolveStateId":   resolveResp,
 		"ItervoxUpdateIssueState": updateResp,
 	})
 	defer srv.Close()
@@ -638,7 +638,7 @@ func TestUpdateIssueStateMutationFails(t *testing.T) {
 	}
 
 	srv := queryDispatcher(t, map[string]interface{}{
-		"ItervoxResolveStateId":    resolveResp,
+		"ItervoxResolveStateId":   resolveResp,
 		"ItervoxUpdateIssueState": updateResp,
 	})
 	defer srv.Close()
@@ -936,7 +936,7 @@ func TestFetchProjectsSkipsIncompleteNodes(t *testing.T) {
 			"projects": map[string]interface{}{
 				"nodes": []interface{}{
 					map[string]interface{}{"id": "p1", "name": "Alpha", "slugId": "alpha"},
-					map[string]interface{}{"id": "", "name": "NoID", "slugId": "noid"},         // missing id
+					map[string]interface{}{"id": "", "name": "NoID", "slugId": "noid"},          // missing id
 					map[string]interface{}{"id": "p3", "name": "", "slugId": "noname"},          // missing name
 					map[string]interface{}{"id": "p4", "name": "Valid", "slugId": "valid-slug"}, // OK
 				},

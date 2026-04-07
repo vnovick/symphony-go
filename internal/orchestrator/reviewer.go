@@ -29,4 +29,3 @@ func (o *Orchestrator) DispatchReviewer(identifier string) error {
 		return fmt.Errorf("reviewer: event channel full")
 	}
 }
-

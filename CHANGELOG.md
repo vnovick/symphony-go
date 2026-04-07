@@ -227,7 +227,7 @@ would show subagents from all prior runs mixed together.
 | Item | Details |
 |------|---------|
 | `SECURITY.md` | Responsible disclosure process, scope (API token exposure, workspace path traversal, HTTP API, prompt injection), and link to itervox SPEC |
-| `CONTRIBUTING.md` | Added Protocol Specification section linking to the [itervox SPEC](https://github.com/openai/itervox/blob/main/SPEC.md) |
+| `CONTRIBUTING.md` | Added Protocol Specification section linking to the [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md) |
 | `.env.example` | All required env vars documented with format hints (`LINEAR_API_KEY`, `GITHUB_TOKEN`, `SSH_KEY_PATH`) |
 | `ErrorBoundary` component | Class component wrapping the app root — render crashes show a recovery UI instead of a blank screen |
 | SSE exponential backoff | Reconnect delay increases `5s → 10s → 20s → 30s` (cap) instead of a flat 5 s retry |

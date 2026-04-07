@@ -130,53 +130,27 @@ func isInputRequiredMsg(msg string) bool {
 		strings.Contains(lower, "confirmation required")
 }
 
-// contentQuestionPatterns are phrases that indicate an agent's successful output
-// is soliciting user input. Checked against the last ~2000 chars of output.
-var contentQuestionPatterns = []string{
-	"questions for you",
-	"please answer",
-	"how would you like to proceed",
-	"how do you want to proceed",
-	"what would you like",
-	"which option do you prefer",
-	"please let me know",
-	"awaiting your input",
-	"awaiting your response",
-	"your input is needed",
-	"please provide",
-	"please confirm",
-	"do you want me to",
-	"should i proceed",
-	"shall i proceed",
-	"which approach",
-	"which is higher priority",
-	"please select",
-	"let me know how you'd like",
-	"let me know how you would like",
-	"what are your thoughts",
-	"i need your guidance",
-	"waiting for your decision",
-}
+// InputRequiredSentinel is the literal token agents are instructed to emit
+// when they need human input before continuing. Chosen as an HTML comment so
+// it renders invisibly in tracker comments (Linear/GitHub markdown) while
+// remaining trivially detectable. The token is case-sensitive.
+const InputRequiredSentinel = "<!-- itervox:needs-input -->"
 
-// IsContentInputRequired returns true when a successful agent output contains
-// patterns indicating the agent is soliciting user input (e.g. "Questions for you",
-// "How would you like to proceed"). Unlike isInputRequiredMsg which checks error
-// messages for CLI-level blocks, this checks successful output for content-level
-// questions that require a human response.
-func IsContentInputRequired(text string) bool {
+// IsSentinelInputRequired returns true when the agent's output contains the
+// reliable opt-in sentinel. Prefer this over the heuristic detector — it has
+// no false positives and no locale dependence.
+func IsSentinelInputRequired(text string) bool {
 	if len(text) == 0 {
 		return false
 	}
-	// Only scan the tail of the output — questions typically appear at the end.
-	const tailSize = 2000
-	if len(text) > tailSize {
-		text = text[len(text)-tailSize:]
-	}
-	lower := strings.ToLower(text)
-	for _, pattern := range contentQuestionPatterns {
-		if strings.Contains(lower, pattern) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(text, InputRequiredSentinel)
+}
+
+// IsContentInputRequired returns true when the agent's output contains the
+// input-required sentinel. This is the single source of truth — no heuristics,
+// no pattern matching, no LLM classifiers. The prompt template in WORKFLOW.md
+// instructs the agent to emit the sentinel when it needs human input. The
+// agent telling us it's blocked is the only reliable signal.
+func IsContentInputRequired(text string) bool {
+	return IsSentinelInputRequired(text)
 }

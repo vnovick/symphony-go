@@ -59,14 +59,16 @@ A small number of fields that are mutated from *outside* goroutines (HTTP handle
 
 | Field | Mutex | Reason |
 |---|---|---|
-| `cfg.Agent.MaxConcurrentAgents` | `workersMu` | HTTP handler: `SetMaxWorkers` |
-| `cfg.Agent.*`, `cfg.Tracker.*` | `cfgMu` | HTTP handler: profile/state changes |
+| Runtime-mutable `cfg.Agent.*` and `cfg.Tracker.*` fields (see CLAUDE.md for the exact list), plus `sshHostDescs` | `cfgMu` (RW) | HTTP handlers: `SetMaxWorkers`, profile/state/SSH-host changes |
 | `lastSnap` | `snapMu` (RW) | Written by event loop, read by HTTP snapshot endpoint |
-| `completedRuns` | `historyMu` (RW) | Written by event loop, read by HTTP history endpoint |
+| `completedRuns`, `historyFile`, `historyKey` | `historyMu` (RW) | Written by event loop, read by HTTP history endpoint |
+| `workerCancels` | `workerCancelsMu` | Written by event-loop dispatch, read by `cancelRunningWorker` from any goroutine |
 | `userCancelledIDs` | `userCancelledMu` | Written by HTTP `CancelIssue`, read by event loop |
 | `userTerminatedIDs` | `userTerminatedMu` | Written by HTTP `TerminateIssue`, read by event loop |
-| `issueProfiles` | `issueProfilesMu` | Written by HTTP `SetIssueProfile`, read by event loop dispatch |
-| `prURLsBeforePause` | `prURLsMu` | Written by workers, read by event loop terminal handler |
+| `issueProfiles` | `issueProfilesMu` (RW) | Written by HTTP `SetIssueProfile`, read by event-loop dispatch and `Snapshot()` |
+| `issueBackends` | `issueBackendsMu` (RW) | Written by HTTP `SetIssueBackend`, read by event-loop dispatch and `Snapshot()` |
+| `pausedFile` | `pausedMu` (RW) | Persistence path for `PausedIdentifiers` |
+| `inputRequiredFile` | `inputRequiredMu` (RW) | Persistence path for `InputRequiredIssues` |
 
 The invariant: **all dispatch logic that decides whether to claim or transition an issue runs in the event loop goroutine and requires no lock.**
 
@@ -111,6 +113,8 @@ The invariant: **all dispatch logic that decides whether to claim or transition 
 ## Related
 
 - `internal/orchestrator/orchestrator.go` — `Orchestrator` struct definition and all mutex annotations
-- `internal/orchestrator/state.go` — `handleEvent` implementation
+- `internal/orchestrator/event_loop.go` — `Run` select loop and `handleEvent` implementation
+- `internal/orchestrator/state.go` — `State` value type and `NewState`
+- `internal/orchestrator/worker.go` — worker goroutines that post `EventWorkerExited` back via `o.events`
 - `internal/orchestrator/orchestrator_test.go` — event-driven tests exercising the loop
 - `internal/orchestrator/retry.go` — `BackoffMs` formula (documented in godoc)

@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
 import RunningSessionsTable from '../../components/itervox/RunningSessionsTable';
 import RetryQueueTable from '../../components/itervox/RetryQueueTable';
+import { ReviewQueueSection } from '../../components/itervox/ReviewQueueSection';
 import { HostPool } from '../../components/itervox/HostPool';
 import { ProjectSelector } from '../../components/itervox/ProjectSelector';
 import { NarrativeFeed } from '../../components/itervox/NarrativeFeed';
@@ -247,6 +248,7 @@ export default function Dashboard() {
 
         <HostPool />
         <RunningSessionsTable />
+        <ReviewQueueSection />
         <RetryQueueTable />
 
         {/* Issues panel */}

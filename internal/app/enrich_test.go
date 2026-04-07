@@ -29,6 +29,7 @@ func emptyState() orchestrator.State {
 		Claimed:               make(map[string]struct{}),
 		RetryAttempts:         make(map[string]*orchestrator.RetryEntry),
 		PausedIdentifiers:     make(map[string]string),
+		PausedSessions:        make(map[string]*orchestrator.PausedSessionInfo),
 		IssueProfiles:         make(map[string]string),
 		PausedOpenPRs:         make(map[string]string),
 		ForceReanalyze:        make(map[string]struct{}),

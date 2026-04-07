@@ -360,3 +360,24 @@ Trigger an immediate tracker poll (instead of waiting for the next interval).
 | command | string | CLI command (e.g. "claude", "codex", or absolute path) |
 | prompt | string | System prompt override for this profile |
 | backend | string | Runner backend ("claude" or "codex") |
+
+---
+
+## Additional endpoints
+
+| Method | Path | Body | Response | Description |
+|---|---|---|---|---|
+| DELETE | `/issues/{identifier}` | — | `{cancelled, identifier}` | Alias for `POST /issues/{identifier}/cancel`. |
+| PATCH  | `/issues/{identifier}/state` | `{"state": "..."}` | `{ok}` | Move an issue to a specific tracker state (Kanban drag-and-drop) and trigger an immediate re-poll. |
+| POST   | `/issues/{identifier}/backend` | `{"backend": "claude"\|"codex"}` | `{ok, identifier, backend}` | Override the runner backend for a single issue. |
+| POST   | `/issues/{identifier}/provide-input` | `{"message": "..."}` | `{ok}` | Resume an agent waiting on the input-required sentinel with the supplied message. 404 if the issue is not in input-required state. |
+| POST   | `/issues/{identifier}/dismiss-input` | — | `{ok}` | Discard a pending input-required prompt without resuming. |
+| POST   | `/settings/inline-input` | `{"enabled": bool}` | `{ok}` | Toggle `agent.inline_input` (post questions as tracker comments vs. dashboard queue). |
+| GET    | `/settings/models` | — | `map[backend][]{id,label}` | List available models per backend (populates the profile editor dropdown). |
+| GET    | `/settings/reviewer` | — | `{profile, auto_review}` | Return current reviewer profile and auto-review flag. |
+| PUT    | `/settings/reviewer` | `{"profile": "...", "auto_review": bool}` | `{ok}` | Update reviewer profile and auto-review flag. |
+
+Note on SSH hosts: `POST /settings/ssh-hosts` request body is documented as
+`{"host","description"}` — verify this matches the current handler signature;
+the snapshot shape uses `{host, description}` but the handler may accept a
+bare string. Confirm against `handleAddSSHHost`.

@@ -1,5 +1,6 @@
 ---
 import '../styles/custom.css';
+import Screenshot from '../components/Screenshot.astro';
 const title = 'Itervox — Your codebase\'s journey, narrated by agents';
 const description = 'Orchestrate AI agents across issues, profiles, and machines. Full visibility from dispatch to PR.';
 const githubUrl = 'https://github.com/vnovick/itervox';
@@ -502,164 +503,6 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       font-weight: 500;
     }
 
-    /* Kanban mockup */
-    .kanban-cols {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 10px;
-    }
-    .kanban-col-title {
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-    .kanban-card {
-      background: var(--bg-elevated);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      padding: 8px 10px;
-      margin-bottom: 6px;
-      font-size: 11px;
-    }
-    .kanban-card-id {
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 10px;
-      color: var(--accent-strong);
-      font-weight: 600;
-    }
-    .kanban-card-title {
-      color: var(--text-secondary);
-      font-size: 10px;
-      margin-top: 2px;
-    }
-    .kanban-card-badge {
-      display: inline-block;
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 9px;
-      padding: 1px 6px;
-      border-radius: 3px;
-      margin-top: 4px;
-    }
-    .badge-running {
-      background: rgba(34,197,94,0.15);
-      color: var(--success);
-    }
-    .badge-done {
-      background: rgba(34,197,94,0.1);
-      color: var(--success);
-    }
-    .badge-backend {
-      background: rgba(99,102,241,0.15);
-      color: var(--accent-strong);
-    }
-    .badge-frontend {
-      background: rgba(168,85,247,0.15);
-      color: var(--purple);
-    }
-    .pulse-dot {
-      display: inline-block;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--success);
-      margin-right: 4px;
-      animation: pulse 2s infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-    .check-mark { color: var(--success); margin-right: 4px; }
-
-    /* Host pool mockup */
-    .host-tiles {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 8px;
-    }
-    .host-tile {
-      background: var(--bg-elevated);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      padding: 10px;
-    }
-    .host-name {
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 4px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .host-status {
-      width: 6px; height: 6px; border-radius: 50%;
-    }
-    .host-status--on { background: var(--success); }
-    .host-status--off { background: var(--muted); }
-    .host-agents {
-      font-size: 10px;
-      color: var(--text-secondary);
-      margin-bottom: 6px;
-    }
-    .host-bar {
-      height: 4px;
-      background: var(--bg-soft);
-      border-radius: 2px;
-      overflow: hidden;
-    }
-    .host-bar-fill {
-      height: 100%;
-      border-radius: 2px;
-      background: var(--gradient-accent);
-    }
-    .host-badge-disabled {
-      font-size: 9px;
-      color: var(--muted);
-      font-style: italic;
-      margin-top: 4px;
-    }
-
-    /* Timeline mockup */
-    .timeline-mock {
-      display: grid;
-      grid-template-columns: 100px 1fr;
-      gap: 8px;
-      align-items: center;
-    }
-    .timeline-chip {
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 10px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .timeline-chip-dot {
-      width: 6px; height: 6px; border-radius: 50%;
-    }
-    .timeline-bar-wrap {
-      height: 24px;
-      background: var(--bg-soft);
-      border-radius: var(--radius-sm);
-      overflow: hidden;
-      display: flex;
-      position: relative;
-    }
-    .timeline-seg {
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 8px;
-      font-weight: 500;
-      color: rgba(255,255,255,0.8);
-    }
     .timeline-tok {
       font-family: 'IBM Plex Mono', monospace;
       font-size: 9px;
@@ -671,28 +514,6 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       white-space: nowrap;
     }
 
-    /* Logs mockup */
-    .logs-filters {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 12px;
-      flex-wrap: wrap;
-    }
-    .log-chip {
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 10px;
-      padding: 3px 10px;
-      border-radius: var(--radius-sm);
-      border: 1px solid var(--line);
-    }
-    .log-chip--active {
-      background: rgba(99,102,241,0.15);
-      border-color: var(--accent);
-      color: var(--accent-strong);
-    }
-    .log-chip--dim {
-      color: var(--muted);
-    }
     .log-line {
       font-family: 'IBM Plex Mono', monospace;
       font-size: 11px;
@@ -700,97 +521,10 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       padding: 0 4px;
     }
 
-    /* Settings mockup */
-    .settings-section {
-      margin-bottom: 14px;
-    }
-    .settings-label {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-    .segmented {
-      display: inline-flex;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      overflow: hidden;
-    }
-    .seg-btn {
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 11px;
-      padding: 6px 14px;
-      background: transparent;
-      color: var(--muted);
-      border: none;
-      cursor: pointer;
-    }
-    .seg-btn--active {
-      background: var(--accent);
-      color: #fff;
-    }
-    .profile-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 0;
-      font-size: 12px;
-      color: var(--text-secondary);
-      border-bottom: 1px solid var(--line);
-    }
     .profile-dot {
       width: 8px; height: 8px; border-radius: 50%;
     }
-    .capacity-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 10px;
-      font-size: 12px;
-      color: var(--text-secondary);
-    }
-    .cap-btn {
-      width: 24px; height: 24px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      background: var(--bg-elevated);
-      color: var(--text);
-      font-size: 14px;
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-    }
 
-    /* ===== 7. TUI Mockup ===== */
-    .tui-layout {
-      display: grid;
-      grid-template-columns: 30% 70%;
-      grid-template-rows: auto 100px;
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 11px;
-      line-height: 1.6;
-      min-height: 380px;
-    }
-    .tui-panel {
-      padding: 12px;
-      border: 1px solid var(--line);
-      overflow: hidden;
-    }
-    .tui-left { grid-row: 1 / 3; border-right: none; }
-    .tui-right { grid-column: 2; }
-    .tui-bottom { grid-column: 1 / -1; border-top: none; }
-    .tui-heading {
-      font-weight: 600;
-      color: var(--accent-strong);
-      margin-bottom: 6px;
-    }
-    .tui-sub-heading {
-      font-weight: 600;
-      color: var(--muted);
-      margin-top: 10px;
-      margin-bottom: 4px;
-    }
     .keybinds {
       display: flex;
       flex-wrap: wrap;
@@ -1075,6 +809,224 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       line-height: 1.5;
     }
 
+    /* ===== Feature row — section-header style title + description left, features right, screenshot below ===== */
+    .feature-row {
+      display: flex;
+      flex-direction: column;
+      gap: 36px;
+      margin-bottom: 96px;
+    }
+    .feature-row:last-child { margin-bottom: 0; }
+    .feature-row > .split-text {
+      order: 1;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 56px;
+      max-width: 960px;
+      margin: 0 auto;
+      text-align: left;
+      align-items: start;
+    }
+    .feature-row > .split-text > h3 {
+      grid-column: 1;
+      grid-row: 1;
+      font-size: clamp(22px, 2.6vw, 30px);
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      line-height: 1.25;
+      margin-bottom: 14px;
+    }
+    .feature-row > .split-text > p {
+      grid-column: 1;
+      grid-row: 2;
+      font-size: 16px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    .feature-row > .split-text > ul {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+      margin: 0;
+      padding-left: 18px;
+      color: var(--text-secondary);
+      line-height: 1.8;
+    }
+    .feature-row > :not(.split-text) {
+      order: 2;
+      width: 100%;
+      display: flex;
+      justify-content: center;
+    }
+
+    /* Side-by-side variant: explanation left, image right (or vice versa) */
+    .feature-row--side {
+      flex-direction: row;
+      align-items: center;
+      gap: 56px;
+    }
+    .feature-row--side > .split-text {
+      order: 0;
+      flex: 1 1 0;
+      max-width: none;
+      margin: 0;
+      display: block; /* stack internally when side layout — no room for 2-col */
+    }
+    .feature-row--side > .split-text > h3,
+    .feature-row--side > .split-text > p,
+    .feature-row--side > .split-text > ul {
+      grid-column: auto;
+      grid-row: auto;
+    }
+    .feature-row--side > .split-text > ul {
+      display: block;
+      padding-left: 18px;
+      margin-top: 16px;
+    }
+    .feature-row--side > :not(.split-text) {
+      order: 1;
+      flex: 0 0 auto;
+      width: auto;
+    }
+
+    /* ===== CSS phone frame (for mobile dashboard capture) ===== */
+    .phone-frame {
+      width: 288px;
+      height: 560px;
+      border-radius: 40px;
+      padding: 10px;
+      background: #0a0a0a;
+      box-shadow:
+        0 30px 60px rgba(0,0,0,0.55),
+        0 0 0 2px #1f1f23,
+        inset 0 0 0 1px #2a2a30;
+      position: relative;
+    }
+    .phone-frame::before {
+      content: '';
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 110px;
+      height: 22px;
+      background: #0a0a0a;
+      border-radius: 0 0 14px 14px;
+      z-index: 2;
+    }
+    .phone-screen {
+      width: 100%;
+      height: 100%;
+      max-height: 500px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: #000;
+      border-radius: 30px;
+      scrollbar-width: thin;
+      scrollbar-color: #2a2a30 transparent;
+    }
+    .phone-screen::-webkit-scrollbar { width: 4px; }
+    .phone-screen::-webkit-scrollbar-thumb { background: #2a2a30; border-radius: 2px; }
+    .phone-screen img {
+      display: block;
+      width: 100%;
+      height: auto;
+      cursor: zoom-in;
+    }
+
+    /* ===== Lightbox dialog ===== */
+    .lightbox {
+      padding: 0;
+      border: none;
+      background: transparent;
+      max-width: 100vw;
+      max-height: 100vh;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .lightbox::backdrop {
+      background: rgba(0, 0, 0, 0.92);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    .lightbox-inner {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: zoom-out;
+      padding: 32px;
+    }
+    .lightbox-inner img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.6);
+      border-radius: 8px;
+    }
+    .lightbox-close {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .lightbox-close:hover {
+      background: rgba(0,0,0,0.8);
+    }
+
+    /* ===== Configure-without-restarts grid ===== */
+    .config-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 24px;
+    }
+    .config-card {
+      background: var(--bg-soft);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      overflow: hidden;
+      transition: border-color 200ms;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .config-card:hover {
+      border-color: var(--line-strong);
+    }
+    .config-card .shot {
+      max-width: 100%;
+    }
+    .config-card .screenshot-img {
+      max-height: 220px;
+      width: auto;
+      object-fit: contain;
+      object-position: top center;
+    }
+    .config-card h4 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0;
+    }
+    .config-card p {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin: 0;
+    }
+
     /* ===== Workflow Graph Mockup ===== */
     .workflow-graph {
       display: flex;
@@ -1248,27 +1200,29 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       .hero-grid, .split, .compare-grid, .dashboard-grid, .agent-grid {
         grid-template-columns: 1fr;
       }
-      .obs-grid, .int-grid {
+      .obs-grid, .int-grid, .config-grid {
         grid-template-columns: 1fr 1fr;
       }
-      .tui-layout {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto auto auto;
-      }
-      .tui-left { grid-row: auto; border-right: 1px solid var(--line); }
-      .tui-bottom { grid-column: 1; }
       .footer-grid {
         grid-template-columns: 1fr 1fr;
       }
-      .host-tiles {
+      .feature-row > .split-text {
         grid-template-columns: 1fr;
+        gap: 20px;
       }
-      .kanban-cols {
-        grid-template-columns: 1fr;
+      .feature-row > .split-text > h3,
+      .feature-row > .split-text > p,
+      .feature-row > .split-text > ul {
+        grid-column: 1;
+        grid-row: auto;
+      }
+      .feature-row--side {
+        flex-direction: column;
+        gap: 32px;
       }
     }
     @media (max-width: 600px) {
-      .obs-grid, .int-grid, .footer-grid {
+      .obs-grid, .int-grid, .config-grid, .footer-grid {
         grid-template-columns: 1fr;
       }
       .nav-links { gap: 16px; }
@@ -1472,7 +1426,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="12" height="12" rx="2"/><line x1="7" y1="6" x2="7" y2="12"/><line x1="11" y1="6" x2="11" y2="12"/></svg>
         </div>
         <h4>Pause &amp; Resume</h4>
-        <p>Pause any running agent from the dashboard or TUI. Resume when ready &mdash; the agent picks up where it left off.</p>
+        <p>Pause any running agent from the dashboard or TUI to free up a slot. Resume when ready &mdash; the agent picks up the same session via <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">--resume</code>, continuing the conversation from exactly where it left off.</p>
       </div>
       <div class="int-card">
         <div class="int-icon" style="color: var(--danger);">
@@ -1631,66 +1585,13 @@ const githubUrl = 'https://github.com/vnovick/itervox';
     <div class="section-header">
       <div class="section-label">Dashboard</div>
       <h2 class="section-heading">Full visibility into every agent</h2>
-      <p class="section-sub">A real-time web dashboard with everything you need</p>
+      <p class="section-sub">A real-time web dashboard with everything you need.</p>
     </div>
 
     <!-- Row 0: Dashboard Overview (mockup LEFT, text RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <div class="feature-row">
       <div>
-        <div class="browser">
-          <div class="browser-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="browser-url">localhost:8090</span>
-          </div>
-          <div class="browser-body" style="padding:12px 16px;">
-            <!-- Hero Stats tiles -->
-            <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:12px;">
-              <div style="background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; text-align:center;">
-                <div style="font-size:18px; font-weight:700; color:var(--success);">3</div>
-                <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Running</div>
-              </div>
-              <div style="background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; text-align:center;">
-                <div style="font-size:18px; font-weight:700; color:var(--warning);">1</div>
-                <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Paused</div>
-              </div>
-              <div style="background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; text-align:center;">
-                <div style="font-size:18px; font-weight:700; color:var(--danger);">1</div>
-                <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Retrying</div>
-              </div>
-              <div style="background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; text-align:center;">
-                <div style="font-size:18px; font-weight:700; color:var(--text);">5/10</div>
-                <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Capacity</div>
-              </div>
-            </div>
-            <!-- Running Sessions mini table -->
-            <div style="font-size:8px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Running Sessions</div>
-            <div style="background:var(--bg); border:1px solid var(--line); border-radius:4px; font-size:9px; font-family:'IBM Plex Mono',monospace;">
-              <div style="display:flex; gap:8px; padding:5px 8px; border-bottom:1px solid var(--line); align-items:center;">
-                <span style="color:var(--success);">&#9679;</span>
-                <span style="color:var(--accent); width:55px;">ENG-142</span>
-                <span style="color:var(--text-secondary); flex:1;">Fix auth token</span>
-                <span style="color:var(--muted);">t5</span>
-                <span style="color:var(--muted);">3m 45s</span>
-              </div>
-              <div style="display:flex; gap:8px; padding:5px 8px; border-bottom:1px solid var(--line); align-items:center;">
-                <span style="color:var(--success);">&#9679;</span>
-                <span style="color:var(--accent); width:55px;">ENG-145</span>
-                <span style="color:var(--text-secondary); flex:1;">Rate limiter</span>
-                <span style="color:var(--muted);">t3</span>
-                <span style="color:var(--muted);">1m 12s</span>
-              </div>
-              <div style="display:flex; gap:8px; padding:5px 8px; align-items:center;">
-                <span style="color:var(--success);">&#9679;</span>
-                <span style="color:var(--accent); width:55px;">ENG-148</span>
-                <span style="color:var(--text-secondary); flex:1;">Update docs</span>
-                <span style="color:var(--muted);">t1</span>
-                <span style="color:var(--muted);">0m 30s</span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <Screenshot src="dashboard-overview.png" alt="Itervox dashboard overview: running agents, host pool, and live sessions" />
       </div>
       <div class="split-text">
         <div class="section-label">Overview</div>
@@ -1706,61 +1607,9 @@ const githubUrl = 'https://github.com/vnovick/itervox';
     </div>
 
     <!-- Row 1: Kanban Board (mockup LEFT, text RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <div class="feature-row">
       <div>
-        <div class="browser">
-          <div class="browser-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="browser-url">localhost:8090</span>
-          </div>
-          <div class="browser-body">
-            <div class="kanban-cols">
-              <div>
-                <div class="kanban-col-title">Backlog</div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id">ENG-150</div>
-                  <div class="kanban-card-title">Add rate limiter config</div>
-                  <span class="kanban-card-badge badge-backend">backend</span>
-                </div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id">ENG-151</div>
-                  <div class="kanban-card-title">Update onboarding flow</div>
-                  <span class="kanban-card-badge badge-frontend">frontend</span>
-                </div>
-              </div>
-              <div>
-                <div class="kanban-col-title">In Progress</div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id"><span class="pulse-dot"></span>ENG-142</div>
-                  <div class="kanban-card-title">Fix auth token refresh</div>
-                  <span class="kanban-card-badge badge-running">claude</span>
-                </div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id"><span class="pulse-dot"></span>ENG-145</div>
-                  <div class="kanban-card-title">Refactor rate limiter</div>
-                  <span class="kanban-card-badge badge-running">claude</span>
-                </div>
-              </div>
-              <div>
-                <div class="kanban-col-title">Done</div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id"><span class="check-mark">&#10003;</span>ENG-138</div>
-                  <div class="kanban-card-title">Add retry logic</div>
-                </div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id"><span class="check-mark">&#10003;</span>ENG-139</div>
-                  <div class="kanban-card-title">Fix CORS headers</div>
-                </div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id"><span class="check-mark">&#10003;</span>ENG-140</div>
-                  <div class="kanban-card-title">Update API docs</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <Screenshot src="kanban-board.png" alt="Kanban board with Backlog, Todo, In Progress, and In Review columns" />
       </div>
       <div class="split-text">
         <h3>Kanban Board</h3>
@@ -1773,8 +1622,22 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       </div>
     </div>
 
+    <!-- Row 1b: Retry queue (copy-only) -->
+    <div class="feature-row">
+      <div class="split-text">
+        <h3>Automatic retry queue</h3>
+        <p>When an agent exits with a recoverable failure &mdash; rate limit, usage cap, transient API error, network blip &mdash; Itervox queues the issue for re-dispatch with exponential backoff. Each attempt&apos;s error is captured inline so you can spot patterns without trawling logs. Issues that exhaust their retry budget land in the configured failure state instead of vanishing silently.</p>
+        <ul>
+          <li>Recoverable failures re-dispatched automatically</li>
+          <li>Per-attempt error captured inline</li>
+          <li>Exponential backoff with bounded retries</li>
+          <li>Manual cancel from the dashboard</li>
+        </ul>
+      </div>
+    </div>
+
     <!-- Row 2: Agent Board (text LEFT, mockup RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <div class="feature-row">
       <div class="split-text">
         <h3>Agent Board</h3>
         <p>Assign issues to agent profiles by dragging them between columns. Each column represents a profile &mdash; backend, frontend, devops &mdash; with its own runner configuration.</p>
@@ -1785,85 +1648,14 @@ const githubUrl = 'https://github.com/vnovick/itervox';
         </ul>
       </div>
       <div>
-        <div class="browser">
-          <div class="browser-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="browser-url">localhost:8090 <span style="font-size:10px; margin-left:8px; color:var(--muted);">Board | List | <span style="color:var(--accent-strong);">Agents</span></span></span>
-          </div>
-          <div class="browser-body">
-            <div class="kanban-cols">
-              <div>
-                <div class="kanban-col-title">Unassigned</div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id">ENG-151</div>
-                  <div class="kanban-card-title">Update onboarding flow</div>
-                </div>
-              </div>
-              <div>
-                <div class="kanban-col-title" style="color: var(--accent-strong);">backend</div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id">ENG-142</div>
-                  <div class="kanban-card-title">Fix auth token refresh</div>
-                </div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id">ENG-145</div>
-                  <div class="kanban-card-title">Refactor rate limiter</div>
-                </div>
-              </div>
-              <div>
-                <div class="kanban-col-title" style="color: var(--teal);">backend-fallback <span style="font-size:9px;color:var(--muted);">(codex)</span></div>
-                <div class="kanban-card" style="border-left:2px solid var(--teal);">
-                  <div class="kanban-card-id">ENG-148</div>
-                  <div class="kanban-card-title">Fix CORS headers</div>
-                  <span class="kanban-card-badge badge-running" style="background:rgba(20,184,166,0.15);color:var(--teal);">codex</span>
-                </div>
-              </div>
-              <div>
-                <div class="kanban-col-title" style="color: var(--purple);">frontend</div>
-                <div class="kanban-card">
-                  <div class="kanban-card-id">ENG-150</div>
-                  <div class="kanban-card-title">Add rate limiter config UI</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <Screenshot src="agent-board.png" alt="Agent board view with Unassigned plus per-profile columns" />
       </div>
     </div>
 
     <!-- Row 3: SSH Host Pool (mockup LEFT, text RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <div class="feature-row">
       <div>
-        <div class="browser">
-          <div class="browser-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="browser-url">localhost:8090/hosts</span>
-          </div>
-          <div class="browser-body">
-            <div class="host-tiles">
-              <div class="host-tile">
-                <div class="host-name"><span class="host-status host-status--on"></span> Local</div>
-                <div class="host-agents">3/8 agents</div>
-                <div class="host-bar"><div class="host-bar-fill" style="width: 37%;"></div></div>
-              </div>
-              <div class="host-tile">
-                <div class="host-name"><span class="host-status host-status--on"></span> build-01.internal</div>
-                <div class="host-agents">2/4 agents</div>
-                <div class="host-bar"><div class="host-bar-fill" style="width: 50%;"></div></div>
-              </div>
-              <div class="host-tile">
-                <div class="host-name"><span class="host-status host-status--off"></span> build-02.internal</div>
-                <div class="host-agents">0/4 agents</div>
-                <div class="host-bar"><div class="host-bar-fill" style="width: 0%;"></div></div>
-                <div class="host-badge-disabled">disabled</div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <Screenshot src="host-pool-with-ssh.png" alt="Host pool with local and SSH workers showing per-host capacity" size="small" />
       </div>
       <div class="split-text">
         <h3>SSH Host Pool</h3>
@@ -1877,7 +1669,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
     </div>
 
     <!-- Row 4: Timeline (text LEFT, mockup RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <div class="feature-row">
       <div class="split-text">
         <h3>Timeline</h3>
         <p>Visualize every agent run as a horizontal bar. Subagent phases appear as colored segments within each bar. Click a run to see its full log stream.</p>
@@ -1888,90 +1680,28 @@ const githubUrl = 'https://github.com/vnovick/itervox';
         </ul>
       </div>
       <div>
-        <div class="browser">
-          <div class="browser-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="browser-url">localhost:8090/timeline</span>
-          </div>
-          <div class="browser-body">
-            <div class="timeline-mock">
-              <div class="timeline-chip"><span class="timeline-chip-dot" style="background: var(--success);"></span> <span style="color: var(--accent-strong);">ENG-142</span></div>
-              <div style="display:flex; align-items:center;">
-                <div class="timeline-bar-wrap" style="flex:1;">
-                  <div class="timeline-seg" style="width:40%; background: rgba(99,102,241,0.4);">explore</div>
-                  <div class="timeline-seg" style="width:45%; background: rgba(20,184,166,0.4);">implement</div>
-                  <div class="timeline-seg" style="width:15%; background: rgba(168,85,247,0.3);">test</div>
-                </div>
-                <span class="timeline-tok">4.2k tok</span>
-              </div>
-
-              <div class="timeline-chip"><span class="timeline-chip-dot" style="background: var(--success);"></span> <span style="color: var(--accent-strong);">ENG-145</span></div>
-              <div style="display:flex; align-items:center;">
-                <div class="timeline-bar-wrap" style="flex:1;">
-                  <div class="timeline-seg" style="width:30%; background: rgba(99,102,241,0.4);">explore</div>
-                  <div class="timeline-seg" style="width:50%; background: rgba(20,184,166,0.4);">implement</div>
-                  <div class="timeline-seg" style="width:20%; background: rgba(168,85,247,0.3);">test</div>
-                </div>
-                <span class="timeline-tok">8.1k tok</span>
-              </div>
-
-              <div class="timeline-chip"><span class="timeline-chip-dot" style="background: var(--muted);"></span> <span style="color: var(--muted);">ENG-140</span></div>
-              <div style="display:flex; align-items:center;">
-                <div class="timeline-bar-wrap" style="flex:1;">
-                  <div class="timeline-seg" style="width:55%; background: rgba(113,113,122,0.3);">explore</div>
-                  <div class="timeline-seg" style="width:35%; background: rgba(113,113,122,0.2);">implement</div>
-                </div>
-                <span class="timeline-tok">2.9k tok</span>
-              </div>
-            </div>
-          </div>
-        </div>
+        <Screenshot src="timeline-multiple-runs.png" alt="Timeline page with multiple runs showing subagent splits and token counts" />
       </div>
     </div>
 
     <!-- Row 5: Logs (mockup LEFT, text RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <div class="feature-row">
       <div>
-        <div class="browser">
-          <div class="browser-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="browser-url">localhost:8090/logs</span>
-          </div>
-          <div class="browser-body">
-            <div class="logs-filters">
-              <span class="log-chip log-chip--active">text</span>
-              <span class="log-chip log-chip--active">action</span>
-              <span class="log-chip log-chip--active">subagent</span>
-              <span class="log-chip log-chip--dim">warn</span>
-              <span class="log-chip log-chip--dim">error</span>
-            </div>
-            <div style="background: var(--bg); border-radius: var(--radius-sm); padding: 10px;">
-              <div class="log-line" style="color: var(--success);">&gt; Analyzing codebase structure...</div>
-              <div class="log-line" style="color: var(--warning);">$ go test -race ./...</div>
-              <div class="log-line" style="color: var(--teal);">&#9670; Spawning subagent: explore-patterns</div>
-              <div class="log-line" style="color: var(--danger);">&#10007; Test failed: auth_test.go:42</div>
-              <div class="log-line" style="color: var(--success);">&gt; Fixed auth token refresh logic</div>
-            </div>
-          </div>
-        </div>
+        <Screenshot src="logs-page.png" alt="Logs page with filter chips for text, action, subagent, warn, and error levels" />
       </div>
       <div class="split-text">
         <h3>Logs</h3>
-        <p>Stream agent output in real time. Filter by event type &mdash; text, actions, subagents, warnings, errors. Export logs or clear them from the dashboard.</p>
+        <p>Stream agent output in real time. Filter by event type &mdash; text, actions, subagents, warnings, errors &mdash; directly from the dashboard.</p>
         <ul>
-          <li>Per-level filtering</li>
-          <li>Export as .txt</li>
-          <li>Clear per-issue or all</li>
+          <li>Per-level filter chips</li>
+          <li>Color-coded severity</li>
+          <li>Live tail with follow mode</li>
         </ul>
       </div>
     </div>
 
     <!-- Row 6: Settings (text LEFT, mockup RIGHT) -->
-    <div class="split">
+    <div class="feature-row">
       <div class="split-text">
         <h3>Settings</h3>
         <p>Configure tracker states, agent profiles, capacity limits, and SSH hosts &mdash; all from the dashboard. Changes take effect immediately, no restart needed.</p>
@@ -1982,50 +1712,90 @@ const githubUrl = 'https://github.com/vnovick/itervox';
         </ul>
       </div>
       <div>
-        <div class="browser">
-          <div class="browser-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="browser-url">localhost:8090/settings</span>
-          </div>
-          <div class="browser-body">
-            <div class="settings-section">
-              <div class="settings-label">Tracker States</div>
-              <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
-                <span style="font-size:11px; padding:2px 8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; color:var(--text-secondary);">Todo <span style="cursor:pointer; margin-left:4px; color:var(--muted);">&times;</span></span>
-                <span style="font-size:11px; padding:2px 8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; color:var(--text-secondary);">In Progress <span style="cursor:pointer; margin-left:4px; color:var(--muted);">&times;</span></span>
-              </div>
-              <div style="font-size:10px; color:var(--muted); margin-bottom:8px;">Active States</div>
-              <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:6px;">
-                <span style="font-size:11px; padding:2px 8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; color:var(--text-secondary);">Done <span style="cursor:pointer; margin-left:4px; color:var(--muted);">&times;</span></span>
-                <span style="font-size:11px; padding:2px 8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; color:var(--text-secondary);">Closed <span style="cursor:pointer; margin-left:4px; color:var(--muted);">&times;</span></span>
-                <span style="font-size:11px; padding:2px 8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; color:var(--text-secondary);">Cancelled <span style="cursor:pointer; margin-left:4px; color:var(--muted);">&times;</span></span>
-              </div>
-              <div style="font-size:10px; color:var(--muted);">Terminal States</div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-label">Profiles</div>
-              <div class="profile-row"><span class="profile-dot" style="background: var(--accent);"></span> backend (claude)</div>
-              <div class="profile-row"><span class="profile-dot" style="background: var(--purple);"></span> frontend (claude)</div>
-              <div class="profile-row"><span class="profile-dot" style="background: var(--teal);"></span> devops (claude)</div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-label">Capacity</div>
-              <div class="capacity-row">
-                Max concurrent:
-                <span class="cap-btn">-</span>
-                <span class="mono" style="font-size: 14px; font-weight: 600;">8</span>
-                <span class="cap-btn">+</span>
-              </div>
-            </div>
-            <div class="settings-section">
-              <div class="settings-label">SSH Hosts</div>
-              <div style="display:flex; align-items:center; justify-content:space-between; padding:4px 0;">
-                <span style="font-size:12px; font-family:'IBM Plex Mono',monospace; color:var(--text-secondary);">build-01.internal</span>
-                <span style="font-size:11px; color:var(--muted); cursor:pointer;">&times;</span>
-              </div>
-            </div>
+        <Screenshot src="settings-agent-profiles.png" alt="Settings page showing the Agent Profiles editor" />
+      </div>
+    </div>
+
+    <!-- Row 7: Issue Detail Slide (mockup LEFT, text RIGHT) -->
+    <div class="feature-row">
+      <div>
+        <Screenshot src="issue-detail-slide.png" alt="Issue detail slide-over with description, branch, and comment thread" />
+      </div>
+      <div class="split-text">
+        <h3>Issue Inspector</h3>
+        <p>Click any issue to open a right-side slide-out with full description, current branch, agent profile, and the live tracker comment thread. Change profile, open in tracker, or copy the branch name with one click.</p>
+        <ul>
+          <li>Live tracker comments — no tab switching</li>
+          <li>Per-issue agent profile override</li>
+          <li>One-click branch name copy</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Row 7b: Input-required flow -->
+    <div class="feature-row">
+      <div class="split-text">
+        <h3>Agent needs your input</h3>
+        <p>When an agent emits the <code style="font-size:13px;background:var(--bg-elevated);padding:1px 6px;border-radius:3px;">&lt;!-- itervox:needs-input --&gt;</code> sentinel, Itervox pauses the run, badges the issue <strong>input_required</strong>, and surfaces the agent&apos;s question right inside the issue inspector. Type your reply once &mdash; Itervox posts it as a comment on the tracker issue (Linear or GitHub) and resumes the worker from where it stopped. No manual re-dispatch, no context loss.</p>
+        <ul>
+          <li>One-line opt-in via prompt template</li>
+          <li>Dashboard badge + inline reply box</li>
+          <li>Reply auto-posted to Linear / GitHub as a comment</li>
+          <li>Worker resumes from the same session</li>
+        </ul>
+      </div>
+      <div>
+        <Screenshot src="input-required-issue-detail.png" alt="Issue inspector showing the Agent needs your input panel with reply box" />
+      </div>
+    </div>
+
+    <!-- Row 8: Inline log expansion (text LEFT, mockup RIGHT) -->
+    <div class="feature-row">
+      <div class="split-text">
+        <h3>Inline log accordion</h3>
+        <p>Expand any running session to see the live log stream without leaving the dashboard. Subagent labels, color-coded severity, and a follow-tail toggle ride along with the main overview.</p>
+        <ul>
+          <li>Per-session expand without navigation</li>
+          <li>Subagent badges beside every line</li>
+          <li>Follow mode auto-scrolls with new output</li>
+        </ul>
+      </div>
+      <div>
+        <Screenshot src="dashboard-running-sessions-expanded.png" alt="Running sessions with rows expanded showing inline logs" />
+      </div>
+    </div>
+
+    <!-- Row 10: Narrative feed -->
+    <div class="feature-row">
+      <div class="split-text">
+        <h3>Recent events feed</h3>
+        <p>A tailing feed of structured orchestrator events: dispatches, worker lifecycle, rate limits, pauses, and resumes. Glance once and know exactly what the fleet is doing right now.</p>
+        <ul>
+          <li>Last 20 orchestrator log lines, live-tailed</li>
+          <li>Color-coded by severity</li>
+          <li>Useful for debugging without opening a log file</li>
+        </ul>
+      </div>
+      <div>
+        <Screenshot src="narrative-feed.png" alt="Recent Events panel showing the last 20 orchestrator log lines" />
+      </div>
+    </div>
+
+    <!-- Row 11: Mobile dashboard -->
+    <div class="feature-row feature-row--side">
+      <div class="split-text">
+        <h3>Works on mobile</h3>
+        <p>The full dashboard &mdash; hero stats, host pool, running sessions, kanban, narrative feed &mdash; reflows into a single column at phone widths. Monitor the fleet from anywhere without losing any feature.</p>
+        <ul>
+          <li>Single-column reflow at phone width</li>
+          <li>Drawer navigation</li>
+          <li>Every surface reachable from your phone</li>
+        </ul>
+      </div>
+      <div>
+        <div class="phone-frame">
+          <div class="phone-screen">
+            <img src="/screenshots/mobile-dashboard.png" alt="Full mobile dashboard scroll" class="js-zoomable" loading="lazy" decoding="async" />
           </div>
         </div>
       </div>
@@ -2080,6 +1850,66 @@ const githubUrl = 'https://github.com/vnovick/itervox';
   </div>
 </section>
 
+<!-- ===== 7b. Mobile / Remote Access ===== -->
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-label">Mobile</div>
+      <h2 class="section-heading">View from your phone, anywhere</h2>
+      <p class="section-sub">The dashboard runs on your machine. Reach it from your phone over LAN, SSH, Tailscale, ngrok, or self-hosted Piko.</p>
+    </div>
+
+    <div class="int-grid">
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--accent);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 6a6 6 0 0 1 12 0M5.5 9a3.5 3.5 0 0 1 7 0M9 12v.01"/></svg>
+        </div>
+        <h4>LAN bind</h4>
+        <p>Set <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">server.host: 0.0.0.0</code> in <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">WORKFLOW.md</code>. Browse from any device on the same WiFi.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--teal);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4 12 1 9 4 6"/><polyline points="14 12 17 9 14 6"/><line x1="1" y1="9" x2="17" y2="9"/></svg>
+        </div>
+        <h4>SSH tunnel</h4>
+        <p>Forward the port over SSH: <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">ssh -L 8090:localhost:8090 host</code>. Familiar to developers.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--accent-strong);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="9" cy="9" r="7"/><line x1="2" y1="9" x2="16" y2="9"/><path d="M9 2a10 10 0 0 1 0 14M9 2a10 10 0 0 0 0 14"/></svg>
+        </div>
+        <h4>Tailscale</h4>
+        <p>Zero-config WireGuard mesh. Install on phone + laptop, browse via the tailnet hostname from anywhere in the world.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--warning);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 9h14M9 2v14M3 5l12 8M15 5L3 13"/></svg>
+        </div>
+        <h4>ngrok</h4>
+        <p>One command (<code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">ngrok http 8090</code>) for an instant public HTTPS URL with built-in basic auth.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--purple);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="14" height="6" rx="1"/><rect x="2" y="11" width="14" height="4" rx="1"/><circle cx="5" cy="6" r="0.5" fill="currentColor"/><circle cx="5" cy="13" r="0.5" fill="currentColor"/></svg>
+        </div>
+        <h4>Piko (self-hosted)</h4>
+        <p>MIT-licensed reverse tunnel you run on your own VPS. No vendor in the data path, outbound-only tunnels survive network changes.</p>
+      </div>
+      <div class="int-card">
+        <div class="int-icon" style="color: var(--success);">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="12" height="8" rx="2"/><path d="M6 7V5a3 3 0 0 1 6 0v2"/></svg>
+        </div>
+        <h4>Auth included</h4>
+        <p>Set <code style="font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">ITERVOX_API_TOKEN</code> for bearer-token auth on every API request. Mandatory for any non-loopback exposure.</p>
+      </div>
+    </div>
+
+    <p style="text-align:center; margin-top:32px; font-size:14px; color:var(--text-secondary);">
+      &rarr; Full setup instructions in the <a href="/guides/remote-access/" style="color:var(--accent-strong); text-decoration:none; border-bottom:1px dashed var(--accent-strong);">Remote Access &amp; Mobile guide</a>.
+    </p>
+  </div>
+</section>
+
 <!-- ===== 8. Terminal UI (split layouts) ===== -->
 <section class="section">
   <div class="container">
@@ -2090,72 +1920,13 @@ const githubUrl = 'https://github.com/vnovick/itervox';
     </div>
 
     <!-- Row 1: Issues + Logs (mockup LEFT, text RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <div class="feature-row">
       <div>
-        <div class="terminal">
-          <div class="terminal-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="terminal-title">itervox &mdash; Terminal UI</span>
-          </div>
-          <div style="padding: 0;">
-            <div class="tui-layout">
-              <!-- Left panel: Issues -->
-              <div class="tui-panel tui-left">
-                <div class="tui-heading">&#9679;&#9472;[ ISSUES ]  h:history  b:backlog</div>
-                <div style="border-bottom: 1px solid var(--line); margin: 6px 0;"></div>
-                <code style="display:block; font-family:'IBM Plex Mono',monospace; font-size:11px; line-height:1.7;">
-<span class="t-text">&#9654; <span class="t-accent">ENG-142</span> &#9662;  t5 4.2k </span><span class="t-success">[&#9673; RUNNING]</span>
-<span class="t-muted">  &#9672; Analyzing auth module...</span>
-<span class="t-text">  &#9654; </span><span class="t-purple">&#9670; explore-patterns</span>
-<span class="t-text">    </span><span class="t-purple">&#9670; implement-fix</span>
-<span class="t-text">  <span class="t-accent">ENG-145</span>    t3 1.8k </span><span class="t-success">[&#9673; RUNNING]</span>
-<span class="t-muted">  &#9672; Refactoring rate limiter...</span>
-                </code>
-                <div style="border-bottom: 1px solid var(--line); margin: 6px 0;"></div>
-                <div class="tui-sub-heading">&#9670;&mdash;[ RETRY QUEUE ]</div>
-                <code style="display:block; font-family:'IBM Plex Mono',monospace; font-size:11px; line-height:1.7;">
-<span class="t-warn">  &#8635; <span class="t-accent">ENG-140</span>  att=2  in 3m 12s</span>
-                </code>
-                <div style="border-bottom: 1px solid var(--line); margin: 6px 0;"></div>
-                <div class="tui-sub-heading">&#9670;&mdash;[ PAUSED ]</div>
-                <code style="display:block; font-family:'IBM Plex Mono',monospace; font-size:11px; line-height:1.7;">
-<span class="t-muted">  &#9208; <span class="t-accent">ENG-139</span>  press r to resume</span>
-                </code>
-              </div>
-
-              <!-- Right panel: Logs -->
-              <div class="tui-panel tui-right">
-                <div class="tui-heading">&#9679;&#9472;[ LOGS: ENG-142 ]  t:tools  d:details</div>
-                <div style="border-bottom: 1px solid var(--line); margin: 6px 0;"></div>
-                <code style="display:block; font-family:'IBM Plex Mono',monospace; font-size:11px; line-height:1.7;">
-<span class="t-success">&gt; Reading issue context from Linear...</span>
-<span class="t-warn">$ grep -r "refreshToken" src/auth/</span>
-<span class="t-success">&gt; Found 3 occurrences in auth module</span>
-<span class="t-purple">&#9670; Spawning subagent: explore-patterns</span>
-<span class="t-warn">$ go test -race ./internal/auth/...</span>
-<span class="t-success">&gt; All 12 tests passing</span>
-<span class="t-warn">$ git commit -m "fix: auth token refresh"</span>
-<span class="t-success">&gt; Created PR #87</span>
-                </code>
-              </div>
-
-              <!-- Bottom panel: Timeline -->
-              <div class="tui-panel tui-bottom">
-                <div class="tui-heading">&#9670;&mdash;[ TIMELINE ]</div>
-                <code style="display:block; font-family:'IBM Plex Mono',monospace; font-size:11px; line-height:1.7;">
-<span class="t-success">&#9654;</span> <span class="t-accent">ENG-142</span>  <span class="t-muted">3m 45s</span> [<span class="t-accent">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span><span class="t-teal">&#9474;&#9608;&#9608;&#9608;&#9608;</span><span class="t-dim">&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;</span>] <span class="t-muted">t5 &middot; 4.2k</span>
-  <span class="t-accent">ENG-145</span>  <span class="t-muted">1m 12s</span> [<span class="t-accent">&#9608;&#9608;&#9608;</span><span class="t-dim">&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;</span>] <span class="t-muted">t3 &middot; 1.8k</span>
-                </code>
-              </div>
-            </div>
-          </div>
-        </div>
+        <Screenshot src="tui-issues-logs-timeline.png" alt="Bubbletea TUI default view: issues left, logs right, Gantt timeline bottom" frame="terminal" />
       </div>
       <div class="split-text">
         <h3>Issues and Live Logs</h3>
-        <p>The left panel shows all active sessions &mdash; running, retrying, paused &mdash; with subagent expansion. The right panel streams live logs with color-coded tool calls, text output, and subagent markers.</p>
+        <p>The left panel shows all active sessions &mdash; running, retrying, paused &mdash; with subagent expansion. The right panel streams live logs with color-coded tool calls, text output, and subagent markers. Bottom panel is a proportional Gantt of every session.</p>
         <ul>
           <li>Expand subagent trees inline</li>
           <li>Color-coded log levels</li>
@@ -2164,103 +1935,83 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       </div>
     </div>
 
-    <!-- Row 2: Tools + Details (text LEFT, mockup RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <!-- Row 2: Session Details (text LEFT, mockup RIGHT) -->
+    <div class="feature-row">
       <div class="split-text">
-        <h3>Tools and Session Details</h3>
-        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">t</code> to see aggregated tool call statistics &mdash; how many times each tool was called, failure rates, and last input. Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">d</code> for session metadata: turns, tokens, backend, subagent list.</p>
+        <h3>Session Details</h3>
+        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">d</code> for a slide-in details panel: turns, token breakdown, backend, and the full subagent list for the currently focused session.</p>
         <ul>
-          <li>Per-tool call counts and failures</li>
-          <li>Drill down into individual calls</li>
           <li>Token usage breakdown</li>
+          <li>Subagent list with branch names</li>
+          <li>Backend and profile shown inline</li>
         </ul>
       </div>
       <div>
-        <div class="terminal">
-          <div class="terminal-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="terminal-title">itervox &mdash; Tools</span>
-          </div>
-          <div class="terminal-body">
-            <code><span class="t-accent-s">&#9679;&#9472;[ TOOLS: ENG-142 ]</span>  <span class="t-muted">t:logs  d:details</span></code>
-            <code><span class="t-dim">&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;</span></code>
-            <code>  <span class="t-secondary">calls:</span><span class="t-text">15</span>  <span class="t-secondary">fails:</span><span class="t-danger">1</span></code>
-            <code><span class="t-dim">&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;</span></code>
-            <code></code>
-            <code><span class="t-muted">#  Tool              Calls Fail</span></code>
-            <code><span class="t-dim">&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;</span></code>
-            <code><span class="t-success">&#9654;</span> <span class="t-text">1. bash</span>              <span class="t-text">8</span>    <span class="t-danger">1</span></code>
-            <code>  <span class="t-text">2. read</span>              <span class="t-text">4</span>    <span class="t-muted">-</span></code>
-            <code>  <span class="t-text">3. str_replace</span>       <span class="t-text">3</span>    <span class="t-muted">-</span></code>
-          </div>
-        </div>
+        <Screenshot src="tui-session-details.png" alt="TUI details panel showing turns, tokens, backend, and subagents" frame="terminal" />
       </div>
     </div>
 
     <!-- Row 3: Gantt Timeline (mockup LEFT, text RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <div class="feature-row">
       <div>
-        <div class="terminal">
-          <div class="terminal-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="terminal-title">itervox &mdash; Timeline</span>
-          </div>
-          <div class="terminal-body">
-            <code><span class="t-accent-s">&#9670;&mdash;[ TIMELINE ]</span>  <span class="t-muted">enter:phases</span></code>
-            <code><span class="t-dim">&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;</span></code>
-            <code><span class="t-success">&#9654;</span> <span class="t-accent">ENG-142</span>  <span class="t-muted">3m 45s</span> [<span class="t-accent">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span><span class="t-teal">&#9474;&#9608;&#9608;&#9608;&#9608;</span><span class="t-dim">&#9617;&#9617;&#9617;</span>] <span class="t-muted">t5 &middot; 4.2k</span></code>
-            <code>  <span class="t-accent">ENG-145</span>  <span class="t-muted">1m 12s</span> [<span class="t-accent">&#9608;&#9608;&#9608;</span><span class="t-dim">&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;&#9617;</span>] <span class="t-muted">t3 &middot; 1.8k</span></code>
-            <code>  <span class="t-muted">&#9208;</span> <span class="t-accent">ENG-139</span> <span class="t-muted">5m 22s</span> [<span class="t-accent">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span><span class="t-dim">&#9617;&#9617;&#9617;&#9617;</span>] <span class="t-muted">t8</span></code>
-          </div>
-        </div>
+        <Screenshot src="tui-gantt-timeline.png" alt="TUI Gantt timeline with subagent rows and per-run token counts" frame="terminal" size="small" />
       </div>
       <div class="split-text">
         <h3>Gantt Timeline</h3>
-        <p>Every running and paused session as a proportional bar. Subagent boundaries appear as tick marks. Press Enter to drill down into phase breakdown.</p>
+        <p>Every running and paused session as a proportional bar. Subagent rows appear underneath. Press Enter to drill into the phase breakdown for a single run.</p>
         <ul>
           <li>Proportional duration bars</li>
-          <li>Subagent boundary markers</li>
+          <li>Per-subagent rows with token counts</li>
           <li>History mode shows completed runs</li>
         </ul>
       </div>
     </div>
 
-    <!-- Row 4: Backlog + Project Picker (text LEFT, mockup RIGHT) -->
-    <div class="split" style="margin-bottom: 48px;">
+    <!-- Row 4: Backlog (text LEFT, mockup RIGHT) -->
+    <div class="feature-row">
       <div class="split-text">
-        <h3>Backlog and Projects</h3>
-        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">b</code> to open the backlog panel &mdash; see issues waiting for work, dispatch them with a keypress. Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">p</code> to filter by project when working across multiple repos.</p>
+        <h3>Backlog</h3>
+        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">b</code> to open the backlog panel &mdash; see issues waiting for work, drill into details, and dispatch them with <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">d</code>.</p>
         <ul>
-          <li>Dispatch from backlog with <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">d</code></li>
           <li>Priority-sorted issue list</li>
-          <li>Multi-project filtering</li>
+          <li>Inline details on selection</li>
+          <li>One-key dispatch</li>
         </ul>
       </div>
       <div>
-        <div class="terminal">
-          <div class="terminal-bar">
-            <span class="terminal-dot terminal-dot--red"></span>
-            <span class="terminal-dot terminal-dot--yellow"></span>
-            <span class="terminal-dot terminal-dot--green"></span>
-            <span class="terminal-title">itervox &mdash; Backlog</span>
-          </div>
-          <div class="terminal-body">
-            <code><span class="t-accent-s">&#9670;&mdash;[ BACKLOG &amp; ACTIVE ]</span>  <span class="t-muted">d:dispatch</span></code>
-            <code><span class="t-dim">&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;&#9473;</span></code>
-            <code><span class="t-accent-s">&#9670;&mdash;</span> <span class="t-text">BACKLOG</span></code>
-            <code>  <span class="t-warn">&#9650;</span> <span class="t-accent">ENG-160</span>  <span class="t-secondary">Refactor auth module</span></code>
-            <code>  <span class="t-danger">!</span> <span class="t-accent">ENG-161</span>  <span class="t-secondary">Critical security fix</span></code>
-            <code>  <span class="t-muted">&#9679;</span> <span class="t-accent">ENG-162</span>  <span class="t-secondary">Design system updates</span></code>
-            <code></code>
-            <code><span class="t-success">&#9679;&mdash;</span> <span class="t-text">ACTIVE (ready)</span></code>
-            <code>  <span class="t-info">&#9672;</span> <span class="t-accent">ENG-163</span>  <span class="t-secondary">Add CI/CD pipeline</span></code>
-            <code>  <span class="t-danger">!</span> <span class="t-accent">ENG-164</span>  <span class="t-secondary">Security patches</span></code>
-          </div>
-        </div>
+        <Screenshot src="tui-backlog.png" alt="TUI backlog panel with issue details on the right" frame="terminal" />
+      </div>
+    </div>
+
+    <!-- Row 5: History (mockup LEFT, text RIGHT) -->
+    <div class="feature-row">
+      <div>
+        <Screenshot src="tui-history.png" alt="TUI history view showing completed runs" frame="terminal" />
+      </div>
+      <div class="split-text">
+        <h3>History</h3>
+        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">h</code> to flip the issues panel into history mode: completed runs with their final status, turn counts, and elapsed time.</p>
+        <ul>
+          <li>Status glyphs per run</li>
+          <li>Elapsed and turn count at a glance</li>
+          <li>Scroll back through every session</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Row 6: Project Picker (text LEFT, mockup RIGHT) -->
+    <div class="feature-row feature-row--side">
+      <div class="split-text">
+        <h3>Project Picker</h3>
+        <p>Press <code style="font-size:12px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">p</code> to open the multi-select project filter. Check any combination of Linear projects; the daemon scopes polling to just those. Same filter also lives in the web settings page.</p>
+        <ul>
+          <li>Multi-select with keyboard</li>
+          <li>Filter scales across dozens of projects</li>
+          <li>Persisted via WORKFLOW.md</li>
+        </ul>
+      </div>
+      <div>
+        <Screenshot src="tui-project-picker.png" alt="TUI project picker overlay with multi-select checkboxes" frame="terminal" size="small" />
       </div>
     </div>
 
@@ -2350,6 +2101,55 @@ const githubUrl = 'https://github.com/vnovick/itervox';
           <div class="flow-step-title" style="color: var(--success);">Resumes instantly</div>
           <div class="flow-step-detail">Agent picks up work<br/>with Codex backend</div>
         </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 9b. Configure without restarts ===== -->
+<section class="section">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-label">Hot Reconfigurable</div>
+      <h2 class="section-heading">Configure without restarts</h2>
+      <p class="section-sub">Every setting below is live-editable from the dashboard. No daemon restart, no WORKFLOW.md hand-edit, no lost runs. Changes persist back to WORKFLOW.md automatically.</p>
+    </div>
+
+    <div class="config-grid">
+      <div class="config-card">
+        <Screenshot src="settings-code-review-agent.png" alt="Code Review Agent settings panel" />
+        <h4>Built-in AI code review</h4>
+        <p>Point any profile at the reviewer slot. Optionally auto-trigger a reviewer run after every successful main agent.</p>
+      </div>
+      <div class="config-card">
+        <Screenshot src="settings-project-filter.png" alt="Linear project filter" />
+        <h4>Per-project scoping</h4>
+        <p>Restrict the daemon to one or many Linear projects, or leave it polling everything. Same filter works in the TUI.</p>
+      </div>
+      <div class="config-card">
+        <Screenshot src="settings-tracker-states.png" alt="Tracker states configuration" />
+        <h4>Tracker state mapping</h4>
+        <p>Map orchestrator states to your tracker&apos;s workflow &mdash; active, terminal, completion &mdash; written back to WORKFLOW.md.</p>
+      </div>
+      <div class="config-card">
+        <Screenshot src="settings-max-concurrent-agents.png" alt="Max concurrent agents stepper" />
+        <h4>Runtime capacity</h4>
+        <p>Tune fleet concurrency on the fly. The orchestrator picks up the new ceiling on the next dispatch cycle.</p>
+      </div>
+      <div class="config-card">
+        <Screenshot src="settings-add-worker-host-modal.png" alt="Add worker host modal" />
+        <h4>Add SSH workers in seconds</h4>
+        <p>Host address, description, known_hosts warning inline. Docker hosts coming soon.</p>
+      </div>
+      <div class="config-card">
+        <Screenshot src="settings-ssh-hosts-dispatch.png" alt="SSH hosts list and dispatch strategy" />
+        <h4>Dispatch strategy</h4>
+        <p>Round-robin or least-loaded routing across your worker pool. Switch strategies without draining queues.</p>
+      </div>
+      <div class="config-card">
+        <Screenshot src="settings-workspace-auto-clear.png" alt="Auto-clear workspace setting" />
+        <h4>Auto-clear worktrees</h4>
+        <p>Delete the cloned worktree after successful completion. Logs are always preserved.</p>
       </div>
     </div>
   </div>
@@ -2649,14 +2449,14 @@ const githubUrl = 'https://github.com/vnovick/itervox';
         <h5>Links</h5>
         <ul>
           <li><a href={githubUrl} target="_blank" rel="noopener">GitHub</a></li>
-          <li><a href={`${githubUrl}/sponsors`} target="_blank" rel="noopener" style="color:#db2777;">&#9829; Sponsor</a></li>
+          <li><a href="https://github.com/sponsors/vnovick" target="_blank" rel="noopener" style="color:#db2777;">&#9829; Sponsor</a></li>
           <li><a href="https://discord.gg/itervox" target="_blank" rel="noopener">Discord</a></li>
-          <li><a href={`${githubUrl}/blob/main/LICENSE`} target="_blank" rel="noopener">MIT License</a></li>
+          <li><a href={`${githubUrl}/blob/main/LICENSE`} target="_blank" rel="noopener">Apache 2.0 License</a></li>
         </ul>
       </div>
     </div>
     <div class="footer-bottom">
-      Itervox is open source under the <a href="https://github.com/vnovick/itervox/blob/main/LICENSE" target="_blank" rel="noopener" style="color:var(--accent-strong); text-decoration:none;">MIT License</a>.
+      Itervox is open source under the <a href="https://github.com/vnovick/itervox/blob/main/LICENSE" target="_blank" rel="noopener" style="color:var(--accent-strong); text-decoration:none;">Apache 2.0 License</a>. If it saves you time, please <a href="https://github.com/sponsors/vnovick" target="_blank" rel="noopener" style="color:#db2777; text-decoration:none;">sponsor development</a>.
     </div>
   </div>
 </footer>
@@ -2672,7 +2472,55 @@ const githubUrl = 'https://github.com/vnovick/itervox';
       }
     }, { passive: true });
   }
+
+  // ===== Screenshot lightbox =====
+  const lightbox = document.getElementById('lightbox');
+  if (lightbox) {
+    const lbImg = lightbox.querySelector('img');
+    const lbClose = lightbox.querySelector('.lightbox-close');
+    const lbInner = lightbox.querySelector('.lightbox-inner');
+
+    function openLightbox(src, alt) {
+      if (!lbImg) return;
+      lbImg.src = src;
+      lbImg.alt = alt || '';
+      lightbox.showModal();
+    }
+    function closeLightbox() {
+      lightbox.close();
+      if (lbImg) lbImg.src = '';
+    }
+
+    document.querySelectorAll('.js-zoomable').forEach((img) => {
+      img.addEventListener('click', () => {
+        openLightbox(img.src, img.alt);
+      });
+    });
+
+    lbInner?.addEventListener('click', (e) => {
+      if (e.target === lbInner || e.target === lbImg) {
+        // clicking the image or the padded backdrop closes
+        closeLightbox();
+      }
+    });
+    lbClose?.addEventListener('click', closeLightbox);
+    lightbox.addEventListener('click', (e) => {
+      // native ::backdrop click — e.target is the dialog itself
+      if (e.target === lightbox) closeLightbox();
+    });
+    lightbox.addEventListener('cancel', (e) => {
+      // Esc key default — nothing to prevent, just cleanup
+      closeLightbox();
+    });
+  }
 </script>
+
+<dialog id="lightbox" class="lightbox">
+  <button type="button" class="lightbox-close" aria-label="Close">&times;</button>
+  <div class="lightbox-inner">
+    <img src="" alt="" />
+  </div>
+</dialog>
 
 </body>
 </html>

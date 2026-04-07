@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unnecessary-condition */
 import { useEffect, useMemo, useRef, useState, useCallback, startTransition } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { LOG_STABLE_DELAY_MS } from '../../utils/timings';
@@ -195,7 +196,7 @@ export default function RunningSessionsTable() {
 
             {/* Turn count + subagent badge */}
             <span className="text-theme-text-secondary flex items-center gap-1.5 text-sm">
-              {row.turnCount}
+              {row.turnCount ?? '\u2014'}
               {(row.subagentCount ?? 0) > 0 && (
                 <span
                   className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-semibold"

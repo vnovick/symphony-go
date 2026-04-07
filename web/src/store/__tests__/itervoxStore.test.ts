@@ -39,8 +39,10 @@ describe('setSnapshot', () => {
   });
 
   it('rolls the window when MAX_TOKEN_SAMPLES (60) is reached', () => {
-    const snap = { ...EMPTY_SNAP, running: [{ tokens: 1 }] };
+    // appendTokenSample dedups consecutive identical totalTokens, so each push
+    // must have a unique tokens value to actually add a new sample.
     for (let i = 0; i < 61; i++) {
+      const snap = { ...EMPTY_SNAP, running: [{ tokens: i + 1 }] };
       useItervoxStore.getState().setSnapshot(snap as never);
     }
     expect(useItervoxStore.getState().tokenSamples).toHaveLength(60);

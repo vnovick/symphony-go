@@ -43,7 +43,10 @@ const (
 // profileName is the active named profile for this issue (may be ""); used to
 // exclude the current agent from its own sub-agent context in teams mode.
 // skipPRCheck bypasses the open-PR guard (used when a forced re-analysis is requested).
-func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool) {
+// resumeSessionID, if non-empty, instructs the runner to use --resume <id> on
+// turn 1 so the agent continues an existing session (set when an issue is
+// resumed from manual pause and we have a captured session ID).
+func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool, resumeSessionID string) {
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("worker panic: %v", r)
@@ -212,6 +215,15 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	var claudeSessionID *string
+	// If the orchestrator passed in a resume session ID (set when an issue is
+	// dispatched after manual pause), pre-populate claudeSessionID so the first
+	// turn uses --resume / `exec resume` and continues the existing session.
+	if resumeSessionID != "" {
+		sid := resumeSessionID
+		claudeSessionID = &sid
+		slog.Info("worker: resuming from manual pause",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "session_id", resumeSessionID)
+	}
 	var allTextBlocks []string                                  // accumulate all Claude text blocks for the final tracker comment
 	var cumulativeInput, cumulativeCached, cumulativeOutput int // accumulate tokens across turns for dashboard display
 	var prevResultText string                                   // detect repeated identical responses (Codex resume loop)
@@ -335,6 +347,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if result.SessionID != "" {
 			s := result.SessionID
 			claudeSessionID = &s
+			// Propagate the agent's real session ID to state.Running so that
+			// manual pause/resume can capture it. Non-blocking — drop on busy
+			// channel; the next progress update will retry.
+			select {
+			case o.events <- OrchestratorEvent{
+				Type:     EventWorkerUpdate,
+				IssueID:  issue.ID,
+				RunEntry: &RunEntry{AgentSessionID: s},
+			}:
+			default:
+			}
 		}
 
 		// Accumulate all Claude text blocks for the final session comment.
@@ -538,7 +561,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if prevResultText != "" {
 			checkText = checkText + "\n" + prevResultText
 		}
-		if agent.IsContentInputRequired(checkText) {
+		if agent.IsSentinelInputRequired(checkText) {
 			// Use the last text block as context — it contains the actual questions
 			// the agent asked, which gets posted as the tracker comment in inline mode.
 			inputContext := checkText

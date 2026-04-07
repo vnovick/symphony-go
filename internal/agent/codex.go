@@ -158,6 +158,7 @@ func (c *CodexRunner) RunTurn(
 		return result, readErr
 	}
 	result.TotalTokens = result.InputTokens + result.OutputTokens
+	result = FinalizeResult(result)
 	return result, nil
 }
 

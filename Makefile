@@ -55,11 +55,11 @@ web-build:
 web-test:
 	cd web && pnpm install --frozen-lockfile && pnpm test
 
-# Guard against old "Itervox" name in user-visible strings (skip internal identifiers).
+# Guard against old "Symphony" name in user-visible strings (skip internal identifiers).
 web-spelling:
-	@if grep -rn '".*Itervox' web/src/ --include="*.ts" --include="*.tsx" 2>/dev/null | grep -v "itervoxStore\|useItervox\|/itervox/" | grep -q .; then \
-		echo "ERROR: 'Itervox' found in user-visible strings — should be 'Itervox'."; \
-		grep -rn '".*Itervox' web/src/ --include="*.ts" --include="*.tsx" | grep -v "itervoxStore\|useItervox\|/itervox/"; \
+	@if grep -rni '".*Symphony' web/src/ --include="*.ts" --include="*.tsx" 2>/dev/null | grep -q .; then \
+		echo "ERROR: 'Symphony' found in user-visible strings — should be 'Itervox'."; \
+		grep -rni '".*Symphony' web/src/ --include="*.ts" --include="*.tsx"; \
 		exit 1; \
 	fi
 

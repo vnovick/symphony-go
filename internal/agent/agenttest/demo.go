@@ -53,8 +53,8 @@ func (d *DemoRunner) RunTurn(
 	// Simulate mid-turn progress
 	log.Info("claude: text", "session_id", sid, "text", "Analyzing the issue and implementing changes...")
 	mid := agent.TurnResult{
-		SessionID:   sid,
-		InputTokens: 1500,
+		SessionID:    sid,
+		InputTokens:  1500,
 		OutputTokens: 800,
 		TotalTokens:  2300,
 	}

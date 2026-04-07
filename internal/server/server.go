@@ -20,21 +20,21 @@ var errNotConfigured = errors.New("not configured")
 
 // RunningRow is a single row in the active sessions table.
 type RunningRow struct {
-	Identifier   string    `json:"identifier"`
-	State        string    `json:"state"`
-	TurnCount    int       `json:"turnCount"`
-	LastEvent    string    `json:"lastEvent,omitempty"`
-	LastEventAt  string    `json:"lastEventAt,omitempty"`
-	InputTokens  int       `json:"inputTokens"`
-	OutputTokens int       `json:"outputTokens"`
-	Tokens       int       `json:"tokens"`
-	ElapsedMs    int64     `json:"elapsedMs"`
-	StartedAt    time.Time `json:"startedAt"`
-	SessionID    string    `json:"sessionId,omitempty"`
-	WorkerHost     string    `json:"workerHost,omitempty"`
-	Backend        string    `json:"backend,omitempty"`
-	Kind           string    `json:"kind,omitempty"` // "worker" (default) | "reviewer"
-	SubagentCount  int       `json:"subagentCount,omitempty"`
+	Identifier    string    `json:"identifier"`
+	State         string    `json:"state"`
+	TurnCount     int       `json:"turnCount"`
+	LastEvent     string    `json:"lastEvent,omitempty"`
+	LastEventAt   string    `json:"lastEventAt,omitempty"`
+	InputTokens   int       `json:"inputTokens"`
+	OutputTokens  int       `json:"outputTokens"`
+	Tokens        int       `json:"tokens"`
+	ElapsedMs     int64     `json:"elapsedMs"`
+	StartedAt     time.Time `json:"startedAt"`
+	SessionID     string    `json:"sessionId,omitempty"`
+	WorkerHost    string    `json:"workerHost,omitempty"`
+	Backend       string    `json:"backend,omitempty"`
+	Kind          string    `json:"kind,omitempty"` // "worker" (default) | "reviewer"
+	SubagentCount int       `json:"subagentCount,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
