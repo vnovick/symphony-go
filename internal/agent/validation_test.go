@@ -11,6 +11,12 @@ import (
 )
 
 func TestValidateCLI_NotFound(t *testing.T) {
+	// Disable the interactive-shell fallback so PATH manipulation alone
+	// determines the outcome; otherwise the user's real ~/.zshrc (sourced
+	// by the fallback) would re-add the tool to PATH and mask the failure.
+	prev := agent.SetValidateCLIShellFallback(false)
+	defer agent.SetValidateCLIShellFallback(prev)
+
 	cases := []struct {
 		name     string
 		validate func() error

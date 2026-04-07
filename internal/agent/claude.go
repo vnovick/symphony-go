@@ -24,16 +24,57 @@ func NewClaudeRunner() *ClaudeRunner {
 	return &ClaudeRunner{}
 }
 
-// validateCLI checks whether the named CLI tool is available by running
-// "<name> --version" in a login shell with a 5-second timeout.
+// validateCLIShellFallback controls whether validateCLI falls back to
+// spawning an interactive login shell when exec.LookPath fails. Tests flip
+// this to false so they can assert the "not found" path without having the
+// user's real ~/.zshrc re-introduce the tool onto PATH.
+var validateCLIShellFallback = true
+
+// validateCLI checks whether the named CLI tool is available.
+//
+// It first tries the inherited PATH directly (via exec.LookPath + `<name> --version`),
+// which succeeds in the common case where the user ran itervox from an
+// interactive shell that already has the tool on PATH.
+//
+// If that fails, it falls back to spawning an interactive login shell
+// ("<shell> -ilc ...") so tools installed via nvm/volta/asdf/aliases in
+// ~/.zshrc or ~/.bashrc are still discoverable. Note: zsh's `-l` alone does
+// NOT source ~/.zshrc — `-i` is required for that.
+//
 // hint is appended to the "not available" error message (e.g. installation advice).
 func validateCLI(name, hint string) error {
-	shell := loginShell()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Attempt 1: use the inherited PATH directly. Skip when name is a
+	// pre-resolved absolute path — exec.CommandContext handles that fine.
+	if !filepath.IsAbs(name) {
+		if _, err := exec.LookPath(name); err == nil {
+			if err := exec.CommandContext(ctx, name, "--version").Run(); err == nil {
+				return nil
+			}
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("%s CLI validation timed out after 5s", name)
+			}
+		}
+	} else {
+		if err := exec.CommandContext(ctx, name, "--version").Run(); err == nil {
+			return nil
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%s CLI validation timed out after 5s", name)
+		}
+	}
+
+	if !validateCLIShellFallback {
+		return fmt.Errorf("%s CLI not available: not found on PATH (%s)", name, hint)
+	}
+
+	// Attempt 2: fall back to an interactive login shell so ~/.zshrc /
+	// ~/.bashrc PATH additions and shell aliases/functions are picked up.
+	shell := loginShell()
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, shell, "-lc", name+" --version")
+	cmd := exec.CommandContext(ctx, shell, "-ilc", name+" --version")
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
