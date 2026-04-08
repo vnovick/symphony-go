@@ -610,31 +610,57 @@ func TestDispatchWithSSHHosts(t *testing.T) {
 	cfg.Agent.SSHHosts = []string{"host1.example.com", "host2.example.com"}
 	mt := singleIssueTracker(t, "In Progress")
 
-	done := make(chan struct{})
-	wrapped := &trackingRunner{
-		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
-			{Type: "system", SessionID: "s1"},
-			{Type: "result", SessionID: "s1"},
-		}),
-		done: done,
+	// Stalling fake runner — holds RunTurn open so we can observe the worker
+	// in the Running snapshot. A non-stalling runner emits {Type: "result"}
+	// and exits before the test goroutine can read the snapshot, producing
+	// a race where Running is empty by the time we check (see CI flake).
+	fake := &agenttest.FakeRunner{Stall: true}
+	orch := orchestrator.New(cfg, mt, fake, nil)
+
+	// Observe "worker is visible in Running" deterministically via
+	// OnStateChange, not via "RunTurn was called" (too early) — same
+	// pattern as TestCancelIssue_Running.
+	workerVisible := make(chan struct{})
+	orch.OnStateChange = func() {
+		snap := orch.Snapshot()
+		if len(snap.Running) > 0 {
+			select {
+			case workerVisible <- struct{}{}:
+			default:
+			}
+		}
 	}
-	orch := orchestrator.New(cfg, mt, wrapped, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	go orch.Run(ctx) //nolint:errcheck
+	// Track the orchestrator goroutine so we can wait for it to exit before
+	// the test returns — prevents goroutine leaks from racing with any
+	// cleanup the test framework runs after the function exits.
+	runDone := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(runDone)
+	}()
 
 	select {
-	case <-done:
+	case <-workerVisible:
 	case <-time.After(2 * time.Second):
-		t.Fatal("runner was not invoked within 2s")
+		t.Fatal("worker did not appear in Running snapshot within 2s")
 	}
 
 	snap := orch.Snapshot()
 	require.Len(t, snap.Running, 1)
 	for _, entry := range snap.Running {
 		assert.NotEmpty(t, entry.WorkerHost, "worker should be assigned an SSH host")
+	}
+
+	// Explicitly stop the orchestrator and wait for the goroutine to exit.
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orchestrator did not exit within 2s of cancel")
 	}
 }
 
