@@ -25,7 +25,7 @@
     "@hookform/resolvers": "^5.2.2",
     "@microsoft/fetch-event-source": "^2.0.1",
     "@tailwindcss/typography": "^0.5.19",
-    "@tanstack/react-query": "^5.90.21",
+    "@tanstack/react-query": "^5.96.2",
     "clsx": "^2.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
