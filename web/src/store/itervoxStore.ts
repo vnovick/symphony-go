@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { StateSnapshot } from '../types/schemas';
 import { StateSnapshotSchema } from '../types/schemas';
+import { authedFetch } from '../auth/authedFetch';
+import { UnauthorizedError } from '../auth/UnauthorizedError';
 
 const MAX_LOG_LINES = 500;
 const MAX_TOKEN_SAMPLES = 60; // ~2 minute window at 1 sample/2s
@@ -92,7 +94,7 @@ export const useItervoxStore = create<ItervoxStore>((set) => ({
 
   refreshSnapshot: async () => {
     try {
-      const res = await fetch('/api/v1/state');
+      const res = await authedFetch('/api/v1/state');
       if (!res.ok) return;
       const data: StateSnapshot = StateSnapshotSchema.parse(await res.json());
       set((state) => ({
@@ -100,6 +102,7 @@ export const useItervoxStore = create<ItervoxStore>((set) => ({
         tokenSamples: appendTokenSample(state.tokenSamples, data),
       }));
     } catch (err) {
+      if (err instanceof UnauthorizedError) return; // AuthGate will handle.
       if (import.meta.env.DEV) {
         console.warn('[itervox] refreshSnapshot failed — state may be stale', err);
       }

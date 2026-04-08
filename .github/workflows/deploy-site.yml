@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
     paths: ['site/**']
-  pull_request:
-    paths: ['site/**']
 
 jobs:
   deploy:

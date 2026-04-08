@@ -5,14 +5,21 @@ import { useToastStore } from '../store/toastStore';
 import type { StateSnapshot, TrackerIssue } from '../types/schemas';
 import { TrackerIssueSchema } from '../types/schemas';
 import { z } from 'zod';
+import { authedFetch } from '../auth/authedFetch';
+import { UnauthorizedError } from '../auth/UnauthorizedError';
 
 export const ISSUES_KEY = ['issues'] as const;
 export const ISSUE_KEY = (identifier: string) => ['issue', identifier] as const;
 
 type RollbackContext = { prevIssues?: TrackerIssue[]; prevSnapshot?: StateSnapshot } | undefined;
 
-/** Extracts a user-facing message from an unknown error and shows it as a toast. */
+/**
+ * Extracts a user-facing message from an unknown error and shows it as a toast.
+ * Silently drops `UnauthorizedError` — the AuthGate swaps to the login screen
+ * instead; a toast on top of that would be noise.
+ */
 function toastApiError(err: unknown, fallback = 'Action failed — please try again.'): void {
+  if (err instanceof UnauthorizedError) return;
   const message = err instanceof Error ? err.message : fallback;
   useToastStore.getState().addToast(message);
 }
@@ -31,7 +38,7 @@ function makeRollbackHandler(queryClient: QueryClient) {
 }
 
 async function fetchIssues(): Promise<TrackerIssue[]> {
-  const res = await fetch('/api/v1/issues');
+  const res = await authedFetch('/api/v1/issues');
   if (!res.ok) throw new Error(`fetch issues failed: ${String(res.status)}`);
   return z.array(TrackerIssueSchema).parse(await res.json());
 }
@@ -53,7 +60,7 @@ export function useIssue(identifier: string) {
   return useQuery({
     queryKey: ISSUE_KEY(identifier),
     queryFn: async () => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}`);
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}`);
       if (!res.ok) throw new Error(`fetch issue failed: ${String(res.status)}`);
       return TrackerIssueSchema.parse(await res.json());
     },
@@ -108,7 +115,7 @@ export function useUpdateIssueState() {
       return { prevIssues };
     },
     mutationFn: async ({ identifier, state }: { identifier: string; state: string }) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/state`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/state`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state }),
@@ -139,7 +146,7 @@ export function useSetIssueProfile() {
       return { prevIssues };
     },
     mutationFn: async ({ identifier, profile }: { identifier: string; profile: string }) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/profile`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/profile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profile }),
@@ -170,7 +177,7 @@ export function useSetIssueBackend() {
       return { prevIssues };
     },
     mutationFn: async ({ identifier, backend }: { identifier: string; backend: string }) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/backend`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/backend`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ backend }),
@@ -212,7 +219,7 @@ export function useCancelIssue() {
       return { prevIssues, prevSnapshot: prevSnapshot ?? undefined };
     },
     mutationFn: async (identifier: string) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/cancel`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/cancel`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`cancelIssue failed: ${String(res.status)}`);
@@ -276,7 +283,7 @@ export function useResumeIssue() {
       return { prevIssues, prevSnapshot: prevSnapshot ?? undefined };
     },
     mutationFn: async (identifier: string) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/resume`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/resume`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`resumeIssue failed: ${String(res.status)}`);
@@ -291,7 +298,7 @@ export function useResumeIssue() {
 export function useTerminateIssue() {
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/terminate`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/terminate`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`terminateIssue failed: ${String(res.status)}`);
@@ -308,7 +315,7 @@ export function useTerminateIssue() {
 export function useTriggerAIReview() {
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/ai-review`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/ai-review`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`triggerAIReview failed: ${String(res.status)}`);
@@ -322,7 +329,7 @@ export function useTriggerAIReview() {
 export function useClearIssueLogs() {
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/logs`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/logs`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(`clearIssueLogs failed: ${String(res.status)}`);
@@ -334,7 +341,7 @@ export function useClearAllLogs() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      const res = await fetch('/api/v1/logs', { method: 'DELETE' });
+      const res = await authedFetch('/api/v1/logs', { method: 'DELETE' });
       if (!res.ok) throw new Error(`clearAllLogs failed: ${String(res.status)}`);
     },
     onSuccess: () => {
@@ -351,7 +358,7 @@ export function useClearAllLogs() {
 export function useClearAllWorkspaces() {
   return useMutation({
     mutationFn: async () => {
-      const res = await fetch('/api/v1/workspaces', { method: 'DELETE' });
+      const res = await authedFetch('/api/v1/workspaces', { method: 'DELETE' });
       if (!res.ok) throw new Error(`clearAllWorkspaces failed: ${String(res.status)}`);
     },
     onError: (err: unknown) => {
@@ -363,7 +370,7 @@ export function useClearAllWorkspaces() {
 export function useClearIssueSubLogs() {
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(`clearIssueSubLogs failed: ${String(res.status)}`);
@@ -377,11 +384,14 @@ export function useClearIssueSubLogs() {
 export function useProvideInput() {
   return useMutation({
     mutationFn: async ({ identifier, message }: { identifier: string; message: string }) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/provide-input`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
-      });
+      const res = await authedFetch(
+        `/api/v1/issues/${encodeURIComponent(identifier)}/provide-input`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message }),
+        },
+      );
       if (!res.ok) throw new Error(`provideInput failed: ${String(res.status)}`);
     },
     onSuccess: () => {
@@ -396,9 +406,12 @@ export function useProvideInput() {
 export function useDismissInput() {
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/dismiss-input`, {
-        method: 'POST',
-      });
+      const res = await authedFetch(
+        `/api/v1/issues/${encodeURIComponent(identifier)}/dismiss-input`,
+        {
+          method: 'POST',
+        },
+      );
       if (!res.ok) throw new Error(`dismissInput failed: ${String(res.status)}`);
     },
     onSuccess: () => {
@@ -413,7 +426,7 @@ export function useDismissInput() {
 export function useReanalyzeIssue() {
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/reanalyze`, {
+      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/reanalyze`, {
         method: 'POST',
       });
       if (!res.ok) throw new Error(`reanalyzeIssue failed: ${String(res.status)}`);

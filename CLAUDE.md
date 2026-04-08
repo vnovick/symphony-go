@@ -124,9 +124,10 @@ cmd/itervox (wires everything)
 ## Frontend architecture
 
 - **Vite + React 19 + TypeScript + TailwindCSS**
-- **State**: Zustand (`itervoxStore` for snapshot, `toastStore` for notifications, `uiStore` for view mode/filters)
+- **State**: Zustand (`itervoxStore` for snapshot, `toastStore` for notifications, `uiStore` for view mode/filters, `tokenStore`/`authStore` for auth)
 - **Server state**: TanStack Query (issues, logs — `staleTime: 10_000`)
-- **Real-time**: SSE (`useItervoxSSE`) for snapshot updates; `useLogStream` for log lines
+- **Real-time**: SSE via `@microsoft/fetch-event-source` (NOT native `EventSource`) — needed so the connection can carry an `Authorization: Bearer` header. Single seam is `web/src/auth/authedEventStream.ts`, consumed by `useItervoxSSE`, `useLogStream`, and the per-issue log-stream in `queries/logs.ts`.
+- **Auth**: bearer-token middleware gated by `ITERVOX_API_TOKEN`. Auto-generated ephemeral token on non-loopback bind unless `server.allow_unauthenticated_lan: true`. All frontend HTTP goes through `authedFetch` in `web/src/auth/authedFetch.ts` — NEVER call `fetch()` or `new EventSource()` directly.
 - **Routing**: React Router v7 (file-based lazy pages)
 - **DnD**: dnd-kit (`PointerSensor` + `KeyboardSensor` registered on all boards)
 - **Schema validation**: Zod at SSE parse boundary and query results
@@ -145,6 +146,12 @@ cmd/itervox (wires everything)
 | `web/src/store/uiStore.ts` | View mode, search, filters, accordion expansion |
 | `web/src/types/schemas.ts` | Canonical Zod schemas (source of truth) |
 | `web/src/utils/timings.ts` | Shared timing constants (TOAST_DISMISS_MS, SSE_RECONNECT_BASE_MS, …) |
+| `web/src/auth/authedFetch.ts` | `fetch()` wrapper — injects `Authorization: Bearer`, throws `UnauthorizedError` on 401 |
+| `web/src/auth/authedEventStream.ts` | SSE wrapper over `@microsoft/fetch-event-source` — same header injection, exponential backoff, 401 → `FatalSSEError` |
+| `web/src/auth/tokenStore.ts` | Token storage (sessionStorage default, localStorage opt-in via "Remember"), cross-tab `storage` event sync |
+| `web/src/auth/authStore.ts` | Auth state machine: `unknown` / `serverDown` / `needsToken` / `authorized` |
+| `web/src/auth/AuthGate.tsx` | Root wrapper — captures `?token=` from URL once, probes `/health` then `/state`, routes to app / login / error screen |
+| `web/src/auth/UnauthorizedError.ts` | Typed error used by TanStack Query retry guards to skip retrying auth failures |
 
 ### Toast API
 
@@ -231,6 +238,7 @@ Before claiming a component is missing an accessibility attribute:
 ## Never do
 
 - **Do not commit** 
-- **Do not add `.env` files** — secrets are injected at runtime via env vars
+- **Do not add `.env` files** — secrets are injected at runtime via env vars (`.itervox/.env` is gitignored and loaded by the daemon on startup)
 - **Do not mock `orchestrator.State`** in tests that check state transitions — pass real State values
 - **Do not call `patchSnapshot` from settings mutations** — they must call `refreshSnapshot()` to get the authoritative server state
+- **Do not call `fetch()` or `new EventSource()` directly in `web/src`** — use `authedFetch` from `web/src/auth/authedFetch.ts` and `openAuthedEventStream` from `web/src/auth/authedEventStream.ts`. The only exceptions are inside the auth module itself (`AuthGate` health/state probes and `TokenEntryScreen` token validation), which bootstrap before a token is stored.

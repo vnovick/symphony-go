@@ -2,49 +2,40 @@ import { useEffect } from 'react';
 import { useItervoxStore } from '../store/itervoxStore';
 import { StateSnapshotSchema } from '../types/schemas';
 import type { StateSnapshot } from '../types/schemas';
-import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS } from '../utils/timings';
+import { authedFetch } from '../auth/authedFetch';
+import { openAuthedEventStream } from '../auth/authedEventStream';
+import { UnauthorizedError } from '../auth/UnauthorizedError';
 
 /**
  * Connects to /api/v1/events (SSE) and keeps the Zustand snapshot up to date.
- * Falls back to polling /api/v1/state every 3s when SSE fails, so the
- * dashboard always shows data even if EventSource is unavailable.
- * Reconnects with exponential backoff (5s → 10s → 20s → 30s cap).
- * Mounts once at app level.
+ * Uses @microsoft/fetch-event-source under the hood so the connection can
+ * carry `Authorization: Bearer <token>` headers.
  *
- * Store actions are read via getState() inside the effect rather than via
- * selector subscriptions so that this effect never re-runs due to store
- * action reference changes (e.g. after middleware additions).
+ * Falls back to polling /api/v1/state every 3s while SSE is down. Mounts once.
  */
 export function useItervoxSSE() {
   useEffect(() => {
-    // Read actions once at mount. Zustand actions are stable references, but
-    // using getState() here decouples the effect from any future store refactors.
     const { setSnapshot, setSseConnected } = useItervoxStore.getState();
 
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
-    let cancelled = false;
     let sseWorking = false;
-    let reconnectAttempt = 0;
+    let cancelled = false;
 
-    // Fallback: poll /api/v1/state while SSE is not connected.
     async function poll() {
       if (sseWorking || cancelled) return;
       try {
-        const res = await fetch('/api/v1/state');
+        const res = await authedFetch('/api/v1/state');
         if (res.ok) {
           const snap = StateSnapshotSchema.parse(await res.json());
           setSnapshot(snap);
         }
-      } catch {
-        // network error — ignore
+      } catch (err) {
+        if (err instanceof UnauthorizedError) return; // AuthGate will handle.
       }
     }
 
     function startPoll() {
       if (pollTimer) return;
-      // Poll immediately and then every 3s while SSE is down.
       void poll();
       pollTimer = setInterval(() => {
         void poll();
@@ -58,20 +49,16 @@ export function useItervoxSSE() {
       }
     }
 
-    function connect() {
-      if (cancelled) return;
-      es = new EventSource('/api/v1/events');
-
-      es.onopen = () => {
+    const close = openAuthedEventStream('/api/v1/events', {
+      onOpen: () => {
         sseWorking = true;
-        reconnectAttempt = 0; // reset backoff on successful connection
         setSseConnected(true);
         stopPoll();
-      };
-
-      es.onmessage = (e: MessageEvent<string>) => {
+      },
+      onMessage: (msg) => {
+        if (!msg.data) return;
         try {
-          const snap: StateSnapshot = StateSnapshotSchema.parse(JSON.parse(e.data));
+          const snap: StateSnapshot = StateSnapshotSchema.parse(JSON.parse(msg.data));
           setSnapshot(snap);
           if (!sseWorking) {
             sseWorking = true;
@@ -79,44 +66,27 @@ export function useItervoxSSE() {
             stopPoll();
           }
         } catch (err) {
-          // malformed JSON or schema validation failure — skip
           if (import.meta.env.DEV) {
             console.warn('[itervox] SSE message parse/validation failed', err);
           }
         }
-      };
-
-      es.onerror = () => {
+      },
+      onDisconnect: () => {
         sseWorking = false;
         setSseConnected(false);
-        es?.close();
-        es = null;
-        startPoll(); // fall back to polling while SSE is down
-        // Guard: if a reconnect is already scheduled (e.g. a second error fires
-        // before the timer fires), don't stack another timer on top.
-        if (!cancelled && reconnectTimer === null) {
-          const delay = Math.min(
-            SSE_RECONNECT_BASE_MS * 2 ** reconnectAttempt,
-            SSE_RECONNECT_MAX_MS,
-          );
-          reconnectAttempt++;
-          reconnectTimer = setTimeout(connect, delay);
-        }
-      };
-    }
+        startPoll();
+      },
+    });
 
-    connect();
-    // Also start polling immediately so the dashboard shows data
-    // even during the SSE handshake window.
+    // Start polling immediately so the dashboard shows data during SSE handshake.
     startPoll();
 
     return () => {
       cancelled = true;
       sseWorking = false;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
       stopPoll();
-      es?.close();
+      close();
       setSseConnected(false);
     };
-  }, []); // empty deps: store actions are stable; getState() is always current
+  }, []);
 }

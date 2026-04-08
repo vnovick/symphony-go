@@ -1,11 +1,11 @@
 # AGENTS.md — itervox
 
-> This file provides context for AI coding agents (Codex, Claude Code, etc.) working on this repo.
+> This file provides context for AI coding agents (Codex, Claude Code, Cursor, Gemini CLI, OpenCode, etc.) working on this repo.
 > For human contributor docs see CONTRIBUTING.md.
 
 ## Project overview
 
-Itervox is a Go 1.25.8 daemon that polls Linear/GitHub Issues, spawns Claude Code or
+Itervox is a Go 1.25.9 daemon that polls Linear/GitHub Issues, spawns Claude Code or
 Codex subagents per issue, and serves a React web dashboard + Bubbletea TUI.
 Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
 
@@ -13,9 +13,36 @@ Config is a single `WORKFLOW.md` file (YAML front matter + Liquid template).
 
 1. **Read CLAUDE.md** — it contains architecture invariants, false-positive patterns for
    static analysis, and conventions that override defaults.
-2. **Run tests** to establish a baseline: `go test -race ./...` and `cd web && pnpm test`.
-3. **Check the gap doc** (`planning/gaps_300326.md`) for known open items before adding new
+2. **Read the matching rule bundle under `.claude/skills/<name>/SKILL.md`** for the area you
+   are editing (see the table below). These bundles are plain markdown and tool-agnostic —
+   the directory name is historical. They are not optional reading.
+3. **Run tests** to establish a baseline: `go test -race ./...` and `cd web && pnpm test`.
+4. **Check the gap doc** (`planning/gaps_300326.md`) for known open items before adding new
    ones — it may already be tracked.
+
+## Rule bundles (read the matching one before editing)
+
+| When you are editing… | Read this file first |
+|---|---|
+| `internal/orchestrator/**/*.go`, adding concurrent code, or mutable `cfg.*` fields | `.claude/skills/orchestrator-invariants/SKILL.md` |
+| `web/src/**/*.{ts,tsx}` that makes HTTP or SSE calls (outside `web/src/auth/`) | `.claude/skills/authed-transport/SKILL.md` |
+| `web/src/components/**` or `web/src/pages/**` — creating/editing React components | `.claude/skills/react-component-discipline/SKILL.md` |
+| Adding a new `.go` file, growing one past ~400 lines, introducing a Go helper | `.claude/skills/go-package-hygiene/SKILL.md` |
+| `internal/config/config.go` struct fields, evolving the `WORKFLOW.md` schema | `.claude/skills/config-field-checklist/SKILL.md` |
+| Before editing any exported symbol / HTTP route / SSE event / Zod schema | `.claude/skills/change-impact-review/SKILL.md` |
+| When the impact review surfaces a BREAKING change (hard stop) | `.claude/skills/breaking-change-gate/SKILL.md` |
+| `go.mod`, `Makefile`, Go toolchain bumps, or govulncheck stdlib findings | `.claude/skills/go-toolchain-sync/SKILL.md` |
+| Before claiming complete, before committing, before opening a PR | `.claude/skills/verify-before-done/SKILL.md` |
+
+Each bundle is a focused checklist of enforced rules and verification steps for its area.
+Reading the bundle before editing prevents the entire class of bugs it was written to catch.
+
+## Commands (developer-facing workflows)
+
+| Command | Use it for |
+|---|---|
+| `/interview` (`.claude/commands/interview.md`) | Start of a feature or refactor with unclear scope — 8 structured questions that surface design intent and verification criteria before any code |
+| `/brainstorm` (`.claude/commands/brainstorm.md`) | Design decision with multiple reasonable approaches — spawns 3 subagents with forced orthogonal positions (Minimalist, Architect, Pragmatist), produces a tradeoffs table and decision document |
 
 ## Build commands
 

@@ -59,6 +59,25 @@ func TestBuildShellCmdResume(t *testing.T) {
 	assert.NotContains(t, cmd, " -p ")
 }
 
+// Regression: an empty command must not produce a shell line that starts with
+// `--output-format`. Without the fallback, bash -lc would interpret the flag
+// as the command name and print `--output-format: command not found`.
+func TestBuildShellCmdEmptyCommandFallsBackToClaude(t *testing.T) {
+	cmd := buildShellCmd("", nil, "do the thing")
+	// Must not start with the flag (which would happen if leading whitespace
+	// was the only thing before --output-format).
+	assert.False(t, strings.HasPrefix(strings.TrimSpace(cmd), "--"),
+		"shell command must not start with a flag; got: %q", cmd)
+	assert.True(t, strings.HasPrefix(strings.TrimSpace(cmd), "claude "),
+		"empty command should fall back to 'claude'; got: %q", cmd)
+}
+
+func TestBuildShellCmdWhitespaceCommandFallsBackToClaude(t *testing.T) {
+	cmd := buildShellCmd("   ", nil, "do the thing")
+	assert.True(t, strings.HasPrefix(strings.TrimSpace(cmd), "claude "),
+		"whitespace-only command should fall back to 'claude'; got: %q", cmd)
+}
+
 func TestBuildShellCmdEmptySessionID(t *testing.T) {
 	id := ""
 	cmd := buildShellCmd("claude", &id, "use prompt")

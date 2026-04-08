@@ -1,6 +1,8 @@
 import { useMemo } from 'react';
 import { useItervoxStore } from '../store/itervoxStore';
 import { useToastStore } from '../store/toastStore';
+import { authedFetch } from '../auth/authedFetch';
+import { UnauthorizedError } from '../auth/UnauthorizedError';
 
 // Read refreshSnapshot from the store directly (not via selector) so
 // the returned action functions have stable references across renders.
@@ -19,7 +21,7 @@ async function settingsFetch(
   errorLabel?: string,
 ): Promise<boolean> {
   try {
-    const res = await fetch(url, {
+    const res = await authedFetch(url, {
       method,
       ...(body !== undefined
         ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
@@ -31,7 +33,8 @@ async function settingsFetch(
     }
     await getRefreshSnapshot()();
     return true;
-  } catch {
+  } catch (err) {
+    if (err instanceof UnauthorizedError) return false; // AuthGate handles UI.
     toastError(errorLabel ? `Network error: ${errorLabel}` : 'Network error.');
     return false;
   }

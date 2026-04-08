@@ -19,6 +19,8 @@ import {
   useSetIssueProfile,
 } from '../../queries/issues';
 import { useSettingsActions } from '../../hooks/useSettingsActions';
+import { authedFetch } from '../../auth/authedFetch';
+import { UnauthorizedError } from '../../auth/UnauthorizedError';
 
 import { BoardView } from './components/BoardView';
 import { ListView } from './components/ListView';
@@ -156,11 +158,13 @@ export default function Dashboard() {
   const handleRefresh = useCallback(async () => {
     setLoading(true);
     try {
-      await fetch('/api/v1/refresh', { method: 'POST' });
+      await authedFetch('/api/v1/refresh', { method: 'POST' });
       await invalidateIssues();
       await useItervoxStore.getState().refreshSnapshot();
-    } catch {
-      useToastStore.getState().addToast('Refresh failed — check the server.', 'error');
+    } catch (err) {
+      if (!(err instanceof UnauthorizedError)) {
+        useToastStore.getState().addToast('Refresh failed — check the server.', 'error');
+      }
     } finally {
       setLoading(false);
     }

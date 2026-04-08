@@ -8,14 +8,20 @@ import { AppWrapper } from './components/common/PageMeta.tsx';
 import { ThemeProvider } from './context/ThemeContext.tsx';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
+import { AuthGate } from './auth/AuthGate';
+import { UnauthorizedError } from './auth/UnauthorizedError';
 
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 10_000,
-      retry: 2,
+      // Don't retry on auth failures — the AuthGate will swap the screen.
+      // Other errors retry up to 2 times (matches the previous default).
+      retry: (count, err) => !(err instanceof UnauthorizedError) && count < 2,
       refetchOnWindowFocus: false,
     },
+    // Mutations use the TanStack Query default (no retries), which is
+    // already the correct behavior for auth failures.
   },
 });
 
@@ -26,7 +32,9 @@ createRoot(document.getElementById('root')!).render(
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
           <AppWrapper>
-            <App />
+            <AuthGate>
+              <App />
+            </AuthGate>
           </AppWrapper>
         </ThemeProvider>
         {import.meta.env.DEV && <ReactQueryDevtools initialIsOpen={false} />}

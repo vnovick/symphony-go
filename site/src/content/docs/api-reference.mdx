@@ -24,7 +24,15 @@ curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" \
   http://localhost:8090/api/v1/state
 ```
 
-Without the env var, the API is open. **Strongly recommended** when binding the server to a non-loopback address (`server.host: 0.0.0.0`).
+The web dashboard sends the same header automatically — on first visit it
+reads `?token=<token>` from the URL (printed in the daemon startup log when
+the env var is set), stores it in `sessionStorage`, and attaches it as
+`Authorization: Bearer` on every request, including SSE streams. If the
+token is missing, wrong, or the session ends, the dashboard shows a login
+screen with a paste input (tick **Remember on this device** to persist in
+`localStorage`).
+
+Without the env var, the API is open. **Strongly recommended** when binding the server to a non-loopback address (`server.host: 0.0.0.0`). Put the value in `.itervox/.env` so it survives shell and launcher restarts.
 
 ---
 

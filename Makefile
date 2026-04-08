@@ -1,8 +1,9 @@
 .PHONY: all build verify dev test lint lint-go fmt vet web-build web-test web-spelling coverage clean benchmark tui-golden
 
 # Pin to the toolchain declared in go.mod so `go tool cover` and other tools
-# always use go1.25.8, even on machines where /usr/local/go is an older version.
-export GOTOOLCHAIN := go1.25.8
+# always use go1.25.9, even on machines where /usr/local/go is an older version.
+# Must stay in sync with the `go` directive in go.mod.
+export GOTOOLCHAIN := go1.25.9
 
 all: build verify
 

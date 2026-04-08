@@ -1,51 +1,35 @@
 import { useEffect } from 'react';
 import { useItervoxStore } from '../store/itervoxStore';
+import { openAuthedEventStream } from '../auth/authedEventStream';
 
 /**
  * Streams log lines from /api/v1/logs into the Zustand store.
  * Accepts an optional identifier to filter logs server-side.
+ * Uses the authed SSE helper so it sends the bearer token.
  */
 export function useLogStream(identifier?: string) {
   useEffect(() => {
-    // Read appendLog via getState() so this effect never re-runs due to store
-    // action reference changes (same pattern as useItervoxSSE).
     const { appendLog } = useItervoxStore.getState();
 
-    let es: EventSource | undefined;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
+    const url = identifier
+      ? `/api/v1/logs?identifier=${encodeURIComponent(identifier)}`
+      : '/api/v1/logs';
 
-    function connect() {
-      if (cancelled) return;
-      const url = identifier
-        ? `/api/v1/logs?identifier=${encodeURIComponent(identifier)}`
-        : '/api/v1/logs';
-      es = new EventSource(url);
-
-      es.addEventListener('log', (e: MessageEvent<string>) => {
+    const close = openAuthedEventStream(url, {
+      onMessage: (msg) => {
+        if (msg.event !== 'log') return;
         try {
-          appendLog(e.data);
+          appendLog(msg.data);
         } catch (err) {
           if (import.meta.env.DEV) {
             console.warn('[itervox] useLogStream: appendLog threw', err);
           }
         }
-      });
-
-      es.onerror = () => {
-        es?.close();
-        if (!cancelled) {
-          reconnectTimer = setTimeout(connect, 3000);
-        }
-      };
-    }
-
-    connect();
+      },
+    });
 
     return () => {
-      cancelled = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (es) es.close();
+      close();
     };
-  }, [identifier]); // appendLog omitted — stable via getState(), no reconnect needed on action change
+  }, [identifier]);
 }

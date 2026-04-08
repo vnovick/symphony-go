@@ -13,15 +13,33 @@ phone or another computer, you have five options.
 **Always set `ITERVOX_API_TOKEN` before exposing the dashboard outside loopback.**
 The dashboard has no built-in authentication on `127.0.0.1`. As soon as the
 server binds to anything reachable from another device, you must enable bearer
-token auth.
+token auth. Put the value in `.itervox/.env` (loaded automatically) or export it:
 
 ```bash
-export ITERVOX_API_TOKEN=$(openssl rand -hex 32)
+# .itervox/.env
+ITERVOX_API_TOKEN=$(openssl rand -hex 32)
 ```
 
-The token must be sent in the `Authorization: Bearer <token>` header by every
-API request. The dashboard frontend reads it from a query parameter on first
-load and stores it locally.
+All API requests — including the web dashboard's fetch calls and SSE streams —
+then require an `Authorization: Bearer <token>` header. The dashboard handles
+this for you:
+
+1. When the daemon starts with `ITERVOX_API_TOKEN` set, it prints a dashboard
+   URL with `?token=<token>` appended (look for the `dashboard URL (carries
+   token — copy/paste once)` log line).
+2. Open that URL once from your phone or other device. The dashboard captures
+   the token, stores it in `sessionStorage`, and strips it from the URL bar.
+3. After that, every request and SSE connection sends the bearer header
+   automatically. If the token is missing, rejected, or the session ends
+   (closing the tab), you'll see a login screen that accepts the token via a
+   paste input. Tick **Remember on this device** to persist it in
+   `localStorage` instead of `sessionStorage`.
+
+For scripted access (curl, other backends), attach the header manually:
+
+```bash
+curl -H "Authorization: Bearer $ITERVOX_API_TOKEN" http://localhost:8090/api/v1/state
+```
 :::
 
 ---
@@ -45,7 +63,9 @@ ipconfig getifaddr en0      # Wi-Fi on macOS
 hostname -I                  # Linux
 ```
 
-On your phone, browse to `http://<laptop-ip>:8090?token=<your-token>`.
+On your phone, browse to `http://<laptop-ip>:8090/?token=<your-token>` — this
+matches the URL the daemon prints at startup. The dashboard will capture the
+token on first load and strip it from the URL.
 
 **Pros:** zero setup, works on home/office WiFi, real-time SSE streaming.
 **Cons:** only works on the same network. Doesn't survive when your phone
@@ -84,7 +104,9 @@ server:
   port: 8090
 ```
 
-On your phone: `http://laptop.tail-scale-name.ts.net:8090`.
+On your phone: `http://laptop.tail-scale-name.ts.net:8090/?token=<your-token>`
+on first visit. The dashboard captures the token and subsequent visits work
+without the query parameter.
 
 **Pros:** works from anywhere, end-to-end encrypted, no port forwarding, no
 public exposure. NAT-traversal is automatic.
@@ -111,7 +133,8 @@ command and you get a public HTTPS URL that proxies to your local dashboard.
 
    ngrok prints a public URL like `https://abcd-1234.ngrok-free.app`.
 4. On your phone, open
-   `https://abcd-1234.ngrok-free.app?token=<your-token>`.
+   `https://abcd-1234.ngrok-free.app/?token=<your-token>` on first visit —
+   the dashboard will capture the token and strip it from the URL.
 
 ### Lock down the public URL
 
@@ -168,9 +191,10 @@ without depending on any vendor.
    subdomain you choose) points to the Piko server's proxy port.
 
 4. **On your phone**, browse to
-   `http://itervox-dashboard.your-domain.com?token=<your-token>`.
-   The Piko server routes the request through the outbound tunnel to your
-   laptop's Itervox dashboard.
+   `http://itervox-dashboard.your-domain.com/?token=<your-token>` on first
+   visit. The dashboard captures the token, and subsequent visits work
+   without the query parameter. The Piko server routes the request through
+   the outbound tunnel to your laptop's Itervox dashboard.
 
 ### Why Piko fits Itervox
 
@@ -202,14 +226,55 @@ setup is more involved than Tailscale.
 
 ---
 
-## Always set the API token
+## The API token
 
-Whichever option you pick, do not skip this:
+Itervox is **secure by default** when exposed beyond loopback: if you bind
+the server to any non-loopback address (`0.0.0.0`, a LAN IP, a Tailscale IP,
+etc.) and you haven't set `ITERVOX_API_TOKEN`, Itervox will auto-generate a
+random 32-byte token on startup and install bearer-token authentication.
+The token is printed once in the startup log alongside a dashboard URL that
+embeds it:
 
-```bash
-export ITERVOX_API_TOKEN=$(openssl rand -hex 32)
+```
+INFO server: auto-generated ephemeral API token for non-loopback bind host=0.0.0.0
+INFO dashboard URL (carries token — copy/paste once) url=http://0.0.0.0:8090/?token=<long-hex-token>
 ```
 
-Without it, anything that can reach `:8090` can read your issues, dispatch
-agents, and modify configuration. The token is mandatory for any non-loopback
-exposure and is logged as a warning if you bind to `0.0.0.0` without setting it.
+Auto-generated tokens are **ephemeral** — they change on every restart. For a
+stable token (so your phone's bookmark keeps working across restarts), pin
+one yourself in `.itervox/.env`, which Itervox loads automatically on startup
+and which survives shell restarts and launcher scripts that wouldn't inherit
+an exported variable:
+
+```bash
+# .itervox/.env
+ITERVOX_API_TOKEN=$(openssl rand -hex 32)
+```
+
+An `export ITERVOX_API_TOKEN=…` in your shell also works, but only if you
+launch `itervox` from that same shell session.
+
+### Opting out of bearer auth on LAN
+
+If you really want an unauthenticated non-loopback bind — for example, a
+daemon running on an air-gapped LAN or behind a strict firewall where you
+accept the risk — set the explicit opt-out in `WORKFLOW.md`:
+
+```yaml
+server:
+  host: 0.0.0.0
+  port: 8090
+  allow_unauthenticated_lan: true
+```
+
+Itervox will then bind non-loopback with no auth middleware installed, and
+log a warning at startup. This flag does nothing when `ITERVOX_API_TOKEN` is
+set — an explicit token always wins.
+
+When `ITERVOX_API_TOKEN` is set, the daemon startup log includes a dashboard
+URL that embeds the token (`http://host:8090/?token=…`) — copy/paste that
+URL into your browser once. The dashboard captures the token into
+`sessionStorage`, strips it from the URL bar via `history.replaceState`, and
+sends it as `Authorization: Bearer` on every subsequent request (including
+SSE streams). If the token is missing, wrong, or the session ends, the
+dashboard shows a login screen with a paste input.
