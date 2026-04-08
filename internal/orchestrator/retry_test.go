@@ -2,6 +2,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,12 +59,14 @@ func TestCancelRetry(t *testing.T) {
 
 // alwaysFailRunner is a test double that always returns a failed result with
 // non-zero tokens so the worker treats it as a real failure (not a concluded session).
+// callCount is atomic because RunTurn fires from a worker goroutine while
+// tests read the count from the test goroutine.
 type alwaysFailRunner struct {
-	callCount int
+	callCount atomic.Int64
 }
 
 func (r *alwaysFailRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
-	r.callCount++
+	r.callCount.Add(1)
 	return agent.TurnResult{
 		Failed:       true,
 		FailureText:  "simulated failure",
@@ -143,7 +146,7 @@ func TestMaxRetriesZeroMeansUnlimited(t *testing.T) {
 	snap := orch.Snapshot()
 	_, paused := snap.PausedIdentifiers["ENG-1"]
 	assert.False(t, paused, "issue should NOT be paused when max_retries=0 (unlimited)")
-	require.Greater(t, runner.callCount, 2, "runner should have been called multiple times with unlimited retries")
+	require.Greater(t, int(runner.callCount.Load()), 2, "runner should have been called multiple times with unlimited retries")
 }
 
 func TestMaxRetriesExhaustedWithFailedState(t *testing.T) {

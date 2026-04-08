@@ -173,7 +173,7 @@ func TestOrchestratorLifecycleFailAndRetry(t *testing.T) {
 	for {
 		snap := orch.Snapshot()
 		if _, paused := snap.PausedIdentifiers["ENG-1"]; paused {
-			require.Greater(t, runner.callCount, 1,
+			require.Greater(t, int(runner.callCount.Load()), 1,
 				"runner should have been called more than once (initial + retry)")
 			cancel()
 			return
