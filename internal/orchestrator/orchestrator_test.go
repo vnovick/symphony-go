@@ -153,7 +153,16 @@ func TestReanalyzeIssueRace(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	go orch.Run(ctx) //nolint:errcheck
+
+	// Track the orchestrator goroutine so we can wait for it to fully exit
+	// before t.TempDir's cleanup runs. Without this, orch.Run may still be
+	// writing paused.json into dir when os.RemoveAll fires from t.Cleanup,
+	// producing "directory not empty" flakes (see CI failure on PR merge).
+	runDone := make(chan struct{})
+	go func() {
+		_ = orch.Run(ctx)
+		close(runDone)
+	}()
 
 	// First pause the issue so ReanalyzeIssue has something to operate on.
 	time.Sleep(30 * time.Millisecond)
@@ -169,6 +178,15 @@ func TestReanalyzeIssueRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+
+	// Stop the orchestrator and wait for it to fully exit before the temp
+	// dir cleanup runs. cancel() only signals — we need to observe exit.
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orchestrator did not exit within 2s of cancel")
+	}
 }
 
 func TestCancelIssue_NotRunning(t *testing.T) {
