@@ -229,7 +229,17 @@ func buildDirectArgs(sessionID *string, prompt string) []string {
 // buildShellCmd returns the full shell command string for bash/zsh -lc.
 // The prompt is passed via a shell variable to avoid quoting issues with
 // special characters (backticks, $, !, quotes) in the rendered template.
+//
+// Defensive: if command is empty or whitespace, fall back to "claude" and
+// log a warning. Without this, sharedFlagsStr's leading space would produce
+// " --output-format ..." which bash interprets as `--output-format` being
+// the command name, surfacing as `--output-format: command not found`.
 func buildShellCmd(command string, sessionID *string, prompt string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		slog.Warn("agent: empty command resolved at dispatch — falling back to 'claude'. Check WORKFLOW.md agent.command and any profile.command fields.")
+		command = "claude"
+	}
 	base := command + sharedFlagsStr
 	if sessionID != nil && *sessionID != "" {
 		return base + " --resume " + shellQuote(*sessionID)

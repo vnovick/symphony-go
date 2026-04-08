@@ -197,6 +197,12 @@ type HooksConfig struct {
 type ServerConfig struct {
 	Port *int
 	Host string
+	// AllowUnauthenticatedLAN, when true, lets the daemon bind to a
+	// non-loopback address without requiring ITERVOX_API_TOKEN. Explicit
+	// opt-in for trusted networks (air-gapped LAN, behind a firewall).
+	// Default false: a random token is auto-generated when binding
+	// non-loopback without one.
+	AllowUnauthenticatedLAN bool
 }
 
 // Config is the fully-parsed, defaulted, and resolved Itervox configuration.
@@ -315,6 +321,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 			cfg.Server.Port = &pInt
 		}
 	}
+	cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
 
 	return cfg
 }

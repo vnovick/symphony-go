@@ -7,31 +7,39 @@ vi.mock('../../store/itervoxStore', () => ({
   useItervoxStore: vi.fn(),
 }));
 
+// Mock the auth event stream wrapper — useItervoxSSE goes through
+// openAuthedEventStream instead of native EventSource now.
+interface MockStreamHandle {
+  url: string;
+  onOpen?: () => void;
+  onMessage: (msg: { event?: string; data: string; id?: string; retry?: number }) => void;
+  onDisconnect?: () => void;
+  close: ReturnType<typeof vi.fn>;
+}
+
+const streamHandles: MockStreamHandle[] = [];
+
+vi.mock('../../auth/authedEventStream', () => ({
+  openAuthedEventStream: (url: string, opts: Omit<MockStreamHandle, 'url' | 'close'>) => {
+    const handle: MockStreamHandle = {
+      url,
+      onOpen: opts.onOpen,
+      onMessage: opts.onMessage,
+      onDisconnect: opts.onDisconnect,
+      close: vi.fn(),
+    };
+    streamHandles.push(handle);
+    return () => {
+      handle.close();
+    };
+  },
+}));
+
 const mockSetSnapshot = vi.fn();
 const mockSetSseConnected = vi.fn();
 
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  onopen: (() => void) | null = null;
-  onmessage: ((e: MessageEvent) => void) | null = null;
-  onerror: (() => void) | null = null;
-  constructor(public url: string) {
-    MockEventSource.instances.push(this);
-  }
-  close = vi.fn();
-  triggerOpen() {
-    this.onopen?.();
-  }
-  triggerMessage(data: unknown) {
-    this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
-  }
-  triggerError() {
-    this.onerror?.();
-  }
-}
-
 beforeEach(() => {
-  MockEventSource.instances = [];
+  streamHandles.length = 0;
   vi.useFakeTimers();
   (useItervoxStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(
     (
@@ -41,11 +49,9 @@ beforeEach(() => {
       }) => unknown,
     ) => sel({ setSnapshot: mockSetSnapshot, setSseConnected: mockSetSseConnected }),
   );
-  // useItervoxSSE calls useItervoxStore.getState() directly to read actions
   Object.assign(useItervoxStore, {
     getState: () => ({ setSnapshot: mockSetSnapshot, setSseConnected: mockSetSseConnected }),
   });
-  global.EventSource = MockEventSource as unknown as typeof EventSource;
   global.fetch = vi.fn().mockResolvedValue({
     ok: true,
     json: vi.fn().mockResolvedValue({ running: [] }),
@@ -57,74 +63,67 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('useSymphonySSE', () => {
-  it('creates an EventSource connection on mount', () => {
+describe('useItervoxSSE', () => {
+  it('opens an authed event stream on mount', () => {
     renderHook(() => {
       useItervoxSSE();
     });
-    expect(MockEventSource.instances).toHaveLength(1);
-    expect(MockEventSource.instances[0].url).toBe('/api/v1/events');
+    expect(streamHandles).toHaveLength(1);
+    expect(streamHandles[0].url).toBe('/api/v1/events');
   });
 
-  it('calls setSnapshot when SSE message arrives', () => {
+  it('calls setSnapshot when a valid SSE message arrives', () => {
     renderHook(() => {
       useItervoxSSE();
     });
     act(() => {
-      MockEventSource.instances[0].triggerMessage({
-        generatedAt: '2024-01-01T00:00:00Z',
-        counts: { running: 0, retrying: 0, paused: 0 },
-        running: [],
-        retrying: [],
-        paused: [],
-        maxConcurrentAgents: 3,
-        rateLimits: null,
+      streamHandles[0].onMessage({
+        data: JSON.stringify({
+          generatedAt: '2024-01-01T00:00:00Z',
+          counts: { running: 0, retrying: 0, paused: 0 },
+          running: [],
+          retrying: [],
+          paused: [],
+          maxConcurrentAgents: 3,
+          rateLimits: null,
+        }),
       });
     });
     expect(mockSetSnapshot).toHaveBeenCalled();
   });
 
-  it('calls setSseConnected(true) on SSE open', () => {
+  it('calls setSseConnected(true) on stream open', () => {
     renderHook(() => {
       useItervoxSSE();
     });
     act(() => {
-      MockEventSource.instances[0].triggerOpen();
+      streamHandles[0].onOpen?.();
     });
     expect(mockSetSseConnected).toHaveBeenCalledWith(true);
   });
 
-  it('starts polling fallback when SSE errors', async () => {
+  it('keeps polling fallback active when stream disconnects', async () => {
     renderHook(() => {
       useItervoxSSE();
     });
-    // The hook starts polling on mount immediately, so fetch is called right away.
-    // Trigger error to confirm polling continues after SSE failure.
+    // Hook starts polling on mount. Disconnect should also trigger polling.
     act(() => {
-      MockEventSource.instances[0].triggerError();
+      streamHandles[0].onDisconnect?.();
     });
-    // Advance just enough to allow the initial poll promise to resolve.
+    // Allow initial poll promise to resolve.
     await vi.advanceTimersByTimeAsync(100);
-    expect(global.fetch).toHaveBeenCalledWith('/api/v1/state');
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/v1/state',
+      expect.objectContaining({ headers: expect.any(Headers) }),
+    );
   });
 
-  it('reconnects SSE after 5s when connection drops', async () => {
-    renderHook(() => {
-      useItervoxSSE();
-    });
-    act(() => {
-      MockEventSource.instances[0].triggerError();
-    });
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(MockEventSource.instances).toHaveLength(2);
-  });
-
-  it('closes EventSource on unmount', () => {
+  it('closes the stream on unmount', () => {
     const { unmount } = renderHook(() => {
       useItervoxSSE();
     });
-    const es = MockEventSource.instances[0];
+    const handle = streamHandles[0];
     unmount();
-    expect(es.close).toHaveBeenCalled();
+    expect(handle.close).toHaveBeenCalled();
   });
 });

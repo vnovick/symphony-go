@@ -1,28 +1,29 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { IssueLogEntry } from '../types/schemas';
 import { IssueLogEntrySchema } from '../types/schemas';
 import { z } from 'zod';
-import { SSE_RECONNECT_BASE_MS, SSE_RECONNECT_MAX_MS } from '../utils/timings';
+import { authedFetch } from '../auth/authedFetch';
+import { openAuthedEventStream } from '../auth/authedEventStream';
 
 export const logsKey = (identifier: string) => ['logs', identifier] as const;
 export const sublogsKey = (identifier: string) => ['sublogs', identifier] as const;
 export const logIdentifiersKey = () => ['log-identifiers'] as const;
 
 async function fetchLogIdentifiers(): Promise<string[]> {
-  const res = await fetch('/api/v1/logs/identifiers');
+  const res = await authedFetch('/api/v1/logs/identifiers');
   if (!res.ok) throw new Error(`fetch log identifiers failed: ${String(res.status)}`);
   return z.array(z.string()).parse(await res.json());
 }
 
 async function fetchIssueLogs(identifier: string): Promise<IssueLogEntry[]> {
-  const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/logs`);
+  const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/logs`);
   if (!res.ok) throw new Error(`fetch logs failed: ${String(res.status)}`);
   return z.array(IssueLogEntrySchema).parse(await res.json());
 }
 
 async function fetchSubLogs(identifier: string): Promise<IssueLogEntry[]> {
-  const res = await fetch(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`);
+  const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/sublogs`);
   if (!res.ok) throw new Error(`fetch sublogs failed: ${String(res.status)}`);
   return z.array(IssueLogEntrySchema).parse(await res.json());
 }
@@ -40,85 +41,47 @@ export function useIssueLogs(identifier: string, isLive: boolean) {
   const [sseData, setSseData] = useState<IssueLogEntry[]>([]);
   const [sseLoading, setSseLoading] = useState(false);
   const [sseError, setSseError] = useState(false);
-  // Ref to prevent stale-closure accumulation when identifier changes
-  const identifierRef = useRef(identifier);
-  identifierRef.current = identifier;
 
   useEffect(() => {
     if (!isLive || !identifier) return;
 
-    setSseData([]);
-    setSseLoading(true);
-    setSseError(false);
+    // Note: state resets (clearing data, setting loading=true) happen inside
+    // onOpen below rather than in this effect body. That avoids the
+    // react-hooks/set-state-in-effect lint rule and also means we don't paint
+    // an empty "loading…" state if the new connection opens within one frame.
+    // The trade-off: between identifier change and first onOpen, the UI may
+    // briefly show stale lines from the previous identifier (typically <100ms).
 
-    let es: EventSource | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-    let reconnectAttempt = 0;
-
-    function connect() {
-      if (cancelled) return;
-
-      // Clear stale logs on reconnect to avoid duplicates
-      if (reconnectAttempt > 0) {
-        setSseData([]);
-        setSseLoading(true);
-      }
-
-      es = new EventSource(`/api/v1/issues/${encodeURIComponent(identifier)}/log-stream`);
-
-      es.onopen = () => {
-        // Connection confirmed; initial batch events follow immediately
-        setSseLoading(false);
-        setSseError(false);
-        reconnectAttempt = 0; // reset backoff on successful connection
-      };
-
-      es.addEventListener('log', (e: MessageEvent) => {
-        try {
-          const entry = IssueLogEntrySchema.parse(JSON.parse(String(e.data)) as unknown);
-          // Guard: ignore late events from a previous identifier's stream
-          if (identifierRef.current === identifier) {
+    const close = openAuthedEventStream(
+      `/api/v1/issues/${encodeURIComponent(identifier)}/log-stream`,
+      {
+        // onOpen fires on every (re)connection. Clear stale lines so the
+        // server's replayed initial batch doesn't duplicate what we already
+        // rendered before the disconnect, and reset loading/error state.
+        onOpen: () => {
+          setSseData([]);
+          setSseLoading(false);
+          setSseError(false);
+        },
+        onMessage: (msg) => {
+          // Only handle the 'log' named event, ignore keepalives etc.
+          if (msg.event !== 'log') return;
+          try {
+            const entry = IssueLogEntrySchema.parse(JSON.parse(msg.data) as unknown);
             setSseData((prev) => [...prev, entry]);
+          } catch {
+            // malformed event — skip
           }
-        } catch {
-          // malformed event — skip
-        }
-      });
-
-      es.onerror = () => {
-        setSseError(true);
-        setSseLoading(false);
-        es?.close();
-        es = null;
-
-        if (import.meta.env.DEV) {
-          console.warn(
-            `[itervox] Log stream disconnected for ${identifier}, reconnecting (attempt ${String(reconnectAttempt + 1)})…`,
-          );
-        }
-
-        // Schedule reconnect with exponential backoff
-        if (!cancelled && reconnectTimer === null) {
-          const delay = Math.min(
-            SSE_RECONNECT_BASE_MS * 2 ** reconnectAttempt,
-            SSE_RECONNECT_MAX_MS,
-          );
-          reconnectAttempt++;
-          reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connect();
-          }, delay);
-        }
-      };
-    }
-
-    connect();
+        },
+        onDisconnect: () => {
+          setSseError(true);
+          setSseLoading(false);
+        },
+      },
+    );
 
     return () => {
-      cancelled = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      es?.close();
+      close();
     };
   }, [identifier, isLive]);
 

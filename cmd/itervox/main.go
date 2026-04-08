@@ -233,6 +233,17 @@ func validateBackend(backend, profileName string, validatedBackends map[string]s
 	return nil
 }
 
+// generateAPIToken returns a cryptographically random 32-byte hex token
+// suitable for use as an ephemeral ITERVOX_API_TOKEN. Matches the entropy
+// of `openssl rand -hex 32`.
+func generateAPIToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
 // loadDotEnv silently loads .itervox/.env then .env from the current working
 // directory, injecting missing variables into the process environment.
 // Existing environment variables are never overwritten.
@@ -524,9 +535,37 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			return fmt.Errorf("server: %w", err)
 		}
 		slog.Info("HTTP server listening", "addr", actualAddr)
+		// Secure-by-default for non-loopback binds: if no token is set and the
+		// user hasn't explicitly opted into unauthenticated LAN access, we
+		// auto-generate an ephemeral token and install the bearer middleware.
+		// Regenerated on every restart unless the user pins one via env var.
 		if host := cfg.Server.Host; host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "" {
-			slog.Warn("server: binding to non-loopback address — API has no authentication",
-				"host", host, "hint", "set ITERVOX_API_TOKEN to enable bearer token auth")
+			if os.Getenv("ITERVOX_API_TOKEN") == "" {
+				if cfg.Server.AllowUnauthenticatedLAN {
+					slog.Warn("server: binding to non-loopback address with no authentication (allow_unauthenticated_lan: true)",
+						"host", host)
+				} else {
+					generated, err := generateAPIToken()
+					if err != nil {
+						return fmt.Errorf("server: auto-generating API token: %w", err)
+					}
+					if err := os.Setenv("ITERVOX_API_TOKEN", generated); err != nil {
+						return fmt.Errorf("server: setting ITERVOX_API_TOKEN: %w", err)
+					}
+					slog.Info("server: auto-generated ephemeral API token for non-loopback bind",
+						"host", host,
+						"hint", "set ITERVOX_API_TOKEN in .itervox/.env to pin a stable token, or set server.allow_unauthenticated_lan: true to opt out")
+				}
+			}
+		}
+		// When a token is set (user-provided OR auto-generated above), print a
+		// dashboard URL that carries it as a query parameter. AuthGate captures
+		// ?token= on first load, persists it in sessionStorage, and strips it
+		// from the URL via history.replaceState. All subsequent requests attach
+		// it as an Authorization: Bearer header.
+		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
+			slog.Info("dashboard URL (carries token — copy/paste once)",
+				"url", fmt.Sprintf("http://%s/?token=%s", actualAddr, tok))
 		}
 	}
 
@@ -536,7 +575,11 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	slog.SetDefault(slog.New(slog.NewTextHandler(fileWriter, &slog.HandlerOptions{Level: logLevel})))
 	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath)
 	if actualAddr != "" {
-		tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
+		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
+			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/?token=%s", actualAddr, tok)
+		} else {
+			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
+		}
 	}
 	go statusui.Run(ctx, snap, logBuf, tuiCfg, tuiCancel)
 
@@ -812,7 +855,11 @@ func buildTUIConfig(
 		BacklogStates: cfg.Tracker.BacklogStates,
 	}
 	if cfg.Server.Port != nil {
-		tuiCfg.DashboardURL = fmt.Sprintf("http://%s:%d/", cfg.Server.Host, *cfg.Server.Port)
+		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
+			tuiCfg.DashboardURL = fmt.Sprintf("http://%s:%d/?token=%s", cfg.Server.Host, *cfg.Server.Port, tok)
+		} else {
+			tuiCfg.DashboardURL = fmt.Sprintf("http://%s:%d/", cfg.Server.Host, *cfg.Server.Port)
+		}
 	}
 	if tpm, ok := tr.(tracker.ProjectManager); ok {
 		tuiCfg.FetchProjects = func() ([]statusui.ProjectItem, error) {
