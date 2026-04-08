@@ -45,7 +45,7 @@ jobs:
         run: pnpm test:coverage
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         if: github.ref == 'refs/heads/main'
         with:
           files: ./web/coverage/lcov.info
