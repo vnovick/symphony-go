@@ -1,0 +1,52 @@
+---
+description: Itervox repository rules — orchestrator invariants, bearer-auth transport, config field checklist, Go toolchain sync, and verify-before-done gate. Applies to every file in this repo.
+alwaysApply: true
+---
+
+# Itervox coding rules (Cursor)
+
+This rule activates for every Cursor session on the itervox repository. The full rule set lives in two places that you MUST read before making changes:
+
+1. `CLAUDE.md` at the repo root — architecture invariants, package dependency order, `cfgMu` guard list, frontend architecture, hard rules.
+2. `AGENTS.md` at the repo root — index of focused rule bundles and verification commands.
+
+The detailed bundles live under `.claude/skills/<name>/SKILL.md`. The directory name is historical; the content is tool-agnostic plain markdown and applies to Cursor the same way it applies to every other coding agent.
+
+## Read the right bundle before editing
+
+| When you are editing… | Read this file first |
+|---|---|
+| `internal/orchestrator/**/*.go`, adding concurrent code, mutable `cfg.*` fields | `.claude/skills/orchestrator-invariants/SKILL.md` |
+| `web/src/**/*.{ts,tsx}` that makes HTTP or SSE calls (outside `web/src/auth/`) | `.claude/skills/authed-transport/SKILL.md` |
+| `web/src/components/**` / `web/src/pages/**` — React component work | `.claude/skills/react-component-discipline/SKILL.md` |
+| New Go file, file past ~400 lines, new helper, new package | `.claude/skills/go-package-hygiene/SKILL.md` |
+| `internal/config/config.go` struct fields, `WORKFLOW.md` schema evolution | `.claude/skills/config-field-checklist/SKILL.md` |
+| Before editing exported symbols / HTTP routes / SSE events / Zod schemas | `.claude/skills/change-impact-review/SKILL.md` |
+| When the impact review surfaces a BREAKING change (hard stop) | `.claude/skills/breaking-change-gate/SKILL.md` |
+| `go.mod`, `Makefile`, Go toolchain bumps, govulncheck stdlib findings | `.claude/skills/go-toolchain-sync/SKILL.md` |
+| Before claiming complete, before committing, before opening a PR | `.claude/skills/verify-before-done/SKILL.md` |
+
+## Commands
+
+- `/interview` (`.claude/commands/interview.md`) — 8-question structured interview for new features
+- `/brainstorm` (`.claude/commands/brainstorm.md`) — 3-subagent design debate with tradeoffs table
+
+## Non-negotiable rules
+
+- **Single-goroutine state machine**: never mutate `orchestrator.State` from a worker goroutine. Use the `o.events` channel. See `orchestrator-invariants`.
+- **Bearer-auth transport**: never call raw `fetch()` or `new EventSource()` in `web/src/` outside `web/src/auth/`. Use `authedFetch` and `openAuthedEventStream`. See `authed-transport`.
+- **Toolchain lockstep**: `go.mod`'s `go` directive and `Makefile`'s `GOTOOLCHAIN` must match byte-for-byte. Bump both together. See `go-toolchain-sync`.
+- **Race detector mandatory**: `go test -race ./...` must pass. The race detector is non-deterministic — stress with `-count=5` on new concurrent code.
+- **Verification gate**: `make verify` must exit 0 before claiming done. `go test ./...` alone is insufficient — it misses lint, coverage, and frontend regressions. See `verify-before-done`.
+- **Never commit `.env`**: secrets live in `.itervox/.env` (gitignored) or environment variables.
+
+## Quick commands
+
+```bash
+make verify                              # full local CI equivalent
+go test -race ./...                      # Go test with race detector
+cd web && pnpm test:coverage             # frontend tests + 70% coverage gate
+govulncheck -tags dev ./...              # after bumping Go deps
+```
+
+Every claim of "tests pass" or "ready to merge" must be accompanied by evidence — show the exit code of the command you ran.
