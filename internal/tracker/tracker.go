@@ -60,6 +60,10 @@ type Tracker interface {
 	// non-fatal — callers should not abort a session on comment failure.
 	CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error)
 
+	// CreateIssue creates a follow-up issue in the same tracker/project context as
+	// sourceIssueID and returns the created issue when the adapter can provide it.
+	CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error)
+
 	// UpdateIssueState transitions the issue to the named state.
 	// For Linear this resolves the state name to an ID; for GitHub it manages labels.
 	// Errors are logged and non-fatal.

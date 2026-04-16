@@ -504,6 +504,52 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*doma
 	return comment, nil
 }
 
+// CreateIssue creates a new GitHub issue in the configured repository. The
+// sourceIssueID is accepted for tracker interface parity but not otherwise used.
+func (c *Client) CreateIssue(ctx context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
+	u := fmt.Sprintf("%s/repos/%s/%s/issues", c.cfg.Endpoint, c.owner, c.repo)
+	payloadBody := map[string]any{
+		"title": title,
+		"body":  body,
+	}
+	if stateName = strings.TrimSpace(stateName); stateName != "" {
+		payloadBody["labels"] = []string{stateName}
+	}
+	payload, err := json.Marshal(payloadBody)
+	if err != nil {
+		return nil, fmt.Errorf("github_create_issue: marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("github_create_issue: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("github_create_issue: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("github_create_issue: status %d", resp.StatusCode)
+	}
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("github_create_issue: decode body: %w", err)
+	}
+	derived := deriveState(raw, c.cfg.ActiveStates, c.cfg.TerminalStates)
+	if derived == "" {
+		derived = stateName
+	}
+	issue := normalizeIssue(raw, derived)
+	if issue == nil {
+		return nil, fmt.Errorf("github_create_issue: missing issue fields in response")
+	}
+	return issue, nil
+}
+
 func (c *Client) get(ctx context.Context, url string) (any, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

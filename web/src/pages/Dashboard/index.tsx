@@ -190,8 +190,28 @@ export default function Dashboard() {
 
   const { upsertProfile } = useSettingsActions();
   const handleEditProfile = useCallback(
-    async (name: string, def: { command: string; backend?: string; prompt?: string }) => {
-      await upsertProfile(name, def.command, def.backend, def.prompt);
+    async (
+      name: string,
+      def: {
+        command: string;
+        backend?: string;
+        prompt?: string;
+        enabled?: boolean;
+        allowedActions?: string[];
+        createIssueState?: string;
+        originalName?: string;
+      },
+    ) => {
+      await upsertProfile(
+        name,
+        def.command,
+        def.backend,
+        def.prompt,
+        def.enabled,
+        def.allowedActions,
+        def.createIssueState,
+        def.originalName,
+      );
     },
     [upsertProfile],
   );

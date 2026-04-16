@@ -260,6 +260,51 @@ func TestDryRunMode(t *testing.T) {
 	assert.Empty(t, snap.Running, "no workers should be running in dry-run mode")
 }
 
+func TestDryRunAutomationDispatch(t *testing.T) {
+	logBuf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	cfg := baseConfig()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"qa": {Command: "claude", Prompt: "Run QA checks."},
+	}
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	mt := &noCandidateTracker{base: tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)}
+	fake := agenttest.NewFakeRunner([]agent.StreamEvent{
+		{Type: "system", SessionID: "s1"},
+		{Type: "result", SessionID: "s1"},
+	})
+
+	orch := orchestrator.New(cfg, mt, fake, nil)
+	orch.DryRun = true
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.True(t, orch.DispatchAutomation(issue, orchestrator.AutomationDispatch{
+		AutomationID: "qa-ready",
+		ProfileName:  "qa",
+		Instructions: "Run QA and report.",
+		Trigger: orchestrator.AutomationTriggerContext{
+			Type:         config.AutomationTriggerCron,
+			AutomationID: "qa-ready",
+			FiredAt:      time.Now(),
+		},
+	}))
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+
+	assert.Zero(t, fake.CallCount, "dry-run automation dispatch should not execute the runner")
+	assert.Contains(t, logBuf.String(), "DRY-RUN", "dry-run automation dispatch should be logged")
+	assert.Empty(t, orch.Snapshot().Running)
+}
+
 // ---------------------------------------------------------------------------
 // 10. Profile override resolution
 // ---------------------------------------------------------------------------
@@ -403,6 +448,9 @@ func TestAutoClearWorkspaceCfgRoundtrip(t *testing.T) {
 
 func TestAutoClearWorkspaceCfgRejectsReviewerConflict(t *testing.T) {
 	o := newOrch()
+	o.SetProfilesCfg(map[string]config.AgentProfile{
+		"reviewer": {Command: "claude"},
+	})
 	require.NoError(t, o.SetReviewerCfg("reviewer", true))
 
 	err := o.SetAutoClearWorkspaceCfg(true)

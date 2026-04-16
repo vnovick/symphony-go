@@ -311,6 +311,43 @@ type ProfileEntry struct {
 	Prompt string
 	// Backend is an optional explicit runner selection override.
 	Backend string
+	// Enabled controls whether the profile is selectable and dispatchable.
+	// Nil means omit the field from WORKFLOW.md, which defaults to true.
+	Enabled *bool
+	// AllowedActions is the optional allowlist of daemon-backed agent actions.
+	AllowedActions []string
+	// CreateIssueState is the target tracker state/column for the create_issue action.
+	CreateIssueState string
+}
+
+type AutomationTriggerEntry struct {
+	Type     string
+	Cron     string
+	Timezone string
+	State    string
+}
+
+type AutomationFilterEntry struct {
+	MatchMode         string
+	States            []string
+	LabelsAny         []string
+	IdentifierRegex   string
+	Limit             int
+	InputContextRegex string
+}
+
+type AutomationPolicyEntry struct {
+	AutoResume bool
+}
+
+type AutomationEntry struct {
+	ID           string
+	Enabled      bool
+	Profile      string
+	Instructions string
+	Trigger      AutomationTriggerEntry
+	Filter       AutomationFilterEntry
+	Policy       AutomationPolicyEntry
 }
 
 // PatchProfilesBlock replaces (or inserts) the agent.profiles block in the YAML
@@ -378,6 +415,21 @@ func PatchProfilesBlock(path string, profiles map[string]ProfileEntry) error {
 			if entry.Backend != "" {
 				replacement = append(replacement, "      backend: "+entry.Backend)
 			}
+			if entry.Enabled != nil && !*entry.Enabled {
+				replacement = append(replacement, "      enabled: false")
+			}
+			if len(entry.AllowedActions) > 0 {
+				replacement = append(replacement, "      allowed_actions:")
+				for _, action := range entry.AllowedActions {
+					if action == "" {
+						continue
+					}
+					replacement = append(replacement, "        - "+action)
+				}
+			}
+			if entry.CreateIssueState != "" {
+				replacement = append(replacement, "      create_issue_state: "+strconv.Quote(entry.CreateIssueState))
+			}
 			if entry.Prompt != "" {
 				replacement = append(replacement, "      prompt: "+strconv.Quote(entry.Prompt))
 			}
@@ -437,6 +489,156 @@ func PatchProfilesBlock(path string, profiles map[string]ProfileEntry) error {
 	}
 
 	return os.WriteFile(path, []byte(sb.String()), 0o644)
+}
+
+// PatchAutomationsBlock replaces (or inserts) the top-level automations block in
+// the YAML front matter of the file at path. Passing nil or an empty slice
+// removes the automations block entirely. Legacy schedules blocks are removed
+// when writing automations so the file has a single source of truth.
+func PatchAutomationsBlock(path string, automations []AutomationEntry) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("workflow patch automations: read %s: %w", path, err)
+	}
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	frontLines, bodyLines := splitFrontMatter(content)
+	if frontLines == nil {
+		return fmt.Errorf("workflow patch automations: no front matter found in %s", path)
+	}
+
+	automationsStart := -1
+	automationsEnd := -1
+	legacySchedulesStart := -1
+	legacySchedulesEnd := -1
+	for i, line := range frontLines {
+		if line != "automations:" && line != "schedules:" {
+			continue
+		}
+		if line == "automations:" {
+			automationsStart = i
+		} else {
+			legacySchedulesStart = i
+		}
+		j := i + 1
+		for j < len(frontLines) {
+			l := frontLines[j]
+			if l == "" {
+				j++
+				continue
+			}
+			trimmed := strings.TrimLeft(l, " ")
+			indent := len(l) - len(trimmed)
+			if indent > 0 {
+				j++
+			} else {
+				break
+			}
+		}
+		if line == "automations:" {
+			automationsEnd = j
+		} else {
+			legacySchedulesEnd = j
+		}
+	}
+
+	var replacement []string
+	if len(automations) > 0 {
+		replacement = append(replacement, "automations:")
+		for _, automation := range automations {
+			replacement = append(replacement, "  - id: "+automation.ID)
+			replacement = append(replacement, "    enabled: "+strconv.FormatBool(automation.Enabled))
+			replacement = append(replacement, "    profile: "+automation.Profile)
+			if automation.Instructions != "" {
+				replacement = append(replacement, "    instructions: "+strconv.Quote(automation.Instructions))
+			}
+			replacement = append(replacement, "    trigger:")
+			replacement = append(replacement, "      type: "+automation.Trigger.Type)
+			if automation.Trigger.Cron != "" {
+				replacement = append(replacement, "      cron: "+strconv.Quote(automation.Trigger.Cron))
+			}
+			if automation.Trigger.Timezone != "" {
+				replacement = append(replacement, "      timezone: "+strconv.Quote(automation.Trigger.Timezone))
+			}
+			if automation.Trigger.State != "" {
+				replacement = append(replacement, "      state: "+strconv.Quote(automation.Trigger.State))
+			}
+			filterLines := buildAutomationFilterLines(automation.Filter)
+			if len(filterLines) > 0 {
+				replacement = append(replacement, "    filter:")
+				replacement = append(replacement, filterLines...)
+			}
+			policyLines := buildAutomationPolicyLines(automation.Policy)
+			if len(policyLines) > 0 {
+				replacement = append(replacement, "    policy:")
+				replacement = append(replacement, policyLines...)
+			}
+		}
+	}
+
+	// Remove either existing block if present, preferring the new automations block.
+	var newFrontLines []string
+	switch {
+	case automationsStart >= 0:
+		newFrontLines = append(newFrontLines, frontLines[:automationsStart]...)
+		newFrontLines = append(newFrontLines, replacement...)
+		newFrontLines = append(newFrontLines, frontLines[automationsEnd:]...)
+	case legacySchedulesStart >= 0:
+		newFrontLines = append(newFrontLines, frontLines[:legacySchedulesStart]...)
+		newFrontLines = append(newFrontLines, replacement...)
+		newFrontLines = append(newFrontLines, frontLines[legacySchedulesEnd:]...)
+	case len(automations) > 0:
+		newFrontLines = append(frontLines, replacement...)
+	default:
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString(strings.Join(newFrontLines, "\n"))
+	sb.WriteString("\n---\n")
+	sb.WriteString(strings.Join(bodyLines, "\n"))
+	if len(bodyLines) > 0 && bodyLines[len(bodyLines)-1] != "" {
+		sb.WriteString("\n")
+	}
+	return os.WriteFile(path, []byte(sb.String()), 0o644)
+}
+
+func buildAutomationFilterLines(filter AutomationFilterEntry) []string {
+	var lines []string
+	if filter.MatchMode != "" && filter.MatchMode != "all" {
+		lines = append(lines, "      match_mode: "+strconv.Quote(filter.MatchMode))
+	}
+	if len(filter.States) > 0 {
+		lines = append(lines, "      states: "+marshalStringSliceInline(filter.States))
+	}
+	if len(filter.LabelsAny) > 0 {
+		lines = append(lines, "      labels_any: "+marshalStringSliceInline(filter.LabelsAny))
+	}
+	if filter.IdentifierRegex != "" {
+		lines = append(lines, "      identifier_regex: "+strconv.Quote(filter.IdentifierRegex))
+	}
+	if filter.Limit > 0 {
+		lines = append(lines, "      limit: "+strconv.Itoa(filter.Limit))
+	}
+	if filter.InputContextRegex != "" {
+		lines = append(lines, "      input_context_regex: "+strconv.Quote(filter.InputContextRegex))
+	}
+	return lines
+}
+
+func buildAutomationPolicyLines(policy AutomationPolicyEntry) []string {
+	if !policy.AutoResume {
+		return nil
+	}
+	return []string{"      auto_resume: true"}
+}
+
+func marshalStringSliceInline(values []string) string {
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
 }
 
 // PatchStringSliceField rewrites a YAML key whose value is an inline sequence

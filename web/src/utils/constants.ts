@@ -1,4 +1,11 @@
-import type { RunningRow, RetryRow, HistoryRow, SSHHostInfo, ProfileDef } from '../types/schemas';
+import type {
+  RunningRow,
+  RetryRow,
+  HistoryRow,
+  SSHHostInfo,
+  ProfileDef,
+  AutomationDef,
+} from '../types/schemas';
 
 /**
  * Stable empty-array constants for Zustand selector fallbacks.
@@ -14,3 +21,4 @@ export const EMPTY_HOSTS: SSHHostInfo[] = [];
 export const EMPTY_PAUSED: string[] = [];
 export const EMPTY_PROFILES: string[] = [];
 export const EMPTY_PROFILE_DEFS: Record<string, ProfileDef> = {};
+export const EMPTY_AUTOMATIONS: AutomationDef[] = [];

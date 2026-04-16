@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -100,10 +101,26 @@ type Orchestrator struct {
 	issueBackendsMu sync.RWMutex
 	issueBackends   map[string]string // identifier → "claude"|"codex"
 
+	// inputRequiredAutomations is the compiled set of helper-agent rules that
+	// react to blocked runs. Installed before Run and read by the event loop.
+	inputRequiredAutomations []InputRequiredAutomation
+
+	// runFailedAutomations is the compiled set of helper-agent rules that react
+	// to terminal worker failures after retries are exhausted.
+	runFailedAutomations []RunFailedAutomation
+
 	// agentLogDir, when non-empty, is passed to RunTurn as CLAUDE_CODE_LOG_DIR
 	// so Claude Code writes full session logs (including sub-agents) to disk.
 	// Set via SetAgentLogDir before calling Run.
 	agentLogDir string
+
+	// agentActionBaseURL is the daemon base URL exposed to local worker actions.
+	// Set via SetAgentActionBaseURL before Run.
+	agentActionBaseURL string
+
+	// agentActionTokens issues and validates short-lived per-run action grants.
+	// Set via SetAgentActionTokens before Run.
+	agentActionTokens *agentactions.Store
 
 	// appSessionID is a unique ID for this daemon invocation, used to group
 	// all history entries produced during a single run of the binary.
@@ -152,6 +169,18 @@ func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspa
 // Must be called before Run.
 func (o *Orchestrator) SetAgentLogDir(dir string) {
 	o.agentLogDir = dir
+}
+
+// SetAgentActionBaseURL configures the daemon base URL exposed to local workers.
+// Must be called before Run.
+func (o *Orchestrator) SetAgentActionBaseURL(url string) {
+	o.agentActionBaseURL = url
+}
+
+// SetAgentActionTokens configures the short-lived action grant store.
+// Must be called before Run.
+func (o *Orchestrator) SetAgentActionTokens(store *agentactions.Store) {
+	o.agentActionTokens = store
 }
 
 // SetAppSessionID sets the unique ID for this daemon invocation.
@@ -307,6 +336,9 @@ func (o *Orchestrator) SetReviewerCfg(profile string, autoReview bool) error {
 	o.cfgMu.Lock()
 	defer o.cfgMu.Unlock()
 	if err := config.ValidateReviewerAutoReview(profile, autoReview); err != nil {
+		return err
+	}
+	if err := config.ValidateReviewerProfile(o.cfg.Agent.Profiles, profile); err != nil {
 		return err
 	}
 	if err := config.ValidateAutoClearAutoReview(

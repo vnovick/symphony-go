@@ -98,6 +98,9 @@ silently dropped at load time. Commands must not contain shell metacharacters
 | `command` | CLI command for this profile (required) |
 | `backend` | Explicit backend override (`claude` or `codex`); inferred from `command` when absent |
 | `prompt` | Role description appended to the rendered template when `agent_mode: teams` |
+| `enabled` | Optional boolean. Disabled profiles stay in config but are hidden from normal selection and dispatch. |
+| `allowed_actions` | Optional list of daemon-backed actions: `comment`, `create_issue`, `move_state`, `provide_input`. |
+| `create_issue_state` | Required when `allowed_actions` includes `create_issue`; the tracker state/column for follow-up issues. |
 
 ```yaml
 agent:
@@ -112,11 +115,85 @@ agent:
     code-reviewer:
       command: claude --model claude-opus-4-6
       prompt: "You are a senior code reviewer. Focus on correctness and test coverage."
+      allowed_actions: [comment, move_state]
     codex-research:
       command: run-codex-wrapper --json
       backend: codex
       prompt: "You are a long-horizon investigation agent."
+    input-responder:
+      command: claude --model claude-sonnet-4-6
+      enabled: true
+      allowed_actions: [provide_input]
+    qa:
+      command: claude --model claude-sonnet-4-6
+      allowed_actions: [comment, create_issue, move_state]
+      create_issue_state: Todo
 ```
+
+---
+
+## `automations`
+
+Automations dispatch a selected profile when a trigger fires, then add a small
+instruction overlay on top of that profile.
+
+Supported triggers:
+
+- `cron`
+- `input_required`
+- `tracker_comment_added`
+- `issue_entered_state`
+- `issue_moved_to_backlog`
+- `run_failed`
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Stable automation identifier |
+| `enabled` | bool | Whether the automation is active |
+| `profile` | string | Name of the agent profile to dispatch |
+| `instructions` | string | Markdown/Liquid instruction overlay appended after the selected profile prompt |
+| `trigger.type` | string | Trigger type |
+| `trigger.cron` | string | Five-field cron expression for `cron` triggers |
+| `trigger.timezone` | string | Optional timezone for `cron` triggers |
+| `trigger.state` | string | Required for `issue_entered_state`; the state that must be entered |
+| `filter.match_mode` | string | How populated filters combine: `all` or `any` |
+| `filter.states` | []string | Issue-state filter. For cron automations, leave empty to use backlog and active states |
+| `filter.labels_any` | []string | Match issues with at least one listed label |
+| `filter.identifier_regex` | string | Regex matched against issue identifiers like `ENG-42` |
+| `filter.limit` | int | Maximum issues to queue from one cron tick or event poll batch |
+| `filter.input_context_regex` | string | Only for `input_required`; matched against the blocked-agent question text |
+| `policy.auto_resume` | bool | Only for `input_required`; allows the helper to resume the blocked run via `provide_input` |
+
+```yaml
+automations:
+  - id: qa-ready
+    enabled: true
+    trigger:
+      type: issue_entered_state
+      state: "Ready for QA"
+    profile: qa
+    instructions: |
+      Run the QA routine for this issue.
+      Comment the results.
+      If any required check fails, move the issue to Todo.
+
+  - id: pm-backlog-review
+    enabled: true
+    trigger:
+      type: cron
+      cron: "0 9 * * 1-5"
+      timezone: "Asia/Jerusalem"
+    profile: pm
+    instructions: |
+      Review backlog issues for missing clarity and acceptance criteria.
+      Leave one concise comment summarising what is unclear.
+    filter:
+      states: ["Backlog"]
+      limit: 20
+```
+
+For a more detailed guide, including trigger semantics, filter behavior, prompt
+variables, and worked examples, see `site/src/content/docs/guides/automations.mdx`.
 
 ---
 

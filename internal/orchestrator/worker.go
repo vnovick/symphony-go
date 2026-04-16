@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/prdetector"
 	"github.com/vnovick/itervox/internal/prompt"
+	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/workspace"
 )
 
@@ -51,7 +54,7 @@ const (
 //     dispatch and we're continuing in-place).
 //
 // See ResumeContext in state.go for the full contract.
-func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool, resume *ResumeContext) {
+func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool, resume *ResumeContext, automation *AutomationDispatch) {
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("worker panic: %v", r)
@@ -83,6 +86,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	// --- Workspace ---
+	automationRun := automation != nil
 	hasResumeSession := resume != nil && resume.SessionID != ""
 	hasResumeMessage := resume != nil && resume.UserMessage != ""
 	inputRequiredResume := hasResumeSession && hasResumeMessage
@@ -180,7 +184,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	// Transition issue to working state (e.g. Todo → In Progress).
-	if !skipFreshDispatchSetup {
+	if !skipFreshDispatchSetup && !automationRun {
 		o.transitionToWorking(ctx, issue)
 	}
 
@@ -205,7 +209,49 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	beforeRunHook := o.cfg.Hooks.BeforeRun
 	afterRunHook := o.cfg.Hooks.AfterRun
 	hookTimeoutMs := o.cfg.Hooks.TimeoutMs
+	profilesSnap := make(map[string]config.AgentProfile, len(o.cfg.Agent.Profiles))
+	maps.Copy(profilesSnap, o.cfg.Agent.Profiles)
 	o.cfgMu.RUnlock()
+
+	profileAllowedActions := filterAllowedActionsForAutomation(profilesSnap[profileName].AllowedActions, automation)
+	profileCreateIssueState := strings.TrimSpace(profilesSnap[profileName].CreateIssueState)
+	actionContext := ""
+	if len(profileAllowedActions) > 0 {
+		if workerHost != "" {
+			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, true)
+		} else if o.agentActionTokens == nil || o.agentActionBaseURL == "" {
+			slog.Warn("worker: profile allowed_actions configured but daemon action bridge is unavailable",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName)
+		} else if shimDir, token, err := prepareAgentActionRuntime(
+			o.agentActionTokens,
+			issue.Identifier,
+			runLogID,
+			profileAllowedActions,
+			profileCreateIssueState,
+			turnTimeoutMs,
+		); err != nil {
+			slog.Warn("worker: failed to prepare daemon action bridge",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "profile", profileName, "error", err)
+		} else {
+			pathValue := shimDir
+			if currentPath := os.Getenv("PATH"); currentPath != "" {
+				pathValue = shimDir + string(os.PathListSeparator) + currentPath
+			}
+			agentCommand = prependEnvToCommand(agentCommand, map[string]string{
+				"ITERVOX_ACTION_TOKEN":       token,
+				"ITERVOX_DAEMON_URL":         o.agentActionBaseURL,
+				"ITERVOX_CREATE_ISSUE_STATE": profileCreateIssueState,
+				"ITERVOX_ISSUE_IDENTIFIER":   issue.Identifier,
+				"ITERVOX_RUN_ID":             runLogID,
+				"PATH":                       pathValue,
+			})
+			actionContext = buildAgentActionContext(profileAllowedActions, profileCreateIssueState, false)
+			defer func() {
+				o.agentActionTokens.Revoke(token)
+				_ = os.RemoveAll(shimDir)
+			}()
+		}
+	}
 
 	// --- Multi-turn loop ---
 	// before_run hook runs once per worker invocation (not per turn), so that
@@ -326,14 +372,55 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		// with HTTP handler goroutines that may mutate them concurrently.
 		o.cfgMu.RLock()
 		agentMode := o.cfg.Agent.AgentMode
-		profilesSnap := make(map[string]config.AgentProfile, len(o.cfg.Agent.Profiles))
-		maps.Copy(profilesSnap, o.cfg.Agent.Profiles)
 		o.cfgMu.RUnlock()
 
 		if profileName != "" {
-			if profile, ok := profilesSnap[profileName]; ok && profile.Prompt != "" {
-				renderedPrompt += "\n\n" + prompt.RenderProfilePrompt(profile.Prompt, issue, attemptPtr)
+			if profile, ok := profilesSnap[profileName]; ok {
+				if profile.Prompt != "" {
+					renderedPrompt += "\n\n" + prompt.RenderProfilePrompt(profile.Prompt, issue, attemptPtr)
+				}
 			}
+		}
+		if automation != nil && automation.Instructions != "" {
+			renderedPrompt += "\n\n" + prompt.RenderPromptOverlay(
+				automation.Instructions,
+				issue,
+				attemptPtr,
+				map[string]any{
+					"trigger": map[string]any{
+						"type":                automation.Trigger.Type,
+						"fired_at":            automation.Trigger.FiredAt.Format(time.RFC3339),
+						"automation_id":       automation.Trigger.AutomationID,
+						"cron":                automation.Trigger.Cron,
+						"timezone":            automation.Trigger.Timezone,
+						"trigger_state":       automation.Trigger.TriggerState,
+						"input_context":       automation.Trigger.InputContext,
+						"blocked_profile":     automation.Trigger.BlockedProfile,
+						"blocked_backend":     automation.Trigger.BlockedBackend,
+						"previous_state":      automation.Trigger.PreviousState,
+						"current_state":       automation.Trigger.CurrentState,
+						"error_message":       automation.Trigger.ErrorMessage,
+						"will_retry":          automation.Trigger.WillRetry,
+						"retry_attempt":       automation.Trigger.RetryAttempt,
+						"retry_backoff_ms":    automation.Trigger.RetryBackoffMs,
+						"comment_id":          automation.Trigger.CommentID,
+						"comment_body":        automation.Trigger.CommentBody,
+						"comment_author_id":   automation.Trigger.CommentAuthorID,
+						"comment_author_name": automation.Trigger.CommentAuthorName,
+						"comment_created_at":  automation.Trigger.CommentCreatedAt,
+						"comment": map[string]any{
+							"id":          automation.Trigger.CommentID,
+							"body":        automation.Trigger.CommentBody,
+							"author_id":   automation.Trigger.CommentAuthorID,
+							"author_name": automation.Trigger.CommentAuthorName,
+							"created_at":  automation.Trigger.CommentCreatedAt,
+						},
+					},
+				},
+			)
+		}
+		if actionContext != "" {
+			renderedPrompt += "\n\n" + actionContext
 		}
 		// In teams mode, also append sub-agent roster context so the active backend
 		// knows which specialised agents it can spawn via its delegation tool.
@@ -649,7 +736,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// issue.  This runs before the session summary so the PR link is visible even
 	// on trackers that truncate long comments.  Uses the same gh CLI check as the
 	// pre-run guard (now the workspace is on the newly-created branch).
-	if wsPath != "" && prCtx == nil {
+	if wsPath != "" && prCtx == nil && !automationRun {
 		if prURL := workspace.FindOpenPRURL(ctx, wsPath); prURL != "" {
 			detectedPRURL = prURL
 			// Dedup: check if we already posted a PR comment for this URL.
@@ -664,7 +751,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if alreadyPosted {
 				slog.Info("worker: PR comment already posted, skipping",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "pr_url", prURL)
-			} else if _, err := o.tracker.CreateComment(ctx, issue.ID, prComment); err != nil {
+			} else if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(prComment)); err != nil {
 				slog.Warn("worker: create PR comment failed (ignored)",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 			} else {
@@ -686,7 +773,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// Use a fresh background-derived context with a timeout so that a cancellation
 	// of the worker context (e.g. user pause) between the ctx.Err() guard and
 	// command execution does not silently skip the post-run cleanup.
-	if prCtx != nil && ctx.Err() == nil {
+	if prCtx != nil && ctx.Err() == nil && !automationRun {
 		postRunCtx, postRunCancel := context.WithTimeout(context.Background(), postRunTimeout)
 		defer postRunCancel()
 		// Push so the remote branch reflects the agent's changes.
@@ -717,8 +804,8 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// Post one comprehensive comment covering the full session narration (best-effort).
 	// Skip when there is an open PR: the summary was already posted as a PR comment
 	// above, so posting it again on the tracker issue would create a duplicate (GO-R10-3).
-	if sessionComment != "" && prCtx == nil {
-		if _, err := o.tracker.CreateComment(ctx, issue.ID, sessionComment); err != nil {
+	if sessionComment != "" && prCtx == nil && !automationRun {
+		if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(sessionComment)); err != nil {
 			slog.Warn("worker: create session comment failed (ignored)",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 		}
@@ -734,7 +821,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	o.cfgMu.RLock()
 	completionState := o.cfg.Tracker.CompletionState
 	o.cfgMu.RUnlock()
-	if completionState != "" && ctx.Err() == nil {
+	if completionState != "" && ctx.Err() == nil && !automationRun {
 		slog.Info("worker: transitioning to completion state",
 			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "target_state", completionState)
 		if o.logBuf != nil {
@@ -1018,6 +1105,113 @@ func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs 
 	if err := workspace.RunHook(ctx, hook, wsPath, timeoutMs, o.hookLogFn(identifier, sessionID)); err != nil {
 		slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issueID, "error", err)
 	}
+}
+
+func prepareAgentActionRuntime(tokens interface {
+	Issue(issueIdentifier, runSessionID string, allowedActions []string, createIssueState string, ttl time.Duration) (string, error)
+}, issueIdentifier, runLogID string, allowedActions []string, createIssueState string, turnTimeoutMs int) (string, string, error) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve current executable: %w", err)
+	}
+	shimDir, err := os.MkdirTemp("", "itervox-agent-actions-*")
+	if err != nil {
+		return "", "", fmt.Errorf("create shim dir: %w", err)
+	}
+	shimPath := filepath.Join(shimDir, "itervox")
+	script := "#!/bin/sh\nexec " + shellQuote(exePath) + " \"$@\"\n"
+	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
+		_ = os.RemoveAll(shimDir)
+		return "", "", fmt.Errorf("write shim: %w", err)
+	}
+	token, err := tokens.Issue(issueIdentifier, runLogID, allowedActions, createIssueState, agentActionTokenTTL(turnTimeoutMs))
+	if err != nil {
+		_ = os.RemoveAll(shimDir)
+		return "", "", fmt.Errorf("issue action token: %w", err)
+	}
+	return shimDir, token, nil
+}
+
+func agentActionTokenTTL(turnTimeoutMs int) time.Duration {
+	if turnTimeoutMs <= 0 {
+		return time.Hour
+	}
+	return max(time.Duration(turnTimeoutMs)*time.Millisecond+5*time.Minute, 15*time.Minute)
+}
+
+func prependEnvToCommand(command string, env map[string]string) string {
+	const backendHintPrefix = "@@itervox-backend="
+
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	trimmedCommand := strings.TrimSpace(command)
+	hintToken := ""
+	commandRemainder := trimmedCommand
+	if strings.HasPrefix(trimmedCommand, backendHintPrefix) {
+		if idx := strings.IndexAny(trimmedCommand, " \t"); idx >= 0 {
+			hintToken = trimmedCommand[:idx]
+			commandRemainder = strings.TrimLeft(trimmedCommand[idx:], " \t")
+		} else {
+			hintToken = trimmedCommand
+			commandRemainder = ""
+		}
+	}
+
+	var b strings.Builder
+	if hintToken != "" {
+		b.WriteString(hintToken)
+		b.WriteByte(' ')
+	}
+	for _, key := range keys {
+		if env[key] == "" {
+			continue
+		}
+		b.WriteString(key)
+		b.WriteString("=")
+		b.WriteString(shellQuote(env[key]))
+		b.WriteByte(' ')
+	}
+	b.WriteString(commandRemainder)
+	return b.String()
+}
+
+func buildAgentActionContext(actions []string, createIssueState string, remoteUnavailable bool) string {
+	normalized := config.NormalizeAllowedActions(actions)
+	if len(normalized) == 0 {
+		return ""
+	}
+	if remoteUnavailable {
+		return "Daemon-backed itervox actions are configured for this profile, but they are not available on remote SSH workers in v1."
+	}
+	lines := []string{
+		"Itervox daemon actions are available for this profile. They only operate on the current issue.",
+		"Use the `itervox action ...` CLI only when the task actually needs a tracker or resume action.",
+	}
+	for _, action := range normalized {
+		switch action {
+		case config.AgentActionComment:
+			lines = append(lines, "- `itervox action comment --body \"...\"` posts a tracker comment on the current issue.")
+		case config.AgentActionCreateIssue:
+			if createIssueState != "" {
+				lines = append(lines, "- `itervox action create-issue --title \"...\" --body \"...\"` creates a follow-up issue in state `"+createIssueState+"`.")
+			} else {
+				lines = append(lines, "- `itervox action create-issue --title \"...\" --body \"...\"` creates a follow-up issue using the profile's configured target state.")
+			}
+		case config.AgentActionMoveState:
+			lines = append(lines, "- `itervox action move-state --state \"...\"` moves the current issue to a new tracker state.")
+		case config.AgentActionProvideInput:
+			lines = append(lines, "- `itervox action provide-input --message \"...\"` answers an input-required prompt and resumes the blocked run.")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
 // generateRunID returns a short random ID that is assigned to a worker run

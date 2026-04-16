@@ -47,11 +47,23 @@ const actions = {
     command: string,
     backend?: string,
     prompt?: string,
+    enabled?: boolean,
+    allowedActions?: string[],
+    createIssueState?: string,
+    originalName?: string,
   ): Promise<boolean> =>
     settingsFetch(
       `/api/v1/settings/profiles/${encodeURIComponent(name)}`,
       'PUT',
-      { command, backend: backend ?? '', prompt: prompt ?? '' },
+      {
+        command,
+        backend: backend ?? '',
+        prompt: prompt ?? '',
+        enabled: enabled ?? true,
+        allowedActions: allowedActions ?? [],
+        createIssueState: createIssueState ?? '',
+        originalName: originalName ?? '',
+      },
       `Failed to save profile "${name}".`,
     ),
 
@@ -119,6 +131,14 @@ const actions = {
       'PUT',
       { profile, auto_review: autoReview },
       'Failed to update reviewer settings.',
+    ),
+
+  setAutomations: async (automations: unknown[]): Promise<boolean> =>
+    settingsFetch(
+      '/api/v1/settings/automations',
+      'PUT',
+      { automations },
+      'Failed to update automations.',
     ),
 };
 

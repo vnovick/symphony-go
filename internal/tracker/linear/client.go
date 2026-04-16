@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -344,6 +345,103 @@ mutation ItervoxCreateComment($issueId: String!, $body: String!) {
 		}
 	}
 	return nil, fmt.Errorf("linear_create_comment: unexpected response: %v", resp)
+}
+
+// CreateIssue creates a follow-up issue in the same team/project context as
+// sourceIssueID and assigns it to the configured state/column.
+func (c *Client) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
+	contextResp, err := c.graphql(ctx, QueryCreateIssueContext, map[string]any{"id": sourceIssueID})
+	if err != nil {
+		return nil, fmt.Errorf("linear_create_issue: resolve context: %w", err)
+	}
+	data, ok := contextResp["data"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("linear_create_issue: missing data")
+	}
+	sourceIssue, ok := data["issue"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("linear_create_issue: missing issue context")
+	}
+	team, ok := sourceIssue["team"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("linear_create_issue: missing team context")
+	}
+	teamID, _ := team["id"].(string)
+	if teamID == "" {
+		return nil, fmt.Errorf("linear_create_issue: empty team id")
+	}
+	states, _ := team["states"].(map[string]any)
+	nodes, _ := states["nodes"].([]any)
+	stateID := ""
+	for _, rawNode := range nodes {
+		node, ok := rawNode.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(stringValue(node["name"])), stateName) {
+			stateID = stringValue(node["id"])
+			break
+		}
+	}
+	if stateID == "" {
+		return nil, fmt.Errorf("linear_create_issue: state %q not found in source issue team", stateName)
+	}
+
+	input := map[string]any{
+		"teamId":      teamID,
+		"title":       title,
+		"description": body,
+		"stateId":     stateID,
+	}
+	if project, ok := sourceIssue["project"].(map[string]any); ok {
+		if projectID, _ := project["id"].(string); projectID != "" {
+			input["projectId"] = projectID
+		}
+	}
+
+	const mutation = `
+mutation ItervoxCreateIssue($input: IssueCreateInput!) {
+  issueCreate(input: $input) {
+    issue {
+      id
+      identifier
+      title
+      description
+      priority
+      state { name }
+      branchName
+      url
+      labels { nodes { name } }
+      inverseRelations(first: 50) {
+        nodes {
+          type
+          issue { id identifier state { name } }
+        }
+      }
+      createdAt
+      updatedAt
+    }
+    success
+  }
+}`
+
+	resp, err := c.graphql(ctx, mutation, map[string]any{"input": input})
+	if err != nil {
+		return nil, fmt.Errorf("linear_create_issue: issueCreate: %w", err)
+	}
+	if data, ok := resp["data"].(map[string]any); ok {
+		if created, ok := data["issueCreate"].(map[string]any); ok {
+			if success, _ := created["success"].(bool); success {
+				if issueNode, ok := created["issue"].(map[string]any); ok {
+					issue := normalizeIssue(issueNode)
+					if issue != nil {
+						return issue, nil
+					}
+				}
+			}
+		}
+	}
+	return nil, fmt.Errorf("linear_create_issue: unexpected response: %v", resp)
 }
 
 // SetIssueBranch updates the branchName field on the Linear issue so retried

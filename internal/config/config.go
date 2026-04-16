@@ -88,6 +88,15 @@ type AgentProfile struct {
 	// Backend optionally overrides runner selection when it cannot be inferred
 	// from the command binary alone (for example, a wrapper script around codex).
 	Backend string
+	// Enabled controls whether the profile is selectable and dispatchable.
+	// Nil means true for backward compatibility with older tests/config literals.
+	Enabled *bool
+	// AllowedActions grants the profile access to daemon-backed actions such as
+	// tracker comments or provide-input. Empty = no extra actions.
+	AllowedActions []string
+	// CreateIssueState is the tracker state/column used when the create_issue
+	// action is allowed for this profile.
+	CreateIssueState string
 }
 
 // AgentConfig holds agent runner settings.
@@ -213,6 +222,7 @@ type Config struct {
 	Agent          AgentConfig
 	Hooks          HooksConfig
 	Server         ServerConfig
+	Automations    []AutomationConfig
 	PromptTemplate string
 }
 
@@ -322,6 +332,10 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 		}
 	}
 	cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
+	cfg.Automations = parseAutomations(raw["automations"])
+	if len(cfg.Automations) == 0 {
+		cfg.Automations = legacySchedulesToAutomations(parseSchedules(raw["schedules"]))
+	}
 
 	return cfg
 }
@@ -408,15 +422,26 @@ func parseAgentProfiles(raw map[string]any) map[string]AgentProfile {
 			continue
 		}
 		profiles[name] = AgentProfile{
-			Command: cmd,
-			Prompt:  strField(m, "prompt", ""),
-			Backend: strField(m, "backend", ""),
+			Command:          cmd,
+			Prompt:           strField(m, "prompt", ""),
+			Backend:          strField(m, "backend", ""),
+			Enabled:          boolPtr(boolField(m, "enabled", true)),
+			AllowedActions:   NormalizeAllowedActions(strSliceField(m, "allowed_actions", nil)),
+			CreateIssueState: strField(m, "create_issue_state", ""),
 		}
 	}
 	if len(profiles) == 0 {
 		return nil
 	}
 	return profiles
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func ProfileEnabled(profile AgentProfile) bool {
+	return profile.Enabled == nil || *profile.Enabled
 }
 
 // parseAvailableModels parses the agent.available_models YAML field.

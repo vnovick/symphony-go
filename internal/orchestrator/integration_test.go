@@ -124,6 +124,10 @@ func (t *commentTracker) CreateComment(_ context.Context, issueID, body string) 
 	return &comment, nil
 }
 
+func (t *commentTracker) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
+	return t.base.CreateIssue(ctx, sourceIssueID, title, body, stateName)
+}
+
 func (t *commentTracker) UpdateIssueState(ctx context.Context, issueID, stateName string) error {
 	return t.base.UpdateIssueState(ctx, issueID, stateName)
 }
@@ -503,6 +507,63 @@ func TestInputRequiredResumeReusesWorkspaceWithoutRerunningBeforeRun(t *testing.
 			counterBytes, _ := os.ReadFile(filepath.Join(wsPath, ".before-run-count"))
 			t.Fatalf("input-required resume did not complete as expected; calls=%d sessionIDs=%v prompts=%v workspacePaths=%v commands=%v counter=%q snap=%+v",
 				calls, sessionIDs, prompts, workspacePaths, commands, string(counterBytes), orch.Snapshot())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func TestInputRequiredCommentsAreMarkedManaged(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 3
+	cfg.Tracker.CompletionState = "Done"
+	cfg.PromptTemplate = "Handle {{ issue.identifier }}"
+
+	issue := makeIssue("id1", "ENG-1", "In Progress", nil, nil)
+	ct := newCommentTracker(
+		[]domain.Issue{issue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	runner := &inputRequiredResumeRunner{}
+	orch := orchestrator.New(cfg, ct, runner, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+
+	deadline := time.After(3 * time.Second)
+	for {
+		comments := ct.commentsFor("id1")
+		if _, ok := orch.Snapshot().InputRequiredIssues["ENG-1"]; ok && len(comments) > 0 {
+			assert.Contains(t, comments[0].Body, "<!-- itervox:managed -->")
+			assert.Contains(t, comments[0].Body, "Agent needs your input")
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("input-required question comment was not posted; snap=%+v comments=%+v", orch.Snapshot(), comments)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	require.True(t, orch.ProvideInput("ENG-1", "Approved. Continue with the existing branch."))
+
+	deadline = time.After(3 * time.Second)
+	for {
+		comments := ct.commentsFor("id1")
+		issues, err := ct.FetchIssueStatesByIDs(ctx, []string{"id1"})
+		require.NoError(t, err)
+		if len(comments) >= 2 && len(issues) > 0 && issues[0].State == "Done" {
+			reply := comments[len(comments)-1]
+			assert.Contains(t, reply.Body, "Approved. Continue with the existing branch.")
+			assert.Contains(t, reply.Body, "<!-- itervox:managed -->")
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("managed provide-input comment was not posted; snap=%+v comments=%+v", orch.Snapshot(), comments)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

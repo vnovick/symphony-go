@@ -514,7 +514,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			SessionID:    entry.SessionID,
 			UserMessage:  entry.UserMessage,
 			InputContext: entry.Context,
-		})
+		}, nil)
 	}
 	return state
 }
@@ -561,6 +561,10 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 			slog.Warn("orchestrator: profile not found, using default",
 				"identifier", issue.Identifier, "profile", profileName)
 			profileName = "" // clear so the worker does not reference a missing profile
+		} else if !config.ProfileEnabled(profile) {
+			slog.Warn("orchestrator: profile disabled, using default",
+				"identifier", issue.Identifier, "profile", profileName)
+			profileName = ""
 		} else {
 			if profile.Command != "" {
 				agentCommand = profile.Command
@@ -630,7 +634,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 		// needed (the worker now owns the session via its RunEntry).
 		delete(state.PausedSessions, issue.Identifier)
 	}
-	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx)
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx, nil)
 	return state
 }
 
@@ -649,6 +653,11 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 
 	if !ok {
 		slog.Warn("orchestrator: reviewer profile not found, skipping auto-review",
+			"issue_identifier", issue.Identifier, "profile", profileName)
+		return
+	}
+	if !config.ProfileEnabled(profile) {
+		slog.Warn("orchestrator: reviewer profile disabled, skipping auto-review",
 			"issue_identifier", issue.Identifier, "profile", profileName)
 		return
 	}
@@ -704,7 +713,7 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	o.issueProfiles[issue.Identifier] = profileName
 	o.issueProfilesMu.Unlock()
 
-	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil)
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil, nil)
 }
 
 func (o *Orchestrator) selectWorkerHost(hosts []string, dispatchStrategy string, state State) string {
@@ -867,7 +876,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		go func(issueID, ident, msg string) {
 			postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 			defer cancel()
-			if _, err := o.tracker.CreateComment(postCtx, issueID, msg); err != nil {
+			if _, err := o.tracker.CreateComment(postCtx, issueID, tracker.MarkManagedComment(msg)); err != nil {
 				slog.Warn("orchestrator: failed to post user input as tracker comment",
 					"identifier", ident, "error", err)
 			}
@@ -943,6 +952,19 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			return state
 		}
 		o.dispatchReviewerForIssue(ctx, &state, *found, ev.ReviewerProfile, time.Now())
+
+	case EventDispatchAutomation:
+		if ev.Issue == nil || ev.Automation == nil {
+			return state
+		}
+		if reason := IneligibleReason(*ev.Issue, state, o.cfg); reason != "" {
+			slog.Debug("orchestrator: skipping automation dispatch",
+				"identifier", ev.Issue.Identifier,
+				"automation", ev.Automation.AutomationID,
+				"reason", reason)
+			return state
+		}
+		o.startAutomationRun(ctx, &state, *ev.Issue, time.Now(), *ev.Automation)
 
 	case EventWorkerExited:
 		// Capture the live entry before deletion so we can record history.
@@ -1081,7 +1103,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			reviewerProfile := o.cfg.Agent.ReviewerProfile
 			autoReview := o.cfg.Agent.AutoReview
 			o.cfgMu.RUnlock()
-			if autoClear && autoReview && reviewerProfile != "" && (liveEntry == nil || liveEntry.Kind != "reviewer") {
+			if autoClear && autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry) {
 				slog.Warn("orchestrator: skipping auto-review because workspace auto-clear is enabled",
 					"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 				autoReview = false
@@ -1117,10 +1139,8 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Auto-review: if configured, dispatch a reviewer worker for this issue.
 			// Only trigger when the completed worker was NOT itself a reviewer
 			// (prevents infinite review loops).
-			if liveEntry == nil || liveEntry.Kind != "reviewer" {
-				if autoReview && reviewerProfile != "" {
-					o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
-				}
+			if autoReview && reviewerProfile != "" && runEligibleForAutoReview(liveEntry) {
+				o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
 			}
 
 		case TerminalStalled:
@@ -1156,7 +1176,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Post the agent's question as a tracker comment so it's visible
 			// in Linear/GitHub. The dashboard shows a reply UI; user replies
 			// are also posted as tracker comments before resuming the agent.
-			commentText := buildInputRequiredComment(entry)
+			commentText := tracker.MarkManagedComment(buildInputRequiredComment(entry))
 			go func(issueID, ident string) {
 				postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 				defer cancel()
@@ -1181,6 +1201,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				}
 			}(entry.IssueID, issue.Identifier)
 			state.InputRequiredIssues[issue.Identifier] = entry
+			o.dispatchMatchingInputRequiredAutomations(ctx, &state, issue, entry, now)
 			slog.Info("orchestrator: issue queued for human input",
 				"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
 			o.recordHistory(liveEntry, issue, now, "input_required")
@@ -1219,6 +1240,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 						o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
 					}
 					delete(state.Claimed, ev.IssueID)
+					o.dispatchMatchingRunFailedAutomations(ctx, &state, issue, now, errMsg, nextAttempt)
 					o.recordHistory(liveEntry, issue, now, "failed")
 				} else {
 					backoff := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
@@ -1245,7 +1267,7 @@ func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts i
 		attempts, lastErr)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := o.tracker.CreateComment(ctx, issue.ID, comment); err != nil {
+	if _, err := o.tracker.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(comment)); err != nil {
 		slog.Warn("worker: failed to post max-retries comment", "issue_id", issue.ID, "error", err)
 	}
 }
@@ -1368,6 +1390,13 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.StartedAt = finishedAt
 	}
 	o.addCompletedRun(run)
+}
+
+func runEligibleForAutoReview(liveEntry *RunEntry) bool {
+	if liveEntry == nil {
+		return true
+	}
+	return liveEntry.Kind == "" || liveEntry.Kind == "worker"
 }
 
 // buildSubAgentContext generates a "## Available Sub-Agents" section that is

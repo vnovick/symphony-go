@@ -161,6 +161,54 @@ func TestMemoryTrackerSetIssueBranchUnknownID(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestMemoryTrackerCreateIssue(t *testing.T) {
+	issues := []domain.Issue{makeIssue("id-1", "ENG-1", "In Progress")}
+	mem := tracker.NewMemoryTracker(issues, []string{"Todo", "In Progress"}, []string{"Done"})
+
+	created, err := mem.CreateIssue(context.Background(), "id-1", "Follow-up", "Add regression test", "Todo")
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	assert.Equal(t, "Follow-up", created.Title)
+	assert.Equal(t, "Todo", created.State)
+	require.NotNil(t, created.Description)
+	assert.Equal(t, "Add regression test", *created.Description)
+
+	fetched, err := mem.FetchIssueByIdentifier(context.Background(), created.Identifier)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Equal(t, created.Identifier, fetched.Identifier)
+	assert.Equal(t, "Todo", fetched.State)
+}
+
+func TestMemoryTrackerCreateIssueUsesMaxExistingSuffix(t *testing.T) {
+	issues := []domain.Issue{
+		makeIssue("id-2", "ENG-2", "Todo"),
+		makeIssue("id-9", "ENG-9", "Todo"),
+	}
+	mem := tracker.NewMemoryTracker(issues, []string{"Todo"}, []string{"Done"})
+
+	created, err := mem.CreateIssue(context.Background(), "id-9", "Follow-up", "", "Todo")
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	assert.Equal(t, "id-10", created.ID)
+	assert.Equal(t, "ENG-10", created.Identifier)
+}
+
+func TestMemoryTrackerCreateCommentPersistsOnIssue(t *testing.T) {
+	issues := []domain.Issue{makeIssue("id-1", "ENG-1", "Todo")}
+	mem := tracker.NewMemoryTracker(issues, nil, nil)
+
+	comment, err := mem.CreateComment(context.Background(), "id-1", "a comment")
+	require.NoError(t, err)
+	require.NotNil(t, comment)
+
+	issue, err := mem.FetchIssueDetail(context.Background(), "id-1")
+	require.NoError(t, err)
+	require.Len(t, issue.Comments, 1)
+	assert.Equal(t, comment.ID, issue.Comments[0].ID)
+	assert.Equal(t, "a comment", issue.Comments[0].Body)
+}
+
 func TestMemoryTrackerFetchIssueDetail(t *testing.T) {
 	issues := []domain.Issue{makeIssue("id-1", "ENG-1", "Todo")}
 	mem := tracker.NewMemoryTracker(issues, nil, nil)

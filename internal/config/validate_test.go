@@ -99,6 +99,9 @@ func TestValidateDispatchFailsWhenAutoReviewAndAutoClearBothEnabled(t *testing.T
 	content := minimal(`agent:
   reviewer_profile: code-reviewer
   auto_review: true
+  profiles:
+    code-reviewer:
+      command: claude
 workspace:
   auto_clear: true
 `)
@@ -124,4 +127,145 @@ func TestValidateDispatchFailsWhenAutoReviewEnabledWithoutReviewerProfile(t *tes
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reviewer_profile")
 	assert.Contains(t, err.Error(), "auto_review")
+}
+
+func TestValidateDispatchRejectsUnknownReviewerProfile(t *testing.T) {
+	content := minimal(`agent:
+  reviewer_profile: reviewer
+  profiles:
+    qa:
+      command: claude
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrReviewerProfileNotFound)
+}
+
+func TestValidateDispatchRejectsDisabledReviewerProfile(t *testing.T) {
+	content := minimal(`agent:
+  reviewer_profile: reviewer
+  profiles:
+    reviewer:
+      command: claude
+      enabled: false
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrReviewerProfileDisabled)
+}
+
+func TestValidateDispatchRejectsCreateIssueProfileWithoutState(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    qa:
+      command: claude
+      allowed_actions: [create_issue]
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create_issue_state")
+}
+
+func TestValidateDispatchRejectsDuplicateAutomationIDs(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    qa:
+      command: claude
+automations:
+  - id: comment-watch
+    enabled: true
+    profile: qa
+    trigger:
+      type: tracker_comment_added
+  - id: comment-watch
+    enabled: true
+    profile: qa
+    trigger:
+      type: run_failed
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate automation id")
+}
+
+func TestValidateDispatchRejectsInvalidAutomationRegex(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    qa:
+      command: claude
+automations:
+  - id: comment-watch
+    enabled: true
+    profile: qa
+    trigger:
+      type: tracker_comment_added
+    filter:
+      identifier_regex: "["
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "identifier_regex")
+}
+
+func TestValidateDispatchRejectsUnknownAutomationProfile(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    qa:
+      command: claude
+automations:
+  - id: comment-watch
+    enabled: true
+    profile: pm
+    trigger:
+      type: tracker_comment_added
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown profile")
+}
+
+func TestValidateDispatchRejectsDisabledAutomationProfile(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    qa:
+      command: claude
+      enabled: false
+automations:
+  - id: comment-watch
+    enabled: true
+    profile: qa
+    trigger:
+      type: tracker_comment_added
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disabled profile")
 }

@@ -54,11 +54,13 @@ describe('profileCommands', () => {
         command: 'run-codex-wrapper --json',
         backend: 'codex',
         prompt: 'Investigate failures.',
+        allowedActions: ['comment', 'provide_input'],
       }),
     ).toMatchObject({
       backend: 'codex',
       command: 'run-codex-wrapper --json',
       prompt: 'Investigate failures.',
+      allowedActions: ['comment', 'provide_input'],
     });
   });
 });

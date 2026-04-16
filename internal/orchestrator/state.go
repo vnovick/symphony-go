@@ -48,6 +48,10 @@ const (
 	// creates the input-required question comment so the event loop can persist
 	// the exact tracker comment ID and author identity locally.
 	EventInputRequiredCommentRecorded EventType = "InputRequiredCommentRecorded"
+	// EventDispatchAutomation is sent by cron automations to dispatch a helper
+	// worker through the event loop using a selected profile plus extra
+	// automation instructions.
+	EventDispatchAutomation EventType = "DispatchAutomation"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -62,6 +66,8 @@ type OrchestratorEvent struct { //nolint:revive
 	ReviewerProfile    string              // profile name for EventDispatchReviewer
 	InputRequiredEntry *InputRequiredEntry // used by TerminalInputRequired
 	Comment            *domain.Comment     // used by EventInputRequiredCommentRecorded
+	Issue              *domain.Issue       // used by EventDispatchAutomation
+	Automation         *AutomationDispatch // used by EventDispatchAutomation
 }
 
 // TerminalReason classifies why a worker stopped.

@@ -3,9 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/osteele/liquid"
+	"github.com/vnovick/itervox/internal/schedule"
 )
 
 var supportedTrackerKinds = map[string]bool{
@@ -21,6 +24,14 @@ var ErrAutoClearAutoReviewConflict = errors.New("workspace.auto_clear and agent.
 // enabled without a configured reviewer profile.
 var ErrAutoReviewRequiresReviewerProfile = errors.New("agent.auto_review requires agent.reviewer_profile to be set")
 
+// ErrReviewerProfileNotFound reports that a configured reviewer profile does
+// not exist in agent.profiles.
+var ErrReviewerProfileNotFound = errors.New("agent.reviewer_profile must reference an existing profile")
+
+// ErrReviewerProfileDisabled reports that a configured reviewer profile exists
+// but is disabled.
+var ErrReviewerProfileDisabled = errors.New("agent.reviewer_profile must reference an enabled profile")
+
 // ValidateReviewerAutoReview rejects configurations where auto-review was
 // enabled without a reviewer profile to dispatch.
 func ValidateReviewerAutoReview(reviewerProfile string, autoReview bool) error {
@@ -35,6 +46,21 @@ func ValidateReviewerAutoReview(reviewerProfile string, autoReview bool) error {
 func ValidateAutoClearAutoReview(autoClear bool, reviewerProfile string, autoReview bool) error {
 	if autoClear && autoReview && strings.TrimSpace(reviewerProfile) != "" {
 		return fmt.Errorf("%w: disable either workspace.auto_clear or agent.auto_review", ErrAutoClearAutoReviewConflict)
+	}
+	return nil
+}
+
+func ValidateReviewerProfile(profiles map[string]AgentProfile, reviewerProfile string) error {
+	reviewerProfile = strings.TrimSpace(reviewerProfile)
+	if reviewerProfile == "" {
+		return nil
+	}
+	profile, ok := profiles[reviewerProfile]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrReviewerProfileNotFound, reviewerProfile)
+	}
+	if !ProfileEnabled(profile) {
+		return fmt.Errorf("%w: %q", ErrReviewerProfileDisabled, reviewerProfile)
 	}
 	return nil
 }
@@ -93,8 +119,17 @@ func ValidateDispatch(cfg *Config) error {
 				name, profile.Command, shellMetachars)
 		}
 	}
+	if err := ValidateAgentProfiles(cfg.Agent.Profiles); err != nil {
+		return err
+	}
+	if err := ValidateAutomations(cfg.Automations, cfg.Agent.Profiles); err != nil {
+		return err
+	}
 
 	if err := ValidateReviewerAutoReview(cfg.Agent.ReviewerProfile, cfg.Agent.AutoReview); err != nil {
+		return err
+	}
+	if err := ValidateReviewerProfile(cfg.Agent.Profiles, cfg.Agent.ReviewerProfile); err != nil {
 		return err
 	}
 	if err := ValidateAutoClearAutoReview(
@@ -106,4 +141,98 @@ func ValidateDispatch(cfg *Config) error {
 	}
 
 	return nil
+}
+
+func ValidateAgentProfiles(profiles map[string]AgentProfile) error {
+	for name, profile := range profiles {
+		actions := NormalizeAllowedActions(profile.AllowedActions)
+		if containsString(actions, AgentActionCreateIssue) && strings.TrimSpace(profile.CreateIssueState) == "" {
+			return fmt.Errorf("invalid profile %q: create_issue_state is required when create_issue is enabled", name)
+		}
+	}
+	return nil
+}
+
+func ValidateAutomations(automations []AutomationConfig, profiles map[string]AgentProfile) error {
+	if len(automations) == 0 {
+		return nil
+	}
+	seenIDs := make(map[string]struct{}, len(automations))
+	for _, entry := range automations {
+		id := strings.TrimSpace(entry.ID)
+		if id == "" || strings.TrimSpace(entry.Profile) == "" || strings.TrimSpace(entry.Trigger.Type) == "" {
+			return fmt.Errorf("each automation requires id, trigger.type, and profile")
+		}
+		key := strings.ToLower(id)
+		if _, exists := seenIDs[key]; exists {
+			return fmt.Errorf("duplicate automation id %q", id)
+		}
+		seenIDs[key] = struct{}{}
+	}
+	for _, entry := range automations {
+		id := strings.TrimSpace(entry.ID)
+		profileName := strings.TrimSpace(entry.Profile)
+		triggerType := strings.TrimSpace(entry.Trigger.Type)
+
+		profile, ok := profiles[profileName]
+		if !ok {
+			return fmt.Errorf("automation %q references unknown profile %q", id, profileName)
+		}
+		if !ProfileEnabled(profile) {
+			return fmt.Errorf("automation %q references disabled profile %q", id, profileName)
+		}
+
+		switch triggerType {
+		case AutomationTriggerCron:
+			if strings.TrimSpace(entry.Trigger.Cron) == "" {
+				return fmt.Errorf("automation %q: cron automations require trigger.cron", id)
+			}
+			if _, err := schedule.Parse(entry.Trigger.Cron); err != nil {
+				return fmt.Errorf("automation %q invalid cron: %w", id, err)
+			}
+			if entry.Trigger.Timezone != "" {
+				if _, err := time.LoadLocation(entry.Trigger.Timezone); err != nil {
+					return fmt.Errorf("automation %q invalid timezone: %w", id, err)
+				}
+			}
+		case AutomationTriggerInputRequired:
+		case AutomationTriggerTrackerComment:
+		case AutomationTriggerIssueMovedBacklog:
+		case AutomationTriggerRunFailed:
+		case AutomationTriggerIssueEnteredState:
+			if strings.TrimSpace(entry.Trigger.State) == "" {
+				return fmt.Errorf("automation %q: issue_entered_state automations require trigger.state", id)
+			}
+		default:
+			return fmt.Errorf("automation %q has unsupported trigger type %q", id, triggerType)
+		}
+		if entry.Filter.MatchMode != "" &&
+			entry.Filter.MatchMode != AutomationFilterMatchAll &&
+			entry.Filter.MatchMode != AutomationFilterMatchAny {
+			return fmt.Errorf("automation %q filter.match_mode must be %q or %q", id, AutomationFilterMatchAll, AutomationFilterMatchAny)
+		}
+		if entry.Filter.Limit < 0 {
+			return fmt.Errorf("automation %q filter.limit must be >= 0", id)
+		}
+		if entry.Filter.IdentifierRegex != "" {
+			if _, err := regexp.Compile(entry.Filter.IdentifierRegex); err != nil {
+				return fmt.Errorf("automation %q invalid identifier_regex: %w", id, err)
+			}
+		}
+		if entry.Filter.InputContextRegex != "" {
+			if _, err := regexp.Compile(entry.Filter.InputContextRegex); err != nil {
+				return fmt.Errorf("automation %q invalid input_context_regex: %w", id, err)
+			}
+		}
+	}
+	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

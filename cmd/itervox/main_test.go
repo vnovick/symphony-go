@@ -13,11 +13,25 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/agent/agenttest"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/domain"
+	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
 )
+
+type captureRunner struct {
+	command    string
+	workerHost string
+}
+
+func (c *captureRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), _ *string, _, _, command, workerHost, _ string, _, _ int) (agent.TurnResult, error) {
+	c.command = command
+	c.workerHost = workerHost
+	return agent.TurnResult{}, nil
+}
 
 func TestLoadDotEnv_LoadsItervoxDotEnv(t *testing.T) {
 	dir := t.TempDir()
@@ -121,6 +135,33 @@ func TestConfiguredBackend(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveCommandLineResolvesBinaryPreservingArgs(t *testing.T) {
+	resolved := resolveCommandLine("claude --model sonnet", func(command string) string {
+		if command == "claude" {
+			return "/usr/local/bin/claude"
+		}
+		return command
+	})
+
+	assert.Equal(t, "/usr/local/bin/claude --model sonnet", resolved)
+}
+
+func TestCommandResolverRunnerSkipsResolutionForSSHWorkers(t *testing.T) {
+	inner := &captureRunner{}
+	runner := commandResolverRunner{
+		inner: inner,
+		resolve: func(command string) string {
+			return "/resolved/" + command
+		},
+	}
+
+	_, err := runner.RunTurn(context.Background(), nil, nil, nil, "prompt", ".", "claude --model sonnet", "ssh://host", "", 0, 0)
+
+	require.NoError(t, err)
+	assert.Equal(t, "claude --model sonnet", inner.command)
+	assert.Equal(t, "ssh://host", inner.workerHost)
 }
 
 // ─── buildDemoConfig ──────────────────────────────────────────────────────────
@@ -258,6 +299,146 @@ func TestDemoMode_SnapshotBuilder(t *testing.T) {
 		assert.NotEmpty(t, m.ID)
 		assert.NotEmpty(t, m.Label)
 	}
+}
+
+func TestOrchestratorAdapterUpdateIssueState_FindsIssueOutsideConfiguredStates(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			BacklogStates:   []string{"Backlog"},
+			ActiveStates:    []string{"Todo", "In Progress"},
+			TerminalStates:  []string{"Done"},
+			CompletionState: "Done",
+		},
+		Agent: config.AgentConfig{},
+	}
+	issue := tracker.GenerateDemoIssues(1)[0]
+	issue.State = "Ready for QA"
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:   orch,
+		logBuf: logbuffer.New(),
+		cfg:    cfg,
+		tr:     mt,
+	}
+
+	err := adapter.UpdateIssueState(context.Background(), issue.Identifier, "Done")
+
+	require.NoError(t, err)
+	fetched, fetchErr := mt.FetchIssueByIdentifier(context.Background(), issue.Identifier)
+	require.NoError(t, fetchErr)
+	require.NotNil(t, fetched)
+	assert.Equal(t, "Done", fetched.State)
+}
+
+func TestOrchestratorAdapterUpsertProfile_RejectsRenameCollision(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:   []string{"Todo"},
+			TerminalStates: []string{"Done"},
+		},
+		Agent: config.AgentConfig{
+			Profiles: map[string]config.AgentProfile{
+				"qa": {Command: "claude"},
+				"pm": {Command: "codex"},
+			},
+		},
+	}
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch: orch,
+		cfg:  cfg,
+		tr:   mt,
+	}
+
+	err := adapter.UpsertProfile("pm", server.ProfileDef{Command: "claude"}, "qa")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+	profiles := orch.ProfilesCfg()
+	assert.Equal(t, "claude", profiles["qa"].Command)
+	assert.Equal(t, "codex", profiles["pm"].Command)
+}
+
+func TestOrchestratorAdapterUpsertProfilePreservesRawCommand(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.UpsertProfile("qa", server.ProfileDef{Command: "claude --model sonnet"}, "")
+
+	require.NoError(t, err)
+	profiles := orch.ProfilesCfg()
+	assert.Equal(t, "claude --model sonnet", profiles["qa"].Command)
+
+	updated, readErr := os.ReadFile(workflowPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(updated), "command: claude --model sonnet")
+	assert.NotContains(t, string(updated), "/Users/")
+}
+
+func TestOrchestratorAdapterSetReviewerConfig_PersistsWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  profiles:
+    reviewer:
+      command: claude
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.SetReviewerConfig("reviewer", true)
+
+	require.NoError(t, err)
+	updated, readErr := os.ReadFile(workflowPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(updated), `reviewer_profile: "reviewer"`)
+	assert.Contains(t, string(updated), "auto_review: true")
 }
 
 // ─── server.ModelOption conversion ────────────────────────────────────────────

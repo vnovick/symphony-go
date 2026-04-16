@@ -10,6 +10,8 @@ import {
   backendBadgeClass,
 } from '../../pages/Settings/profiles/ProfileEditorFields';
 import {
+  AGENT_ACTION_OPTIONS,
+  normalizeAllowedActions,
   applyBackendSelection,
   applyModelSelection,
   commandToBackend,
@@ -18,6 +20,7 @@ import {
   inferBackendFromCommand,
   modelLabel,
   normalizeCommandForSave,
+  type AllowedAgentAction,
   type SupportedBackend,
 } from '../../pages/Settings/profileCommands';
 import { profileColor, profileInitials } from '../../utils/profileColors';
@@ -43,11 +46,22 @@ export const AgentInfoModal = memo(function AgentInfoModal({
   // Form state — mirrors ProfileRow approach
   const initialDraft = profileDef
     ? draftFromProfileDef(profileDef)
-    : { backend: 'claude' as SupportedBackend, model: '', command: '', prompt: '' };
+    : {
+        backend: 'claude' as SupportedBackend,
+        model: '',
+        command: '',
+        prompt: '',
+        allowedActions: [] as AllowedAgentAction[],
+        createIssueState: '',
+      };
   const [backend, setBackend] = useState<SupportedBackend>(initialDraft.backend);
   const [model, setModel] = useState(initialDraft.model);
   const [command, setCommand] = useState(initialDraft.command);
   const [prompt, setPrompt] = useState(initialDraft.prompt);
+  const [allowedActions, setAllowedActions] = useState<AllowedAgentAction[]>(
+    initialDraft.allowedActions,
+  );
+  const [createIssueState, setCreateIssueState] = useState(initialDraft.createIssueState);
 
   // Reset form when profile changes or modal opens
   useEffect(() => {
@@ -58,6 +72,8 @@ export const AgentInfoModal = memo(function AgentInfoModal({
         setModel(draft.model);
         setCommand(draft.command);
         setPrompt(draft.prompt);
+        setAllowedActions(draft.allowedActions);
+        setCreateIssueState(draft.createIssueState);
       }
       setEditing(false);
       setSaving(false);
@@ -71,6 +87,8 @@ export const AgentInfoModal = memo(function AgentInfoModal({
       setModel(draft.model);
       setCommand(draft.command);
       setPrompt(draft.prompt);
+      setAllowedActions(draft.allowedActions);
+      setCreateIssueState(draft.createIssueState);
     }
     setEditing(false);
   };
@@ -82,6 +100,11 @@ export const AgentInfoModal = memo(function AgentInfoModal({
       command: normalizeCommandForSave(command, backend),
       backend,
       prompt: prompt.trim() || undefined,
+      enabled: profileDef?.enabled ?? true,
+      allowedActions: allowedActions.length > 0 ? allowedActions : undefined,
+      createIssueState: allowedActions.includes('create_issue')
+        ? createIssueState.trim() || undefined
+        : undefined,
     });
     setSaving(false);
     setEditing(false);
@@ -94,6 +117,9 @@ export const AgentInfoModal = memo(function AgentInfoModal({
     : 'claude';
   const profileModel = profileDef ? commandToModel(profileDef.command) : '';
   const modelDisplay = profileModel ? modelLabel(inferredBackend, profileModel) : '';
+  const actionLabels = AGENT_ACTION_OPTIONS.filter((option) =>
+    (profileDef?.allowedActions ?? []).includes(option.id),
+  ).map((option) => option.label);
 
   return (
     <Modal
@@ -140,6 +166,18 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{profileDef.prompt}</ReactMarkdown>
                   </div>
                 )}
+                {!editing && actionLabels.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {actionLabels.map((label) => (
+                      <span
+                        key={label}
+                        className="bg-theme-bg-soft text-theme-text-secondary rounded-full px-2 py-0.5 text-[10px]"
+                      >
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -170,6 +208,8 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                   model={model}
                   command={command}
                   prompt={prompt}
+                  allowedActions={allowedActions}
+                  createIssueState={createIssueState}
                   onBackendChange={(value) => {
                     const next = applyBackendSelection(command, backend, value);
                     setBackend(value);
@@ -187,6 +227,14 @@ export const AgentInfoModal = memo(function AgentInfoModal({
                     if (inferred) setBackend(inferred);
                   }}
                   onPromptChange={setPrompt}
+                  onAllowedActionsChange={(value) => {
+                    const normalized = normalizeAllowedActions(value);
+                    setAllowedActions(normalized);
+                    if (!normalized.includes('create_issue')) {
+                      setCreateIssueState('');
+                    }
+                  }}
+                  onCreateIssueStateChange={setCreateIssueState}
                   dynamicModels={availableModels}
                 />
                 <div className="flex items-center gap-2 pt-2">

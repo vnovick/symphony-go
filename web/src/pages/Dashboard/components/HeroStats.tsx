@@ -29,16 +29,17 @@ function StatTile({
 }
 
 export function HeroStats() {
-  const { running, paused, retrying, max } = useItervoxStore(
+  const { running, paused, retrying, inputRequired, max } = useItervoxStore(
     useShallow((s) => ({
       running: s.snapshot?.running.length ?? 0,
       paused: s.snapshot?.paused.length ?? 0,
       retrying: s.snapshot?.retrying.length ?? 0,
+      inputRequired: (s.snapshot?.inputRequired ?? []).length,
       max: s.snapshot?.maxConcurrentAgents ?? 0,
     })),
   );
   return (
-    <div className="grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-4 md:w-auto md:grid-cols-2">
+    <div className="grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 md:w-auto md:grid-cols-5">
       <StatTile
         label="Running"
         value={String(running)}
@@ -56,6 +57,12 @@ export function HeroStats() {
         value={String(retrying)}
         sub="queued"
         valueColor={retrying > 0 ? 'var(--danger)' : undefined}
+      />
+      <StatTile
+        label="Input Required"
+        value={String(inputRequired)}
+        sub="blocked"
+        valueColor={inputRequired > 0 ? 'var(--warning)' : undefined}
       />
       <StatTile
         label="Capacity"

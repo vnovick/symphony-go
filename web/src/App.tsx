@@ -9,7 +9,16 @@ import { logIdentifiersKey } from './queries/logs';
 import IssueDetailSlide from './components/itervox/IssueDetailSlide';
 import Toast from './components/common/Toast';
 import { PageErrorBoundary } from './components/common/PageErrorBoundary';
+import { ItervoxLogo } from './components/brand/ItervoxLogo';
 import { NavLink } from './components/layout/NavLink';
+import {
+  AgentsIcon,
+  AutomationsIcon,
+  DashboardIcon,
+  LogsIcon,
+  SettingsIcon,
+  TimelineIcon,
+} from './components/layout/NavIcons';
 import { ThemeToggle } from './components/ui/ThemeToggle/ThemeToggle';
 import AppHeader from './layout/AppHeader';
 import { useFocusTrap } from './hooks/useFocusTrap';
@@ -19,6 +28,8 @@ import { inputRequiredFingerprintValue } from './utils/inputRequired';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
 const Timeline = lazy(() => import('./pages/Timeline'));
+const Agents = lazy(() => import('./pages/Agents'));
+const Automations = lazy(() => import('./pages/Automations'));
 const Settings = lazy(() => import('./pages/Settings'));
 const NotFound = lazy(() => import('./pages/OtherPage/NotFound'));
 
@@ -31,22 +42,21 @@ function PageLoader() {
 }
 
 const NAV_ITEMS = [
-  { to: '/', icon: '◫', label: 'Dashboard' },
-  { to: '/timeline', icon: '◷', label: 'Timeline' },
-  { to: '/logs', icon: '⌨', label: 'Logs' },
-  { to: '/settings', icon: '⚙', label: 'Settings' },
+  { to: '/', icon: <DashboardIcon />, label: 'Dashboard' },
+  { to: '/timeline', icon: <TimelineIcon />, label: 'Timeline' },
+  { to: '/logs', icon: <LogsIcon />, label: 'Logs' },
+  { to: '/agents', icon: <AgentsIcon />, label: 'Agents' },
+  { to: '/automations', icon: <AutomationsIcon />, label: 'Automations' },
+  { to: '/settings', icon: <SettingsIcon />, label: 'Settings' },
 ] as const;
 
 function SidebarContent() {
   return (
     <>
-      {/* Logo mark */}
-      <div
-        className="mb-2 flex h-10 w-10 items-center justify-center rounded-[var(--radius-md)] text-base font-bold text-white"
-        style={{ background: 'var(--gradient-accent)', boxShadow: 'var(--shadow-glow)' }}
-        aria-label="Itervox"
-      >
-        S
+      <div className="mb-3 flex w-full items-center justify-center px-2" aria-label="Itervox">
+        <div className="border-theme-line bg-theme-bg-elevated flex h-10 w-full items-center justify-center rounded-[var(--radius-md)] border px-2">
+          <ItervoxLogo className="h-5 w-auto" />
+        </div>
       </div>
 
       {/* Nav links */}
@@ -225,6 +235,26 @@ function AppWithSSE() {
               <Suspense fallback={<PageLoader />}>
                 <PageErrorBoundary>
                   <Settings />
+                </PageErrorBoundary>
+              </Suspense>
+            }
+          />
+          <Route
+            path="/agents"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <PageErrorBoundary>
+                  <Agents />
+                </PageErrorBoundary>
+              </Suspense>
+            }
+          />
+          <Route
+            path="/automations"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <PageErrorBoundary>
+                  <Automations />
                 </PageErrorBoundary>
               </Suspense>
             }

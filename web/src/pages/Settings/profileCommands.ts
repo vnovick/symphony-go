@@ -1,6 +1,13 @@
 import type { ProfileDef } from '../../types/schemas';
 
 export type SupportedBackend = 'claude' | 'codex';
+export type AllowedAgentAction = 'comment' | 'create_issue' | 'move_state' | 'provide_input';
+
+export interface AllowedAgentActionOption {
+  id: AllowedAgentAction;
+  label: string;
+  description: string;
+}
 
 export interface ModelOption {
   id: string;
@@ -12,7 +19,33 @@ export interface ProfileCommandDraft {
   model: string;
   command: string;
   prompt: string;
+  enabled: boolean;
+  allowedActions: AllowedAgentAction[];
+  createIssueState: string;
 }
+
+export const AGENT_ACTION_OPTIONS = [
+  {
+    id: 'comment',
+    label: 'Comment on current issue',
+    description: 'Post a tracker comment on the issue this agent is already handling.',
+  },
+  {
+    id: 'create_issue',
+    label: 'Create follow-up issue',
+    description: 'Open a new issue in the profile’s configured tracker column/state.',
+  },
+  {
+    id: 'move_state',
+    label: 'Move current issue state',
+    description: 'Transition the current issue to another tracker state through the daemon.',
+  },
+  {
+    id: 'provide_input',
+    label: 'Provide input to blocked run',
+    description: 'Answer an input-required prompt and resume the blocked run through the daemon.',
+  },
+] satisfies AllowedAgentActionOption[];
 
 export const CLAUDE_MODELS = [
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 - Fast, cost-effective' },
@@ -34,6 +67,16 @@ export const CODEX_MODELS = [
 
 export function normalizeBackend(backend: string | undefined | null): SupportedBackend {
   return backend === 'codex' ? 'codex' : 'claude';
+}
+
+export function normalizeAllowedActions(
+  actions: string[] | undefined | null,
+): AllowedAgentAction[] {
+  if (!actions?.length) return [];
+  const requested = new Set(actions.map((action) => action.trim()).filter(Boolean));
+  return AGENT_ACTION_OPTIONS.filter((option) => requested.has(option.id)).map(
+    (option) => option.id,
+  );
 }
 
 export function inferBackendFromCommand(cmd: string | undefined | null): SupportedBackend | null {
@@ -140,6 +183,9 @@ export function draftFromProfileDef(def: ProfileDef): ProfileCommandDraft {
     model: commandToModel(def.command),
     command: normalizeCommandForSave(def.command, backend),
     prompt: def.prompt ?? '',
+    enabled: def.enabled ?? true,
+    allowedActions: normalizeAllowedActions(def.allowedActions),
+    createIssueState: def.createIssueState ?? '',
   };
 }
 

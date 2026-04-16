@@ -130,10 +130,12 @@ func TestPatchProfilesBlock_Create(t *testing.T) {
 	f := filepath.Join(tmp, "WORKFLOW.md")
 	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
 
+	disabled := false
 	profiles := map[string]workflow.ProfileEntry{
-		"fast":     {Command: "claude --model claude-haiku-4-5-20251001"},
+		"fast":     {Command: "claude --model claude-haiku-4-5-20251001", AllowedActions: []string{"comment", "provide_input"}},
 		"thorough": {Command: "claude --model claude-opus-4-6"},
-		"codex":    {Command: "run-codex-wrapper", Backend: "codex"},
+		"codex":    {Command: "run-codex-wrapper", Backend: "codex", Enabled: &disabled},
+		"triage":   {Command: "claude --model claude-sonnet-4-6", AllowedActions: []string{"create_issue"}, CreateIssueState: "Todo"},
 	}
 	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
 
@@ -143,11 +145,18 @@ func TestPatchProfilesBlock_Create(t *testing.T) {
 	assert.Contains(t, got, "  profiles:")
 	assert.Contains(t, got, "    fast:")
 	assert.Contains(t, got, "      command: claude --model claude-haiku-4-5-20251001")
+	assert.Contains(t, got, "      allowed_actions:")
+	assert.Contains(t, got, "        - comment")
+	assert.Contains(t, got, "        - provide_input")
 	assert.Contains(t, got, "    codex:")
 	assert.Contains(t, got, "      command: run-codex-wrapper")
 	assert.Contains(t, got, "      backend: codex")
+	assert.Contains(t, got, "      enabled: false")
+	assert.Contains(t, got, "    triage:")
+	assert.Contains(t, got, "      create_issue_state: \"Todo\"")
 	assert.Contains(t, got, "    thorough:")
 	assert.Contains(t, got, "      command: claude --model claude-opus-4-6")
+	assert.NotContains(t, got, "    fast:\n      enabled: false")
 	// Other fields preserved
 	assert.Contains(t, got, "max_concurrent_agents: 3")
 	assert.Contains(t, got, "command: claude")
@@ -162,8 +171,15 @@ func TestPatchProfilesBlock_Replace(t *testing.T) {
 	f := filepath.Join(tmp, "WORKFLOW.md")
 	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
 
+	disabled := false
 	profiles := map[string]workflow.ProfileEntry{
-		"fast": {Command: "run-codex-wrapper", Backend: "codex"},
+		"fast": {
+			Command:          "run-codex-wrapper",
+			Backend:          "codex",
+			Enabled:          &disabled,
+			AllowedActions:   []string{"move_state", "create_issue"},
+			CreateIssueState: "Todo",
+		},
 	}
 	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
 
@@ -173,11 +189,36 @@ func TestPatchProfilesBlock_Replace(t *testing.T) {
 	assert.Contains(t, got, "    fast:")
 	assert.Contains(t, got, "      command: run-codex-wrapper")
 	assert.Contains(t, got, "      backend: codex")
+	assert.Contains(t, got, "      enabled: false")
+	assert.Contains(t, got, "      allowed_actions:")
+	assert.Contains(t, got, "        - create_issue")
+	assert.Contains(t, got, "        - move_state")
+	assert.Contains(t, got, "      create_issue_state: \"Todo\"")
 	// Old profile gone
 	assert.NotContains(t, got, "old:")
 	// Other fields preserved
 	assert.Contains(t, got, "max_concurrent_agents: 5")
 	assert.Contains(t, got, "Body.")
+}
+
+func TestPatchProfilesBlock_QuotesCreateIssueState(t *testing.T) {
+	content := "---\nagent:\n  command: claude\n---\n\nBody.\n"
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+
+	profiles := map[string]workflow.ProfileEntry{
+		"triage": {
+			Command:          "claude --model claude-sonnet-4-6",
+			AllowedActions:   []string{"create_issue"},
+			CreateIssueState: "Todo: needs clarification #1",
+		},
+	}
+	require.NoError(t, workflow.PatchProfilesBlock(f, profiles))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "      create_issue_state: \"Todo: needs clarification #1\"")
 }
 
 func TestPatchProfilesBlock_Delete(t *testing.T) {
@@ -197,6 +238,81 @@ func TestPatchProfilesBlock_Delete(t *testing.T) {
 	// Other fields preserved
 	assert.Contains(t, got, "max_concurrent_agents: 2")
 	assert.Contains(t, got, "Body.")
+}
+
+func TestPatchAutomationsBlock_Create(t *testing.T) {
+	content := "---\nagent:\n  command: claude\n---\n\nPrompt body.\n"
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+
+	automations := []workflow.AutomationEntry{
+		{
+			ID:           "weekday-review",
+			Enabled:      true,
+			Profile:      "reviewer",
+			Instructions: "Review backlog issues and comment with missing details.",
+			Trigger: workflow.AutomationTriggerEntry{
+				Type:     "cron",
+				Cron:     "0 9 * * 1-5",
+				Timezone: "Asia/Jerusalem",
+			},
+			Filter: workflow.AutomationFilterEntry{
+				MatchMode:       "any",
+				States:          []string{"Backlog", "Todo"},
+				LabelsAny:       []string{"bug"},
+				IdentifierRegex: "^ENG-",
+				Limit:           2,
+			},
+		},
+		{
+			ID:           "qa-state-entry",
+			Enabled:      true,
+			Profile:      "qa",
+			Instructions: "Run QA when the issue enters Ready for QA.",
+			Trigger: workflow.AutomationTriggerEntry{
+				Type:  "issue_entered_state",
+				State: "Ready for QA",
+			},
+		},
+		{
+			ID:           "input-responder",
+			Enabled:      true,
+			Profile:      "input-responder",
+			Instructions: "Answer narrow blocked-run questions.",
+			Trigger: workflow.AutomationTriggerEntry{
+				Type: "input_required",
+			},
+			Filter: workflow.AutomationFilterEntry{
+				InputContextRegex: "continue|branch",
+			},
+			Policy: workflow.AutomationPolicyEntry{
+				AutoResume: true,
+			},
+		},
+	}
+	require.NoError(t, workflow.PatchAutomationsBlock(f, automations))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "automations:")
+	assert.Contains(t, got, `type: cron`)
+	assert.Contains(t, got, `cron: "0 9 * * 1-5"`)
+	assert.Contains(t, got, `timezone: "Asia/Jerusalem"`)
+	assert.Contains(t, got, "profile: reviewer")
+	assert.Contains(t, got, `instructions: "Review backlog issues and comment with missing details."`)
+	assert.Contains(t, got, `match_mode: "any"`)
+	assert.Contains(t, got, `states: ["Backlog","Todo"]`)
+	assert.Contains(t, got, `labels_any: ["bug"]`)
+	assert.Contains(t, got, `identifier_regex: "^ENG-"`)
+	assert.Contains(t, got, "limit: 2")
+	assert.Contains(t, got, `type: issue_entered_state`)
+	assert.Contains(t, got, `state: "Ready for QA"`)
+	assert.Contains(t, got, `type: input_required`)
+	assert.Contains(t, got, `input_context_regex: "continue|branch"`)
+	assert.Contains(t, got, `auto_resume: true`)
+	assert.Contains(t, got, "Prompt body.")
 }
 
 func TestPatchStringSliceField_Replace(t *testing.T) {

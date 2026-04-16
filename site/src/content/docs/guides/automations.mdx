@@ -1,0 +1,361 @@
+---
+title: Automations
+description: How Itervox automations work — triggers, filters, instructions, trigger variables, and practical examples.
+sidebar:
+  order: 5
+---
+
+Automations let Itervox dispatch an agent profile automatically when a trigger fires.
+
+An automation is made of four parts:
+
+1. **Trigger** — what wakes the automation up.
+2. **Profile** — which agent profile runs.
+3. **Instructions** — a small prompt overlay added on top of that profile.
+4. **Filters** — optional guards that narrow the issues or trigger contexts the automation should handle.
+
+This is intentionally smaller than the planned Canvas/workflow system. Automations cover the common “run this profile when X happens” cases without requiring a graph editor.
+
+## Mental model
+
+When an automation fires, Itervox does **not** invent a new execution engine. It reuses the existing issue worker flow:
+
+- load the selected issue
+- choose the selected profile
+- render the main `WORKFLOW.md` prompt
+- append the profile prompt
+- append the automation instructions
+- append daemon-action guidance if that profile has daemon actions enabled
+- dispatch a normal worker run
+
+That means automations inherit the same:
+
+- backend selection
+- model/command
+- daemon actions
+- tracker integrations
+- workspace behavior
+- logs and history
+
+## Configuration shape
+
+```yaml
+automations:
+  - id: qa-ready
+    enabled: true
+    trigger:
+      type: cron
+      cron: "0 */2 * * *"
+      timezone: "UTC"
+    profile: qa
+    instructions: |
+      Run the QA routine for this issue.
+      Comment the results.
+      If any required check fails, move the issue to Todo.
+    filter:
+      states: ["Ready for QA"]
+      labels_any: ["qa"]
+      match_mode: all
+      limit: 10
+```
+
+## Triggers
+
+### `cron`
+
+Runs on a fixed five-field cron schedule.
+
+Use this for repeated sweeps such as:
+
+- QA validation every two hours
+- backlog review every weekday morning
+- nightly triage
+
+Fields:
+
+- `trigger.cron`
+- `trigger.timezone` optional
+
+### `input_required`
+
+Fires when a running agent blocks and asks for human input.
+
+Use this for helper agents that can answer narrow unblocker questions, draft clarifications, or resume low-risk flows automatically.
+
+Important behavior:
+
+- the issue still enters the normal input-required state
+- the helper automation runs against that same issue
+- if the selected profile is allowed to use `provide_input`, it can resume the blocked run through the daemon
+
+Relevant fields:
+
+- `filter.input_context_regex`
+- `policy.auto_resume`
+
+### `tracker_comment_added`
+
+Fires when Itervox observes that the latest tracker comment on an issue has changed.
+
+Use this when you want to react to new human comments or async feedback.
+
+Important caveat:
+
+- this trigger is currently **poll-derived**, not webhook-driven
+- Itervox detects it by comparing the latest known comment with the latest currently fetched comment
+
+### `issue_entered_state`
+
+Fires when an issue transitions into a specific tracker state.
+
+Use this when you want state-driven automation such as:
+
+- run QA when the issue enters `Ready for QA`
+- run documentation review when an issue enters `Ready for Docs`
+
+Required field:
+
+- `trigger.state`
+
+### `issue_moved_to_backlog`
+
+Fires when an issue newly enters one of the configured backlog states.
+
+Use this for backlog grooming or PM review when issues return to the intake queue.
+
+### `run_failed`
+
+Fires when a worker run fails **permanently** and Itervox stops retrying it.
+
+This is not “a turn had an error and may retry later”. It is the terminal failure case after the retry loop is exhausted.
+
+Use this for:
+
+- failure summarizers
+- PM escalation
+- automatic follow-up issue creation
+
+## Filters
+
+Filters are optional. They narrow what an automation is allowed to act on **after** the trigger has matched.
+
+Supported filters:
+
+- `states`
+- `labels_any`
+- `identifier_regex`
+- `input_context_regex` for `input_required`
+- `limit`
+- `match_mode`
+
+### `match_mode`
+
+`match_mode` controls how multiple populated filters combine.
+
+- `all` — every populated filter must match
+- `any` — at least one populated filter must match
+
+Use `all` by default. It is safer and usually reflects intent better.
+
+Use `any` for broad watch rules, such as:
+
+- issues in backlog **or** labeled `needs-pm`
+- identifiers matching `^ENG-` **or** `^OPS-`
+
+### `states`
+
+The meaning of `states` depends on the trigger:
+
+- for `cron`: it controls which states the scheduler searches
+- for event-based triggers: it acts as an extra guard on the issue **after** the trigger fires
+
+For cron automations, leaving `states` empty means Itervox uses the configured backlog and active states.
+
+### `labels_any`
+
+Matches issues that have at least one of the listed labels.
+
+Current UI behavior:
+
+- label suggestions come from issues currently visible to Itervox
+- free-form typing is still allowed
+
+That is deliberate. Itervox does not currently fetch a tracker-wide label catalogue, so the UI can only suggest labels it has already seen.
+
+### `identifier_regex`
+
+A regular expression matched against the tracker issue identifier, such as:
+
+- `^ENG-`
+- `^(ENG|OPS)-`
+
+### `input_context_regex`
+
+Only meaningful for `input_required`.
+
+It matches the blocked agent’s question text, so you can safely limit helper automations to narrow prompts such as:
+
+- `continue`
+- `branch`
+- `which file`
+- `test command`
+
+### `limit`
+
+Used for batch-style triggers such as:
+
+- `cron`
+- `tracker_comment_added`
+- `issue_entered_state`
+- `issue_moved_to_backlog`
+
+If one poll or cron tick finds many matching issues, `limit` caps how many are queued from that batch.
+
+## Instructions
+
+Automation instructions are a **small overlay** on top of the selected profile.
+
+That is the main reason automations exist separately from profiles. The same base profile can be reused across several automations with different framing.
+
+Examples:
+
+- a `qa` profile can be used by both a nightly QA sweep and a state-entry QA check
+- a `pm` profile can be used by both a backlog review automation and a comment-triage automation
+
+## Prompt variables
+
+Automation instructions support the normal issue variables plus trigger-specific variables.
+
+### Issue variables
+
+- `{{ issue.identifier }}`
+- `{{ issue.title }}`
+- `{{ issue.description }}`
+- `{{ issue.state }}`
+- `{{ issue.labels }}`
+- `{{ issue.comments }}`
+
+### Trigger variables
+
+- `{{ trigger.type }}`
+- `{{ trigger.fired_at }}`
+- `{{ trigger.automation_id }}`
+- `{{ trigger.cron }}`
+- `{{ trigger.timezone }}`
+- `{{ trigger.trigger_state }}`
+- `{{ trigger.previous_state }}`
+- `{{ trigger.current_state }}`
+- `{{ trigger.input_context }}`
+- `{{ trigger.blocked_profile }}`
+- `{{ trigger.blocked_backend }}`
+- `{{ trigger.comment.body }}`
+- `{{ trigger.comment.author_name }}`
+- `{{ trigger.error_message }}`
+- `{{ trigger.retry_attempt }}`
+
+Not every variable is populated for every trigger. For example:
+
+- `trigger.input_context` is useful for `input_required`
+- `trigger.comment.*` is useful for `tracker_comment_added`
+- `trigger.previous_state` / `trigger.current_state` are useful for state transitions
+- `trigger.error_message` is useful for `run_failed`
+
+## Daemon actions and automations
+
+Automations do not define permissions themselves. Permissions still come from the selected **profile**.
+
+If you want an automation to do tracker or resume work, enable the required daemon actions on the profile, for example:
+
+- `comment`
+- `move_state`
+- `provide_input`
+- `create_issue`
+
+That keeps the security model simple:
+
+- the automation decides **when** to run
+- the profile decides **what the agent is allowed to do**
+
+## Examples
+
+### 1. Input responder
+
+```yaml
+automations:
+  - id: input-responder
+    enabled: true
+    trigger:
+      type: input_required
+    profile: input-responder
+    instructions: |
+      Answer only narrow, low-risk unblocker questions.
+      If the request is ambiguous, state the safest bounded assumption.
+      If the request needs real human approval, do not invent it.
+    filter:
+      input_context_regex: "(branch|continue|which file|test command)"
+      match_mode: all
+    policy:
+      auto_resume: true
+```
+
+### 2. QA validation
+
+```yaml
+automations:
+  - id: qa-ready
+    enabled: true
+    trigger:
+      type: issue_entered_state
+      state: "Ready for QA"
+    profile: qa
+    instructions: |
+      Run the QA routine for this issue.
+      Comment the results.
+      If any required check fails, move the issue to Todo.
+```
+
+### 3. PM backlog review
+
+```yaml
+automations:
+  - id: pm-backlog-review
+    enabled: true
+    trigger:
+      type: cron
+      cron: "0 9 * * 1-5"
+      timezone: "Asia/Jerusalem"
+    profile: pm
+    instructions: |
+      Review backlog issues for missing clarity and acceptance criteria.
+      Leave one concise comment summarising what is unclear.
+    filter:
+      states: ["Backlog"]
+      limit: 20
+```
+
+## UI notes
+
+The Settings page intentionally mixes strict selectors and flexible free-text entry:
+
+- **States** use suggestions from tracker configuration plus currently visible issues.
+- **Labels** use suggestions from currently visible issues only.
+- **Identifier regex** stays free-form because it is inherently custom.
+
+This is a pragmatic trade-off:
+
+- states are part of Itervox’s runtime config, so the UI can suggest them with high confidence
+- labels are tracker-specific and not globally enumerated today, so suggestions are best-effort only
+
+## Current limitations
+
+Automations are intentionally lightweight.
+
+Current limitations include:
+
+- no visual graph editor
+- no arbitrary branching/action graphs
+- no webhook-driven tracker event ingestion
+- `tracker_comment_added` is poll-derived
+- label suggestions are best-effort, not authoritative
+
+That is by design. Automations are the small, reliable middle layer between “no automation” and the future full workflow canvas.

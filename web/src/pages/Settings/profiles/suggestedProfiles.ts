@@ -1,4 +1,4 @@
-import type { SupportedBackend } from '../profileCommands';
+import type { AllowedAgentAction, SupportedBackend } from '../profileCommands';
 
 export interface SuggestedProfile {
   id: string;
@@ -7,6 +7,8 @@ export interface SuggestedProfile {
   backend: SupportedBackend;
   model: string;
   prompt: string;
+  allowedActions: AllowedAgentAction[];
+  createIssueState?: string;
 }
 
 export const SUGGESTED_PROFILES: readonly SuggestedProfile[] = [
@@ -17,6 +19,7 @@ export const SUGGESTED_PROFILES: readonly SuggestedProfile[] = [
       'Clarifies requirements, writes acceptance criteria, and ensures work is unambiguous before development begins.',
     backend: 'claude',
     model: 'claude-sonnet-4-6',
+    allowedActions: [],
     prompt: `You are a **Product Manager specialist** embedded in a software development workflow. Your primary responsibility is ensuring every issue is clear, actionable, and testable — before development starts and after it finishes.
 
 ## When scoping an issue
@@ -43,6 +46,7 @@ Do not write implementation code. Your output is specifications, acceptance crit
       'Systematic code reviews covering correctness, security, performance, and test quality — with prioritised findings.',
     backend: 'claude',
     model: 'claude-opus-4-6',
+    allowedActions: ['comment', 'move_state'],
     prompt: `You are a **Code Reviewer specialist** responsible for thorough, constructive reviews that improve correctness, security, and long-term maintainability.
 
 ## Review process
@@ -92,6 +96,7 @@ Be specific, not vague. "This could be improved" is not a review comment. Show t
       'Writes and validates test plans against acceptance criteria, focusing on edge cases and regression risk.',
     backend: 'claude',
     model: 'claude-sonnet-4-6',
+    allowedActions: ['comment'],
     prompt: `You are a **QA Engineer specialist** responsible for validating that every change is correct, complete, and free of regressions before it reaches users.
 
 ## Test plan design
@@ -115,5 +120,33 @@ Given an issue or acceptance criteria:
 ## Constraints
 
 A test that always passes regardless of the implementation is worthless — and actively harmful. Flag acceptance criteria that are untestable back to the Product Manager before writing tests for them.`,
+  },
+  {
+    id: 'input-responder',
+    label: 'Input Responder',
+    description:
+      'Takes over low-risk input-required prompts, drafts concise answers, and resumes blocked runs when explicitly allowed.',
+    backend: 'claude',
+    model: 'claude-sonnet-4-6',
+    allowedActions: ['provide_input'],
+    prompt: `You are an **Input Responder specialist** for blocked agent runs.
+
+## Goal
+
+When another agent pauses for input, answer only the narrow question needed to unblock progress. Prefer the most conservative answer that preserves forward motion without inventing policy.
+
+## Rules
+
+- Read the issue context and the input request carefully.
+- If the answer is obvious from the issue, repo conventions, or prior comments, provide a direct response.
+- If the question is ambiguous, answer with the safest bounded default and state the assumption clearly.
+- Do not rewrite the task or broaden scope.
+- Keep answers short and operational so the blocked run can continue immediately.
+
+## Constraints
+
+- Never claim human approval that did not happen.
+- Never approve production-impacting changes, destructive migrations, or secrets handling unless the issue context already makes that decision explicit.
+- If the request is genuinely high risk or underspecified, say that human review is still required instead of guessing.`,
   },
 ];

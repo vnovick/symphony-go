@@ -712,6 +712,64 @@ func TestCreateCommentFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "linear_create_comment")
 }
 
+func TestCreateIssue(t *testing.T) {
+	contextResp := map[string]interface{}{
+		"data": map[string]interface{}{
+			"issue": map[string]interface{}{
+				"team": map[string]interface{}{
+					"id": "team-1",
+					"states": map[string]interface{}{
+						"nodes": []interface{}{
+							map[string]interface{}{"id": "state-1", "name": "Todo"},
+							map[string]interface{}{"id": "state-2", "name": "Done"},
+						},
+					},
+				},
+				"project": map[string]interface{}{"id": "project-1"},
+			},
+		},
+	}
+	createResp := map[string]interface{}{
+		"data": map[string]interface{}{
+			"issueCreate": map[string]interface{}{
+				"success": true,
+				"issue": map[string]interface{}{
+					"id":               "issue-2",
+					"identifier":       "ENG-2",
+					"title":            "Follow-up",
+					"description":      "Add regression coverage",
+					"priority":         float64(0),
+					"state":            map[string]interface{}{"name": "Todo"},
+					"labels":           map[string]interface{}{"nodes": []interface{}{}},
+					"inverseRelations": map[string]interface{}{"nodes": []interface{}{}},
+					"url":              "https://linear.app/issue/ENG-2",
+					"createdAt":        "2026-04-15T10:00:00Z",
+					"updatedAt":        "2026-04-15T10:00:00Z",
+				},
+			},
+		},
+	}
+	srv := queryDispatcher(t, map[string]interface{}{
+		"ItervoxResolveCreateIssueContext": contextResp,
+		"ItervoxCreateIssue":               createResp,
+	})
+	defer srv.Close()
+
+	client := linear.NewClient(linear.ClientConfig{
+		APIKey:   "test-key",
+		Endpoint: srv.URL,
+	})
+
+	issue, err := client.CreateIssue(context.Background(), "issue-1", "Follow-up", "Add regression coverage", "Todo")
+	require.NoError(t, err)
+	require.NotNil(t, issue)
+	assert.Equal(t, "ENG-2", issue.Identifier)
+	assert.Equal(t, "Follow-up", issue.Title)
+	assert.Equal(t, "Todo", issue.State)
+	require.NotNil(t, issue.Description)
+	assert.Equal(t, "Add regression coverage", *issue.Description)
+}
+
 // ---------------------------------------------------------------------------
 // SetIssueBranch
 // ---------------------------------------------------------------------------

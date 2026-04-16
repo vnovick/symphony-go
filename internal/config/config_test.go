@@ -175,6 +175,56 @@ func TestAgentProfileBackendField(t *testing.T) {
 	assert.Equal(t, "", cfg.Agent.Profiles["inferred"].Backend)
 }
 
+func TestAgentProfileAllowedActionsField(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    responder:
+      command: claude --model claude-sonnet-4-6
+      allowed_actions:
+        - comment
+        - provide_input
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Agent.Profiles)
+	assert.Equal(t, []string{"comment", "provide_input"}, cfg.Agent.Profiles["responder"].AllowedActions)
+}
+
+func TestAgentProfileCreateIssueStateField(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    triage:
+      command: claude --model claude-sonnet-4-6
+      allowed_actions:
+        - create_issue
+      create_issue_state: Todo
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Agent.Profiles)
+	assert.Equal(t, []string{"create_issue"}, cfg.Agent.Profiles["triage"].AllowedActions)
+	assert.Equal(t, "Todo", cfg.Agent.Profiles["triage"].CreateIssueState)
+}
+
+func TestAgentProfileEnabledField(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    active:
+      command: claude --model claude-sonnet-4-6
+    paused:
+      command: codex --model gpt-5.3-codex
+      enabled: false
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Agent.Profiles)
+	assert.True(t, config.ProfileEnabled(cfg.Agent.Profiles["active"]))
+	assert.False(t, config.ProfileEnabled(cfg.Agent.Profiles["paused"]))
+}
+
 func TestAgentBackendField(t *testing.T) {
 	content := minimal(`agent:
   command: run-codex-wrapper
@@ -218,4 +268,104 @@ func TestWorkspaceCloneURLDefault(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", cfg.Workspace.CloneURL)
 	assert.Equal(t, "main", cfg.Workspace.BaseBranch)
+}
+
+func TestAutomationsParsed(t *testing.T) {
+	content := minimal(`automations:
+  - id: backlog-review
+    enabled: true
+    profile: reviewer
+    instructions: "Review backlog issues and comment with missing details."
+    trigger:
+      type: cron
+      cron: "0 9 * * 1"
+      timezone: "Asia/Jerusalem"
+    filter:
+      match_mode: any
+      states: ["Backlog","Todo"]
+      labels_any: ["bug"]
+      identifier_regex: "^ENG-"
+      limit: 2
+  - id: moved-to-backlog
+    enabled: true
+    profile: pm
+    instructions: "Review why the issue returned to backlog."
+    trigger:
+      type: issue_moved_to_backlog
+  - id: qa-state-entry
+    enabled: true
+    profile: qa
+    instructions: "Run QA when the issue enters Ready for QA."
+    trigger:
+      type: issue_entered_state
+      state: "Ready for QA"
+  - id: comment-triage
+    enabled: true
+    profile: reviewer
+    instructions: "React to new tracker comments."
+    trigger:
+      type: tracker_comment_added
+  - id: failed-run
+    enabled: true
+    profile: reviewer
+    instructions: "Summarise the failed run and suggest next action."
+    trigger:
+      type: run_failed
+  - id: input-responder
+    enabled: true
+    profile: input-responder
+    instructions: "Answer low-risk blocked-run questions."
+    trigger:
+      type: input_required
+    filter:
+      input_context_regex: "continue|branch"
+    policy:
+      auto_resume: true
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.Automations, 6)
+	assert.Equal(t, "backlog-review", cfg.Automations[0].ID)
+	assert.Equal(t, "cron", cfg.Automations[0].Trigger.Type)
+	assert.Equal(t, "0 9 * * 1", cfg.Automations[0].Trigger.Cron)
+	assert.Equal(t, "Asia/Jerusalem", cfg.Automations[0].Trigger.Timezone)
+	assert.Equal(t, "reviewer", cfg.Automations[0].Profile)
+	assert.Equal(t, "any", cfg.Automations[0].Filter.MatchMode)
+	assert.Equal(t, []string{"Backlog", "Todo"}, cfg.Automations[0].Filter.States)
+	assert.Equal(t, []string{"bug"}, cfg.Automations[0].Filter.LabelsAny)
+	assert.Equal(t, "^ENG-", cfg.Automations[0].Filter.IdentifierRegex)
+	assert.Equal(t, 2, cfg.Automations[0].Filter.Limit)
+	assert.Equal(t, "issue_moved_to_backlog", cfg.Automations[1].Trigger.Type)
+	assert.Equal(t, "issue_entered_state", cfg.Automations[2].Trigger.Type)
+	assert.Equal(t, "Ready for QA", cfg.Automations[2].Trigger.State)
+	assert.Equal(t, "tracker_comment_added", cfg.Automations[3].Trigger.Type)
+	assert.Equal(t, "run_failed", cfg.Automations[4].Trigger.Type)
+	assert.Equal(t, "input_required", cfg.Automations[5].Trigger.Type)
+	assert.Equal(t, "continue|branch", cfg.Automations[5].Filter.InputContextRegex)
+	assert.True(t, cfg.Automations[5].Policy.AutoResume)
+}
+
+func TestLegacySchedulesParsedAsCronAutomations(t *testing.T) {
+	content := minimal(`schedules:
+  - id: weekday-review
+    enabled: true
+    cron: "0 9 * * 1-5"
+    timezone: "UTC"
+    profile: reviewer
+    filter:
+      states: ["Backlog"]
+      labels_any: ["triage"]
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.Automations, 1)
+	assert.Equal(t, "weekday-review", cfg.Automations[0].ID)
+	assert.Equal(t, "cron", cfg.Automations[0].Trigger.Type)
+	assert.Equal(t, "0 9 * * 1-5", cfg.Automations[0].Trigger.Cron)
+	assert.Equal(t, "UTC", cfg.Automations[0].Trigger.Timezone)
+	assert.Equal(t, "reviewer", cfg.Automations[0].Profile)
+	assert.Equal(t, []string{"Backlog"}, cfg.Automations[0].Filter.States)
+	assert.Equal(t, []string{"triage"}, cfg.Automations[0].Filter.LabelsAny)
 }

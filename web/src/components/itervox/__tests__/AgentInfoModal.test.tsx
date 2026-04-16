@@ -163,6 +163,32 @@ describe('AgentInfoModal', () => {
       expect(savedDef).toHaveProperty('backend');
     });
 
+    it('does not preserve createIssueState when create_issue is not allowed', async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      render(
+        <AgentInfoModal
+          profileName="reviewer"
+          profileDef={{
+            command: 'claude',
+            backend: 'claude',
+            prompt: 'Review code carefully.',
+            createIssueState: 'Todo',
+          }}
+          onClose={vi.fn()}
+          onSave={onSave}
+        />,
+      );
+
+      fireEvent.click(screen.getByText('Edit Profile'));
+      fireEvent.click(screen.getByText('Save'));
+
+      await waitFor(() => {
+        expect(onSave).toHaveBeenCalledTimes(1);
+      });
+
+      expect(onSave.mock.calls[0][1].createIssueState).toBeUndefined();
+    });
+
     it('exits edit mode after successful save', async () => {
       const onSave = vi.fn().mockResolvedValue(undefined);
       render(

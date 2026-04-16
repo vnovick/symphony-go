@@ -18,6 +18,7 @@ type MemoryTracker struct {
 	terminalStates []string
 	injectedError  error
 	nextCommentID  int
+	nextIssueID    int
 }
 
 // NewMemoryTracker constructs a MemoryTracker with the given issues and state config.
@@ -28,6 +29,7 @@ func NewMemoryTracker(issues []domain.Issue, activeStates, terminalStates []stri
 		issues:         cp,
 		activeStates:   activeStates,
 		terminalStates: terminalStates,
+		nextIssueID:    maxIssueSuffix(cp),
 	}
 }
 
@@ -113,9 +115,10 @@ func (m *MemoryTracker) FetchIssueStatesByIDs(ctx context.Context, issueIDs []st
 	return result, nil
 }
 
-// CreateComment fabricates a tracker comment for tests that care about exact
-// comment IDs and author identity. It does not mutate stored issues.
-func (m *MemoryTracker) CreateComment(_ context.Context, _, body string) (*domain.Comment, error) {
+// CreateComment fabricates a tracker comment for tests and persists it on the
+// in-memory issue so local/demo comment-driven flows round-trip through
+// FetchIssueDetail.
+func (m *MemoryTracker) CreateComment(_ context.Context, issueID, body string) (*domain.Comment, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nextCommentID++
@@ -125,7 +128,38 @@ func (m *MemoryTracker) CreateComment(_ context.Context, _, body string) (*domai
 		AuthorID:   "memory-tracker",
 		AuthorName: "Itervox",
 	}
+	for i := range m.issues {
+		if m.issues[i].ID != issueID {
+			continue
+		}
+		m.issues[i].Comments = append(m.issues[i].Comments, *comment)
+		break
+	}
 	return comment, nil
+}
+
+// CreateIssue creates a new in-memory issue for tests and local/demo flows.
+func (m *MemoryTracker) CreateIssue(_ context.Context, _ string, title, body, stateName string) (*domain.Issue, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextIssueID++
+	id := "id-" + strconv.Itoa(m.nextIssueID)
+	identifier := "ENG-" + strconv.Itoa(m.nextIssueID)
+	var description *string
+	if strings.TrimSpace(body) != "" {
+		desc := body
+		description = &desc
+	}
+	issue := domain.Issue{
+		ID:          id,
+		Identifier:  identifier,
+		Title:       title,
+		State:       stateName,
+		Description: description,
+	}
+	m.issues = append(m.issues, issue)
+	cp := issue
+	return &cp, nil
 }
 
 // UpdateIssueState updates the in-memory state for testing.
@@ -182,4 +216,24 @@ func (m *MemoryTracker) isActive(state string) bool {
 		}
 	}
 	return false
+}
+
+func maxIssueSuffix(issues []domain.Issue) int {
+	maxSuffix := 0
+	for _, issue := range issues {
+		maxSuffix = max(maxSuffix, issueNumericSuffix(issue.ID, "id-"))
+		maxSuffix = max(maxSuffix, issueNumericSuffix(issue.Identifier, "ENG-"))
+	}
+	return maxSuffix
+}
+
+func issueNumericSuffix(value, prefix string) int {
+	if !strings.HasPrefix(value, prefix) {
+		return 0
+	}
+	suffix, err := strconv.Atoi(strings.TrimPrefix(value, prefix))
+	if err != nil || suffix < 0 {
+		return 0
+	}
+	return suffix
 }

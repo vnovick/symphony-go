@@ -63,6 +63,26 @@ query ItervoxIssueDetail($id: String!) {
   }
 }`
 
+// QueryCreateIssueContext fetches the source issue's team and project so a
+// follow-up issue can be created in the same workspace context.
+const QueryCreateIssueContext = `
+query ItervoxResolveCreateIssueContext($id: String!) {
+  issue(id: $id) {
+    team {
+      id
+      states {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+    project {
+      id
+    }
+  }
+}`
+
 // QueryCandidateIssuesAll fetches paginated issues by state only — no project filter.
 // Used when the runtime project filter is set to "all issues".
 const QueryCandidateIssuesAll = `

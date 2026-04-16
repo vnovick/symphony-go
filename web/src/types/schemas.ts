@@ -78,15 +78,62 @@ export const SSHHostInfoSchema = z.object({
   description: z.string().optional(),
 });
 
+export const AllowedAgentActionSchema = z.enum([
+  'comment',
+  'create_issue',
+  'move_state',
+  'provide_input',
+]);
+
 export const ProfileDefSchema = z.object({
   command: z.string(),
   prompt: z.string().optional(),
   backend: z.string().optional(),
+  enabled: z.boolean().optional(),
+  allowedActions: z.array(AllowedAgentActionSchema).optional(),
+  createIssueState: z.string().optional(),
 });
 
 export const ModelOptionSchema = z.object({
   id: z.string(),
   label: z.string(),
+});
+
+export const AutomationTriggerSchema = z.object({
+  type: z.enum([
+    'cron',
+    'input_required',
+    'tracker_comment_added',
+    'issue_entered_state',
+    'issue_moved_to_backlog',
+    'run_failed',
+  ]),
+  cron: z.string().optional(),
+  timezone: z.string().optional(),
+  state: z.string().optional(),
+});
+
+export const AutomationFilterSchema = z.object({
+  matchMode: z.enum(['all', 'any']).optional(),
+  states: z.array(z.string()).optional(),
+  labelsAny: z.array(z.string()).optional(),
+  identifierRegex: z.string().optional(),
+  limit: z.number().optional(),
+  inputContextRegex: z.string().optional(),
+});
+
+export const AutomationPolicySchema = z.object({
+  autoResume: z.boolean().optional(),
+});
+
+export const AutomationDefSchema = z.object({
+  id: z.string(),
+  enabled: z.boolean(),
+  profile: z.string(),
+  instructions: z.string().optional(),
+  trigger: AutomationTriggerSchema,
+  filter: AutomationFilterSchema.optional(),
+  policy: AutomationPolicySchema.optional(),
 });
 
 export const StateSnapshotSchema = z.object({
@@ -118,6 +165,7 @@ export const StateSnapshotSchema = z.object({
   dispatchStrategy: z.string().optional(),
   defaultBackend: z.string().optional(),
   inlineInput: z.boolean().optional(),
+  automations: z.array(AutomationDefSchema).optional(),
   inputRequired: z
     .array(
       z.object({
@@ -192,6 +240,7 @@ export type RetryRow = z.infer<typeof RetryRowSchema>;
 export type Counts = z.infer<typeof CountsSchema>;
 export type RateLimitInfo = z.infer<typeof RateLimitInfoSchema>;
 export type ProfileDef = z.infer<typeof ProfileDefSchema>;
+export type AutomationDef = z.infer<typeof AutomationDefSchema>;
 export type StateSnapshot = z.infer<typeof StateSnapshotSchema>;
 export type LogEventType = z.infer<typeof LogEventTypeSchema>;
 export type IssueLogEntry = z.infer<typeof IssueLogEntrySchema>;

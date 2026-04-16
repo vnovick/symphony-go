@@ -591,3 +591,31 @@ func TestGHMissingPageLinkError(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Empty(t, url)
 }
+
+func TestGHCreateIssue(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotBody map[string]any
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(ghIssue(7, "Follow-up", "open", []string{"todo"}))
+	}))
+	defer ts.Close()
+
+	client := ghclient.NewClient(defaultConfig(ts.URL))
+	issue, err := client.CreateIssue(context.Background(), "123", "Follow-up", "Add regression coverage", "todo")
+	require.NoError(t, err)
+	require.NotNil(t, issue)
+	assert.Equal(t, http.MethodPost, gotMethod)
+	assert.Equal(t, "/repos/owner/repo/issues", gotPath)
+	assert.Equal(t, "Follow-up", gotBody["title"])
+	assert.Equal(t, "Add regression coverage", gotBody["body"])
+	assert.Equal(t, []any{"todo"}, gotBody["labels"])
+	assert.Equal(t, "#7", issue.Identifier)
+	assert.Equal(t, "todo", issue.State)
+}

@@ -23,6 +23,9 @@ import (
 
 func TestReviewerCfgRoundtrip(t *testing.T) {
 	cfg := baseConfig()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude"},
+	}
 	orch := orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), agenttest.NewFakeRunner(nil), nil)
 
 	require.NoError(t, orch.SetReviewerCfg("reviewer", true))
@@ -39,6 +42,9 @@ func TestReviewerCfgRoundtrip(t *testing.T) {
 func TestReviewerCfgRejectsAutoClearConflict(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Workspace.AutoClearWorkspace = true
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude"},
+	}
 	orch := orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), agenttest.NewFakeRunner(nil), nil)
 
 	err := orch.SetReviewerCfg("reviewer", true)
@@ -61,6 +67,29 @@ func TestReviewerCfgRejectsAutoReviewWithoutProfile(t *testing.T) {
 	profile, autoReview := orch.ReviewerCfg()
 	assert.Equal(t, "", profile)
 	assert.False(t, autoReview)
+}
+
+func TestReviewerCfgRejectsUnknownProfile(t *testing.T) {
+	cfg := baseConfig()
+	orch := orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), agenttest.NewFakeRunner(nil), nil)
+
+	err := orch.SetReviewerCfg("reviewer", false)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrReviewerProfileNotFound)
+}
+
+func TestReviewerCfgRejectsDisabledProfile(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude", Enabled: func() *bool { disabled := false; return &disabled }()},
+	}
+	orch := orchestrator.New(cfg, tracker.NewMemoryTracker(nil, nil, nil), agenttest.NewFakeRunner(nil), nil)
+
+	err := orch.SetReviewerCfg("reviewer", false)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrReviewerProfileDisabled)
 }
 
 func TestReviewerConfigParsedFromYAML(t *testing.T) {
@@ -220,6 +249,63 @@ func TestAutoReview_DispatchesAfterSuccess(t *testing.T) {
 
 	logs := logBuf.String()
 	assert.Contains(t, logs, "orchestrator: dispatching reviewer", "should log reviewer dispatch")
+}
+
+func TestAutoReview_DoesNotTriggerForAutomationRuns(t *testing.T) {
+	logBuf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prev)
+
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 50
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Agent.AutoReview = true
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude", Prompt: "Review this code."},
+		"qa":       {Command: "claude", Prompt: "Run QA checks."},
+	}
+
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	mt := &noCandidateTracker{base: tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)}
+	done := make(chan struct{}, 2)
+	countingRunner := &countingTrackingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: done,
+	}
+
+	orch := orchestrator.New(cfg, mt, countingRunner, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.True(t, orch.DispatchAutomation(issue, orchestrator.AutomationDispatch{
+		AutomationID: "qa-ready",
+		ProfileName:  "qa",
+		Instructions: "Run QA and report.",
+		Trigger: orchestrator.AutomationTriggerContext{
+			Type:         config.AutomationTriggerCron,
+			AutomationID: "qa-ready",
+			Cron:         "0 */2 * * *",
+			FiredAt:      time.Now(),
+		},
+	}))
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected automation worker to run")
+	}
+
+	time.Sleep(250 * time.Millisecond)
+
+	assert.Equal(t, 1, countingRunner.CallCount(), "automation success should not dispatch reviewer")
+	assert.NotContains(t, logBuf.String(), "orchestrator: dispatching reviewer")
 }
 
 func TestAutoReview_UsesSSHHostSelection(t *testing.T) {
@@ -468,6 +554,46 @@ func (r *workerHostTrackingRunner) snapshot() []string {
 // Verify syncBuffer exists in the test package (defined in token_log_test.go).
 // If this doesn't compile, the syncBuffer type from token_log_test.go is needed.
 var _ = (*syncBuffer)(nil)
+
+type noCandidateTracker struct {
+	base *tracker.MemoryTracker
+}
+
+func (t *noCandidateTracker) FetchCandidateIssues(context.Context) ([]domain.Issue, error) {
+	return nil, nil
+}
+
+func (t *noCandidateTracker) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]domain.Issue, error) {
+	return t.base.FetchIssuesByStates(ctx, stateNames)
+}
+
+func (t *noCandidateTracker) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]domain.Issue, error) {
+	return t.base.FetchIssueStatesByIDs(ctx, issueIDs)
+}
+
+func (t *noCandidateTracker) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
+	return t.base.CreateComment(ctx, issueID, body)
+}
+
+func (t *noCandidateTracker) CreateIssue(ctx context.Context, sourceIssueID, title, body, stateName string) (*domain.Issue, error) {
+	return t.base.CreateIssue(ctx, sourceIssueID, title, body, stateName)
+}
+
+func (t *noCandidateTracker) UpdateIssueState(ctx context.Context, issueID, stateName string) error {
+	return t.base.UpdateIssueState(ctx, issueID, stateName)
+}
+
+func (t *noCandidateTracker) FetchIssueDetail(ctx context.Context, issueID string) (*domain.Issue, error) {
+	return t.base.FetchIssueDetail(ctx, issueID)
+}
+
+func (t *noCandidateTracker) FetchIssueByIdentifier(ctx context.Context, identifier string) (*domain.Issue, error) {
+	return t.base.FetchIssueByIdentifier(ctx, identifier)
+}
+
+func (t *noCandidateTracker) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
+	return t.base.SetIssueBranch(ctx, issueID, branchName)
+}
 
 // Needed for the strings.Split usage in log assertions.
 var _ = strings.Split

@@ -1,208 +1,135 @@
 import { useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
 import type { ProfileDef } from '../../../types/schemas';
 import {
-  applyBackendSelection,
-  applyModelSelection,
+  AGENT_ACTION_OPTIONS,
   commandToBackend,
   commandToModel,
-  draftFromProfileDef,
-  inferBackendFromCommand,
   modelLabel,
-  normalizeCommandForSave,
+  normalizeAllowedActions,
 } from '../profileCommands';
-import { ProfileEditorFields, backendLabel, backendBadgeClass } from './ProfileEditorFields';
-
-const editProfileSchema = z.object({
-  backend: z.enum(['claude', 'codex']),
-  model: z.string(),
-  command: z.string().min(1, 'Command is required.'),
-  prompt: z.string(),
-});
-
-type EditProfileValues = z.infer<typeof editProfileSchema>;
+import { backendBadgeClass, backendLabel } from './ProfileEditorFields';
 
 interface ProfileRowProps {
   name: string;
   def: ProfileDef;
-  onEdit: (name: string, def: ProfileDef) => Promise<void>;
+  onEdit: () => void;
+  onToggleEnabled: (name: string, def: ProfileDef, enabled: boolean) => Promise<void>;
   onDelete: (name: string) => Promise<void>;
-  availableModels?: Record<string, { id: string; label: string }[]>;
 }
 
-export function ProfileRow({ name, def, onEdit, onDelete, availableModels }: ProfileRowProps) {
-  const initial = draftFromProfileDef(def);
-  const [editing, setEditing] = useState(false);
+export function ProfileRow({ name, def, onEdit, onToggleEnabled, onDelete }: ProfileRowProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  const {
-    handleSubmit,
-    watch,
-    setValue,
-    reset,
-    formState: { isSubmitting, errors },
-  } = useForm<EditProfileValues>({
-    resolver: zodResolver(editProfileSchema),
-    defaultValues: {
-      backend: initial.backend,
-      model: initial.model,
-      command: initial.command,
-      prompt: initial.prompt,
-    },
-  });
-
-  const [backend, model, command, prompt] = watch(['backend', 'model', 'command', 'prompt']);
-
-  const handleCancel = () => {
-    reset(draftFromProfileDef(def));
-    setEditing(false);
-  };
-
-  const onSubmit = handleSubmit(async (values) => {
-    await onEdit(name, {
-      command: normalizeCommandForSave(values.command, values.backend),
-      backend: values.backend,
-      prompt: values.prompt.trim() || undefined,
-    });
-    setEditing(false);
-  });
-
-  if (editing) {
-    return (
-      <tr className="border-theme-line bg-theme-bg-soft border-b">
-        <td className="text-theme-text px-4 py-3 align-top font-mono text-sm">{name}</td>
-        <td className="space-y-2 px-4 py-3">
-          <ProfileEditorFields
-            backend={backend}
-            model={model}
-            command={command}
-            prompt={prompt}
-            onBackendChange={(value) => {
-              const next = applyBackendSelection(command, backend, value);
-              setValue('backend', value, { shouldValidate: true });
-              setValue('model', next.model);
-              setValue('command', next.command, { shouldValidate: true });
-            }}
-            onModelChange={(value) => {
-              setValue('model', value);
-              setValue('command', applyModelSelection(command, backend, value), {
-                shouldValidate: true,
-              });
-            }}
-            onCommandChange={(value) => {
-              setValue('command', value, { shouldValidate: true });
-              setValue('model', commandToModel(value));
-              const inferred = inferBackendFromCommand(value);
-              if (inferred) setValue('backend', inferred);
-            }}
-            onPromptChange={(value) => {
-              setValue('prompt', value);
-            }}
-            dynamicModels={availableModels}
-          />
-          {errors.command && (
-            <p role="alert" className="text-theme-danger text-xs">
-              {errors.command.message}
-            </p>
-          )}
-        </td>
-        <td className="px-4 py-3 text-right align-top whitespace-nowrap">
-          <button
-            onClick={() => {
-              void onSubmit();
-            }}
-            disabled={isSubmitting}
-            className="bg-theme-accent mr-2 rounded-[var(--radius-sm)] px-3 py-1 text-sm text-white transition-colors disabled:opacity-50"
-          >
-            {isSubmitting ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            onClick={handleCancel}
-            className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-3 py-1 text-sm transition-colors hover:opacity-80"
-          >
-            Cancel
-          </button>
-        </td>
-      </tr>
-    );
-  }
+  const [pendingAction, setPendingAction] = useState<'toggle' | 'delete' | null>(null);
 
   const inferredBackend = commandToBackend(def.command, def.backend);
   const inferredModel = commandToModel(def.command);
+  const actionLabels = AGENT_ACTION_OPTIONS.filter((option) =>
+    normalizeAllowedActions(def.allowedActions).includes(option.id),
+  ).map((option) => option.label);
+  const isEnabled = def.enabled ?? true;
 
   return (
-    <tr className="border-theme-line border-b">
-      <td className="text-theme-text px-4 py-3 font-mono text-sm">{name}</td>
-      <td className="px-4 py-3">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
+    <article className="border-theme-line bg-theme-bg-soft flex min-h-[176px] w-full flex-col gap-3 rounded-[var(--radius-md)] border p-4">
+      <div className="flex w-full items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-theme-text text-sm font-semibold">{name}</p>
             <span
-              className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium ${backendBadgeClass(inferredBackend)}`}
+              className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${backendBadgeClass(inferredBackend)}`}
             >
               {backendLabel(inferredBackend)}
             </span>
             {inferredModel && (
-              <span className="text-theme-text-secondary font-mono text-xs">
+              <span className="bg-theme-panel text-theme-text-secondary rounded-full px-2 py-0.5 font-mono text-[10px]">
                 {modelLabel(inferredBackend, inferredModel)}
               </span>
             )}
           </div>
-          {def.prompt && (
-            <p className="max-w-[400px] truncate text-xs" title={def.prompt}>
-              {def.prompt.slice(0, 120)}
-            </p>
-          )}
+          <p className="text-theme-text-secondary mt-2 text-[11px] leading-relaxed">
+            {def.prompt?.trim()
+              ? `${def.prompt.slice(0, 180)}${def.prompt.length > 180 ? '…' : ''}`
+              : 'No profile prompt configured yet.'}
+          </p>
         </div>
-      </td>
-      <td className="px-4 py-3 text-right whitespace-nowrap">
+        <span
+          className={`rounded-[var(--radius-sm)] px-2.5 py-1 text-[11px] font-medium whitespace-nowrap ${
+            isEnabled
+              ? 'bg-theme-success-soft text-theme-success'
+              : 'bg-theme-panel text-theme-text-secondary'
+          }`}
+        >
+          {isEnabled ? 'Active' : 'Inactive'}
+        </span>
+      </div>
+
+      {actionLabels.length > 0 && (
+        <div className="mt-auto flex flex-wrap gap-1">
+          {actionLabels.map((label) => (
+            <span
+              key={label}
+              className="bg-theme-panel text-theme-text-secondary rounded-full px-2 py-0.5 text-[10px]"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
+        <button
+          onClick={onEdit}
+          className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80"
+        >
+          Edit
+        </button>
+        <button
+          onClick={async () => {
+            setPendingAction('toggle');
+            await onToggleEnabled(name, def, !isEnabled);
+            setPendingAction(null);
+          }}
+          disabled={pendingAction !== null}
+          className="bg-theme-accent rounded-[var(--radius-sm)] px-3 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-50"
+        >
+          {pendingAction === 'toggle' ? 'Saving…' : isEnabled ? 'Deactivate' : 'Activate'}
+        </button>
         {confirmDelete ? (
           <>
-            <span className="text-theme-muted mr-2 text-xs">Delete?</span>
+            <span className="text-theme-muted text-xs">Delete?</span>
             <button
               onClick={async () => {
-                setDeleting(true);
+                setPendingAction('delete');
                 await onDelete(name);
-                setDeleting(false);
+                setPendingAction(null);
                 setConfirmDelete(false);
               }}
-              disabled={deleting}
-              className="bg-theme-danger mr-1 rounded-[var(--radius-sm)] px-2 py-1 text-xs font-medium text-white transition-colors disabled:opacity-50"
+              disabled={pendingAction !== null}
+              className="bg-theme-danger rounded-[var(--radius-sm)] px-2.5 py-1.5 text-xs font-medium text-white transition-colors disabled:opacity-50"
             >
-              {deleting ? '…' : 'Yes'}
+              {pendingAction === 'delete' ? '…' : 'Yes'}
             </button>
             <button
               onClick={() => {
                 setConfirmDelete(false);
               }}
-              className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80"
+              disabled={pendingAction !== null}
+              className="border-theme-line text-theme-text-secondary rounded-[var(--radius-sm)] border px-2.5 py-1.5 text-xs transition-colors hover:opacity-80 disabled:opacity-50"
             >
               No
             </button>
           </>
         ) : (
-          <>
-            <button
-              onClick={() => {
-                setEditing(true);
-              }}
-              className="border-theme-line text-theme-text-secondary mr-1 rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80"
-            >
-              Edit
-            </button>
-            <button
-              onClick={() => {
-                setConfirmDelete(true);
-              }}
-              className="border-theme-danger text-theme-danger rounded-[var(--radius-sm)] border px-2 py-1 text-xs transition-colors hover:opacity-80"
-            >
-              Delete
-            </button>
-          </>
+          <button
+            onClick={() => {
+              setConfirmDelete(true);
+            }}
+            disabled={pendingAction !== null}
+            className="border-theme-danger text-theme-danger rounded-[var(--radius-sm)] border px-3 py-1.5 text-xs transition-colors hover:opacity-80 disabled:opacity-50"
+          >
+            Delete
+          </button>
         )}
-      </td>
-    </tr>
+      </div>
+    </article>
   );
 }

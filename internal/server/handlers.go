@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 )
@@ -737,6 +738,118 @@ func (s *Server) handleDismissInput(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) validateAgentActionRequest(w http.ResponseWriter, r *http.Request, action string) (agentactions.Grant, bool) {
+	if s.actionTokens == nil {
+		writeError(w, http.StatusNotImplemented, "not_supported", "agent actions are not configured")
+		return agentactions.Grant{}, false
+	}
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+		return agentactions.Grant{}, false
+	}
+	token := strings.TrimPrefix(auth, prefix)
+	identifier := chi.URLParam(r, "identifier")
+	grant, reason, ok := s.actionTokens.Validate(token, identifier, action, time.Now())
+	if !ok {
+		status := http.StatusForbidden
+		if reason == "missing_token" || reason == "unknown_token" || reason == "expired_token" {
+			status = http.StatusUnauthorized
+		}
+		writeError(w, status, "agent_action_denied", reason)
+		return agentactions.Grant{}, false
+	}
+	return grant, true
+}
+
+func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.validateAgentActionRequest(w, r, config.AgentActionComment); !ok {
+		return
+	}
+	identifier := chi.URLParam(r, "identifier")
+	var body struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Body) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "body field required")
+		return
+	}
+	if err := s.client.CommentOnIssue(r.Context(), identifier, body.Body); err != nil {
+		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleAgentCreateIssue(w http.ResponseWriter, r *http.Request) {
+	grant, ok := s.validateAgentActionRequest(w, r, config.AgentActionCreateIssue)
+	if !ok {
+		return
+	}
+	identifier := chi.URLParam(r, "identifier")
+	var body struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Title) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "title field required")
+		return
+	}
+	if strings.TrimSpace(grant.CreateIssueState) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "create issue state is not configured for this profile")
+		return
+	}
+	issue, err := s.client.CreateIssue(r.Context(), identifier, body.Title, body.Body, grant.CreateIssueState)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create_issue_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "issue": issue})
+}
+
+func (s *Server) handleAgentMoveState(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.validateAgentActionRequest(w, r, config.AgentActionMoveState); !ok {
+		return
+	}
+	identifier := chi.URLParam(r, "identifier")
+	var body struct {
+		State string `json:"state"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.State) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "state field required")
+		return
+	}
+	if err := s.client.UpdateIssueState(r.Context(), identifier, body.State); err != nil {
+		writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
+		return
+	}
+	select {
+	case s.refreshChan <- struct{}{}:
+	default:
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleAgentProvideInput(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.validateAgentActionRequest(w, r, config.AgentActionProvideInput); !ok {
+		return
+	}
+	identifier := chi.URLParam(r, "identifier")
+	var body struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Message) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "message field required")
+		return
+	}
+	if ok := s.client.ProvideInput(identifier, body.Message); !ok {
+		writeError(w, http.StatusNotFound, "not_found", "issue not in input-required state")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (s *Server) handleSetInlineInput(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Enabled bool `json:"enabled"`
@@ -812,6 +925,10 @@ func (s *Server) handleSetReviewer(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_combination", err.Error())
 			return
 		}
+		if errors.Is(err, config.ErrReviewerProfileNotFound) || errors.Is(err, config.ErrReviewerProfileDisabled) {
+			writeError(w, http.StatusBadRequest, "invalid_profile", err.Error())
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -832,24 +949,53 @@ func (s *Server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	var body struct {
-		Command string `json:"command"`
-		Prompt  string `json:"prompt"`
-		Backend string `json:"backend"`
+		Command          string   `json:"command"`
+		Prompt           string   `json:"prompt"`
+		Backend          string   `json:"backend"`
+		Enabled          *bool    `json:"enabled"`
+		AllowedActions   []string `json:"allowedActions"`
+		CreateIssueState string   `json:"createIssueState"`
+		OriginalName     string   `json:"originalName"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Command == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "command field required")
 		return
 	}
-	def := ProfileDef{
-		Command: body.Command,
-		Prompt:  body.Prompt,
-		Backend: body.Backend,
+	if invalid := config.InvalidAgentActions(body.AllowedActions); len(invalid) > 0 {
+		writeError(w, http.StatusBadRequest, "invalid_allowed_actions", fmt.Sprintf("unknown allowedActions: %s", strings.Join(invalid, ", ")))
+		return
 	}
-	if err := s.client.UpsertProfile(name, def); err != nil {
+	if slicesContains(config.NormalizeAllowedActions(body.AllowedActions), config.AgentActionCreateIssue) &&
+		strings.TrimSpace(body.CreateIssueState) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "createIssueState is required when create_issue is enabled")
+		return
+	}
+	def := ProfileDef{
+		Command:          body.Command,
+		Prompt:           body.Prompt,
+		Backend:          body.Backend,
+		Enabled:          body.Enabled == nil || *body.Enabled,
+		AllowedActions:   config.NormalizeAllowedActions(body.AllowedActions),
+		CreateIssueState: strings.TrimSpace(body.CreateIssueState),
+	}
+	if err := s.client.UpsertProfile(name, def, strings.TrimSpace(body.OriginalName)); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			writeError(w, http.StatusConflict, "profile_exists", err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "upsert_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func slicesContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // handleDeleteProfile removes a named agent profile.
@@ -861,6 +1007,93 @@ func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSetAutomations(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Automations []AutomationDef `json:"automations"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	profileDefs := s.client.ProfileDefs()
+	profiles := make(map[string]config.AgentProfile, len(profileDefs))
+	for name, def := range profileDefs {
+		enabled := def.Enabled
+		profiles[name] = config.AgentProfile{
+			Command:          def.Command,
+			Prompt:           def.Prompt,
+			Backend:          def.Backend,
+			Enabled:          &enabled,
+			AllowedActions:   config.NormalizeAllowedActions(def.AllowedActions),
+			CreateIssueState: strings.TrimSpace(def.CreateIssueState),
+		}
+	}
+	if err := config.ValidateAutomations(automationConfigsFromDefs(body.Automations), profiles); err != nil {
+		writeAutomationValidationError(w, err)
+		return
+	}
+	if err := s.client.SetAutomations(body.Automations); err != nil {
+		writeError(w, http.StatusInternalServerError, "set_automations_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func automationConfigsFromDefs(defs []AutomationDef) []config.AutomationConfig {
+	if len(defs) == 0 {
+		return nil
+	}
+	automations := make([]config.AutomationConfig, 0, len(defs))
+	for _, def := range defs {
+		automations = append(automations, config.AutomationConfig{
+			ID:           def.ID,
+			Enabled:      def.Enabled,
+			Profile:      def.Profile,
+			Instructions: def.Instructions,
+			Trigger: config.AutomationTriggerConfig{
+				Type:     def.Trigger.Type,
+				Cron:     def.Trigger.Cron,
+				Timezone: def.Trigger.Timezone,
+				State:    def.Trigger.State,
+			},
+			Filter: config.AutomationFilterConfig{
+				MatchMode:         def.Filter.MatchMode,
+				States:            def.Filter.States,
+				LabelsAny:         def.Filter.LabelsAny,
+				IdentifierRegex:   def.Filter.IdentifierRegex,
+				Limit:             def.Filter.Limit,
+				InputContextRegex: def.Filter.InputContextRegex,
+			},
+			Policy: config.AutomationPolicyConfig{
+				AutoResume: def.Policy.AutoResume,
+			},
+		})
+	}
+	return automations
+}
+
+func writeAutomationValidationError(w http.ResponseWriter, err error) {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "duplicate automation id"):
+		writeError(w, http.StatusBadRequest, "duplicate_automation_id", msg)
+	case strings.Contains(msg, "invalid cron"):
+		writeError(w, http.StatusBadRequest, "invalid_cron", msg)
+	case strings.Contains(msg, "invalid timezone"):
+		writeError(w, http.StatusBadRequest, "invalid_timezone", msg)
+	case strings.Contains(msg, "invalid identifier_regex"), strings.Contains(msg, "invalid input_context_regex"):
+		writeError(w, http.StatusBadRequest, "invalid_regex", msg)
+	case strings.Contains(msg, "unsupported trigger type"):
+		writeError(w, http.StatusBadRequest, "invalid_trigger_type", msg)
+	case strings.Contains(msg, "filter.match_mode"):
+		writeError(w, http.StatusBadRequest, "invalid_match_mode", msg)
+	case strings.Contains(msg, "filter.limit"):
+		writeError(w, http.StatusBadRequest, "invalid_limit", msg)
+	default:
+		writeError(w, http.StatusBadRequest, "bad_request", msg)
+	}
 }
 
 // handleSetAgentMode sets the agent collaboration mode.

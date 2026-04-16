@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -25,6 +27,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/agent/agenttest"
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/app"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
@@ -274,6 +277,9 @@ func main() {
 		case "clear":
 			runClear(os.Args[2:])
 			return
+		case "action":
+			runAction(os.Args[2:])
+			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
 			return
@@ -444,23 +450,6 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		return fmt.Errorf("build tracker: %w", err)
 	}
 
-	cfg.Agent.Command = resolveAgentCommand(cfg.Agent.Command)
-	for name, profile := range cfg.Agent.Profiles {
-		if profile.Command != "" {
-			// Extract the binary name (first token) and resolve it, keeping flags.
-			parts := strings.SplitN(profile.Command, " ", 2)
-			resolved := resolveAgentCommand(parts[0])
-			if resolved != parts[0] {
-				if len(parts) > 1 {
-					profile.Command = resolved + " " + parts[1]
-				} else {
-					profile.Command = resolved
-				}
-				cfg.Agent.Profiles[name] = profile
-			}
-		}
-	}
-
 	var runner agent.Runner
 	if demoMode {
 		runner = agenttest.NewDemoRunner(5 * time.Second)
@@ -471,6 +460,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 				"codex": agent.NewCodexRunner(),
 			},
 		)
+		runner = commandResolverRunner{inner: runner}
 	}
 
 	// Validate CLI availability for the default agent command and all profiles.
@@ -528,6 +518,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	var srvDone <-chan error
 	var srvListener net.Listener
 	var actualAddr string
+	var actionTokenStore *agentactions.Store
 	if cfg.Server.Port != nil {
 		var err error
 		srvListener, actualAddr, err = listenWithFallback(cfg.Server.Host, *cfg.Server.Port, 10)
@@ -567,6 +558,11 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			slog.Info("dashboard URL (carries token — copy/paste once)",
 				"url", fmt.Sprintf("http://%s/?token=%s", actualAddr, tok))
 		}
+	}
+	if actualAddr != "" {
+		actionTokenStore = agentactions.NewStore()
+		orch.SetAgentActionBaseURL(agentActionBaseURL(actualAddr))
+		orch.SetAgentActionTokens(actionTokenStore)
 	}
 
 	// Redirect slog to file-only before the TUI takes the alt-screen.
@@ -610,13 +606,14 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			workflowPath: workflowPath,
 		}
 		srv := server.New(server.Config{
-			Snapshot:       snap,
-			RefreshChan:    refreshChan,
-			LogFile:        logFile,
-			Client:         adapter,
-			FetchIssue:     fetchIssue,
-			ProjectManager: pm,
-			APIToken:       os.Getenv("ITERVOX_API_TOKEN"),
+			Snapshot:         snap,
+			RefreshChan:      refreshChan,
+			LogFile:          logFile,
+			Client:           adapter,
+			FetchIssue:       fetchIssue,
+			ProjectManager:   pm,
+			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
+			ActionTokenStore: actionTokenStore,
 		})
 		adapter.notify = srv.Notify
 		if err := srv.Validate(); err != nil {
@@ -638,6 +635,8 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			}
 		}
 	}()
+
+	startAutomations(ctx, cfg, tr, orch)
 
 	orchDone := make(chan error, 1)
 	go func() { orchDone <- orch.Run(ctx) }()
@@ -798,8 +797,10 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		activeStates, terminalStates, completionState := orch.TrackerStatesCfg()
 
 		var availableProfiles []string
-		for name := range profiles {
-			availableProfiles = append(availableProfiles, name)
+		for name, profile := range profiles {
+			if config.ProfileEnabled(profile) {
+				availableProfiles = append(availableProfiles, name)
+			}
 		}
 		sort.Strings(availableProfiles)
 
@@ -807,7 +808,14 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 		if len(profiles) > 0 {
 			profileDefs = make(map[string]server.ProfileDef, len(profiles))
 			for n, p := range profiles {
-				profileDefs[n] = server.ProfileDef{Command: p.Command, Prompt: p.Prompt, Backend: p.Backend}
+				profileDefs[n] = server.ProfileDef{
+					Command:          p.Command,
+					Prompt:           p.Prompt,
+					Backend:          p.Backend,
+					Enabled:          config.ProfileEnabled(p),
+					AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
+					CreateIssueState: p.CreateIssueState,
+				}
 			}
 		}
 
@@ -869,6 +877,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			DispatchStrategy:    orch.DispatchStrategyCfg(),
 			DefaultBackend:      configuredBackend(cfg.Agent.Command, cfg.Agent.Backend),
 			InlineInput:         orch.InlineInputCfg(),
+			Automations:         automationDefsFromConfig(cfg.Automations),
 			AvailableModels:     convertModelsForSnapshot(cfg.Agent.AvailableModels),
 			ReviewerProfile:     func() string { p, _ := orch.ReviewerCfg(); return p }(),
 			AutoReview:          func() bool { _, a := orch.ReviewerCfg(); return a }(),
@@ -1050,9 +1059,78 @@ func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workf
 			Command: p.Command,
 			Prompt:  p.Prompt,
 			Backend: p.Backend,
+			Enabled: func() *bool {
+				enabled := config.ProfileEnabled(p)
+				if enabled {
+					return nil
+				}
+				return &enabled
+			}(),
+			AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
+			CreateIssueState: p.CreateIssueState,
 		}
 	}
 	return entries
+}
+
+func automationsToEntries(automations []server.AutomationDef) []workflow.AutomationEntry {
+	entries := make([]workflow.AutomationEntry, 0, len(automations))
+	for _, automation := range automations {
+		entries = append(entries, workflow.AutomationEntry{
+			ID:           automation.ID,
+			Enabled:      automation.Enabled,
+			Profile:      automation.Profile,
+			Instructions: automation.Instructions,
+			Trigger: workflow.AutomationTriggerEntry{
+				Type:     automation.Trigger.Type,
+				Cron:     automation.Trigger.Cron,
+				Timezone: automation.Trigger.Timezone,
+				State:    automation.Trigger.State,
+			},
+			Filter: workflow.AutomationFilterEntry{
+				MatchMode:         automation.Filter.MatchMode,
+				States:            automation.Filter.States,
+				LabelsAny:         automation.Filter.LabelsAny,
+				IdentifierRegex:   automation.Filter.IdentifierRegex,
+				Limit:             automation.Filter.Limit,
+				InputContextRegex: automation.Filter.InputContextRegex,
+			},
+			Policy: workflow.AutomationPolicyEntry{
+				AutoResume: automation.Policy.AutoResume,
+			},
+		})
+	}
+	return entries
+}
+
+func automationDefsFromConfig(automations []config.AutomationConfig) []server.AutomationDef {
+	defs := make([]server.AutomationDef, 0, len(automations))
+	for _, automation := range automations {
+		defs = append(defs, server.AutomationDef{
+			ID:           automation.ID,
+			Enabled:      automation.Enabled,
+			Profile:      automation.Profile,
+			Instructions: automation.Instructions,
+			Trigger: server.AutomationTriggerDef{
+				Type:     automation.Trigger.Type,
+				Cron:     automation.Trigger.Cron,
+				Timezone: automation.Trigger.Timezone,
+				State:    automation.Trigger.State,
+			},
+			Filter: server.AutomationFilterDef{
+				MatchMode:         automation.Filter.MatchMode,
+				States:            automation.Filter.States,
+				LabelsAny:         automation.Filter.LabelsAny,
+				IdentifierRegex:   automation.Filter.IdentifierRegex,
+				Limit:             automation.Filter.Limit,
+				InputContextRegex: automation.Filter.InputContextRegex,
+			},
+			Policy: server.AutomationPolicyDef{
+				AutoResume: automation.Policy.AutoResume,
+			},
+		})
+	}
+	return defs
 }
 
 // orchestratorAdapter implements server.OrchestratorClient using the live
@@ -1204,19 +1282,41 @@ func (a *orchestratorAdapter) DispatchReviewer(identifier string) error {
 	return a.orch.DispatchReviewer(identifier)
 }
 
-func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, stateName string) error {
-	active, terminal, completion := a.orch.TrackerStatesCfg()
-	allStates := deduplicateStates(a.cfg.Tracker.BacklogStates, active, terminal, completion)
-	issues, err := a.tr.FetchIssuesByStates(ctx, allStates)
+func (a *orchestratorAdapter) CommentOnIssue(ctx context.Context, identifier, body string) error {
+	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
 	if err != nil {
-		return fmt.Errorf("fetch issues: %w", err)
+		return fmt.Errorf("fetch issue: %w", err)
 	}
-	for _, iss := range issues {
-		if iss.Identifier == identifier {
-			return a.tr.UpdateIssueState(ctx, iss.ID, stateName)
-		}
+	if issue == nil {
+		return fmt.Errorf("issue %s not found", identifier)
 	}
-	return fmt.Errorf("issue %s not found", identifier)
+	_, err = a.tr.CreateComment(ctx, issue.ID, tracker.MarkManagedComment(body))
+	return err
+}
+
+func (a *orchestratorAdapter) CreateIssue(
+	ctx context.Context,
+	identifier, title, body, stateName string,
+) (*domain.Issue, error) {
+	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, fmt.Errorf("fetch issue: %w", err)
+	}
+	if issue == nil {
+		return nil, fmt.Errorf("issue %s not found", identifier)
+	}
+	return a.tr.CreateIssue(ctx, issue.ID, title, body, stateName)
+}
+
+func (a *orchestratorAdapter) UpdateIssueState(ctx context.Context, identifier, stateName string) error {
+	issue, err := a.tr.FetchIssueByIdentifier(ctx, identifier)
+	if err != nil {
+		return fmt.Errorf("fetch issue: %w", err)
+	}
+	if issue == nil {
+		return fmt.Errorf("issue %s not found", identifier)
+	}
+	return a.tr.UpdateIssueState(ctx, issue.ID, stateName)
 }
 
 // deduplicateStates concatenates backlog, active, terminal states and the
@@ -1264,7 +1364,14 @@ func (a *orchestratorAdapter) ProfileDefs() map[string]server.ProfileDef {
 	profiles := a.orch.ProfilesCfg()
 	defs := make(map[string]server.ProfileDef, len(profiles))
 	for name, p := range profiles {
-		defs[name] = server.ProfileDef{Command: p.Command, Prompt: p.Prompt, Backend: p.Backend}
+		defs[name] = server.ProfileDef{
+			Command:          p.Command,
+			Prompt:           p.Prompt,
+			Backend:          p.Backend,
+			Enabled:          config.ProfileEnabled(p),
+			AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
+			CreateIssueState: p.CreateIssueState,
+		}
 	}
 	return defs
 }
@@ -1277,6 +1384,13 @@ func (a *orchestratorAdapter) SetReviewerConfig(profile string, autoReview bool)
 	if err := a.orch.SetReviewerCfg(profile, autoReview); err != nil {
 		return err
 	}
+	if err := workflow.PatchAgentStringField(a.workflowPath, "reviewer_profile", profile); err != nil {
+		return err
+	}
+	if err := workflow.PatchAgentBoolField(a.workflowPath, "auto_review", autoReview); err != nil {
+		return err
+	}
+	a.notify()
 	return nil
 }
 
@@ -1293,26 +1407,27 @@ func (a *orchestratorAdapter) AvailableModels() map[string][]server.ModelOption 
 	return result
 }
 
-func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef) error {
+func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, originalName string) error {
 	profiles := a.orch.ProfilesCfg()
 	if profiles == nil {
 		profiles = make(map[string]config.AgentProfile)
 	}
-	// Resolve the command binary (e.g. alias → absolute path) so dispatch works
-	// in non-interactive shell contexts.
-	cmd := def.Command
-	if cmd != "" {
-		parts := strings.SplitN(cmd, " ", 2)
-		resolved := resolveAgentCommand(parts[0])
-		if resolved != parts[0] {
-			if len(parts) > 1 {
-				cmd = resolved + " " + parts[1]
-			} else {
-				cmd = resolved
-			}
+	if originalName != "" && originalName != name {
+		if _, exists := profiles[name]; exists {
+			return fmt.Errorf("profile %q already exists", name)
 		}
+		delete(profiles, originalName)
+	} else if _, exists := profiles[name]; exists && originalName == "" {
+		return fmt.Errorf("profile %q already exists", name)
 	}
-	profiles[name] = config.AgentProfile{Command: cmd, Prompt: def.Prompt, Backend: def.Backend}
+	profiles[name] = config.AgentProfile{
+		Command:          strings.TrimSpace(def.Command),
+		Prompt:           def.Prompt,
+		Backend:          def.Backend,
+		Enabled:          func() *bool { enabled := def.Enabled; return &enabled }(),
+		AllowedActions:   config.NormalizeAllowedActions(def.AllowedActions),
+		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
+	}
 	a.orch.SetProfilesCfg(profiles)
 	if err := workflow.PatchProfilesBlock(a.workflowPath, profilesToEntries(profiles)); err != nil {
 		return err
@@ -1326,6 +1441,14 @@ func (a *orchestratorAdapter) DeleteProfile(name string) error {
 	delete(profiles, name)
 	a.orch.SetProfilesCfg(profiles)
 	if err := workflow.PatchProfilesBlock(a.workflowPath, profilesToEntries(profiles)); err != nil {
+		return err
+	}
+	a.notify()
+	return nil
+}
+
+func (a *orchestratorAdapter) SetAutomations(automations []server.AutomationDef) error {
+	if err := workflow.PatchAutomationsBlock(a.workflowPath, automationsToEntries(automations)); err != nil {
 		return err
 	}
 	a.notify()
@@ -1416,6 +1539,45 @@ func (a *orchestratorAdapter) SetInlineInput(enabled bool) error {
 	a.orch.SetInlineInputCfg(enabled)
 	a.notify()
 	return nil
+}
+
+type commandResolverRunner struct {
+	inner   agent.Runner
+	resolve func(string) string
+}
+
+func (r commandResolverRunner) RunTurn(
+	ctx context.Context,
+	log agent.Logger,
+	onProgress func(agent.TurnResult),
+	sessionID *string,
+	prompt, workspacePath, command, workerHost, logDir string,
+	readTimeoutMs, turnTimeoutMs int,
+) (agent.TurnResult, error) {
+	resolver := r.resolve
+	if resolver == nil {
+		resolver = resolveAgentCommand
+	}
+	if workerHost == "" {
+		command = resolveCommandLine(command, resolver)
+	}
+	return r.inner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+}
+
+func resolveCommandLine(command string, resolver func(string) string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	parts := strings.SplitN(command, " ", 2)
+	resolved := resolver(parts[0])
+	if resolved == parts[0] {
+		return command
+	}
+	if len(parts) == 1 {
+		return resolved
+	}
+	return resolved + " " + parts[1]
 }
 
 func resolveAgentCommand(command string) string {
@@ -1591,6 +1753,113 @@ func runClear(args []string) {
 			fmt.Printf("  removed %s\n", path)
 		}
 	}
+}
+
+func runAction(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "itervox action: expected subcommand: comment | create-issue | move-state | provide-input")
+		os.Exit(1)
+	}
+
+	daemonURL := strings.TrimRight(os.Getenv("ITERVOX_DAEMON_URL"), "/")
+	token := os.Getenv("ITERVOX_ACTION_TOKEN")
+	identifier := os.Getenv("ITERVOX_ISSUE_IDENTIFIER")
+	if daemonURL == "" || token == "" || identifier == "" {
+		fmt.Fprintln(os.Stderr, "itervox action: missing worker action environment; this command only works inside an active itervox worker")
+		os.Exit(2)
+	}
+
+	var endpoint string
+	var body any
+
+	switch args[0] {
+	case "comment":
+		fs := flag.NewFlagSet("action comment", flag.ExitOnError)
+		commentBody := fs.String("body", "", "tracker comment body")
+		_ = fs.Parse(args[1:])
+		if strings.TrimSpace(*commentBody) == "" {
+			fmt.Fprintln(os.Stderr, "itervox action comment: --body is required")
+			os.Exit(2)
+		}
+		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/comment"
+		body = map[string]string{"body": *commentBody}
+	case "create-issue":
+		fs := flag.NewFlagSet("action create-issue", flag.ExitOnError)
+		title := fs.String("title", "", "title for the follow-up issue")
+		issueBody := fs.String("body", "", "body/description for the follow-up issue")
+		_ = fs.Parse(args[1:])
+		if strings.TrimSpace(*title) == "" {
+			fmt.Fprintln(os.Stderr, "itervox action create-issue: --title is required")
+			os.Exit(2)
+		}
+		if strings.TrimSpace(os.Getenv("ITERVOX_CREATE_ISSUE_STATE")) == "" {
+			fmt.Fprintln(os.Stderr, "itervox action create-issue: create_issue_state is not configured for this profile")
+			os.Exit(2)
+		}
+		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/create-issue"
+		body = map[string]string{"title": *title, "body": *issueBody}
+	case "move-state":
+		fs := flag.NewFlagSet("action move-state", flag.ExitOnError)
+		state := fs.String("state", "", "target tracker state")
+		_ = fs.Parse(args[1:])
+		if strings.TrimSpace(*state) == "" {
+			fmt.Fprintln(os.Stderr, "itervox action move-state: --state is required")
+			os.Exit(2)
+		}
+		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/move-state"
+		body = map[string]string{"state": *state}
+	case "provide-input":
+		fs := flag.NewFlagSet("action provide-input", flag.ExitOnError)
+		message := fs.String("message", "", "input message to resume the blocked run")
+		_ = fs.Parse(args[1:])
+		if strings.TrimSpace(*message) == "" {
+			fmt.Fprintln(os.Stderr, "itervox action provide-input: --message is required")
+			os.Exit(2)
+		}
+		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/provide-input"
+		body = map[string]string{"message": *message}
+	default:
+		fmt.Fprintf(os.Stderr, "itervox action: unknown subcommand %q\n", args[0])
+		os.Exit(1)
+	}
+
+	if err := invokeAgentAction(daemonURL+endpoint, token, body); err != nil {
+		fmt.Fprintf(os.Stderr, "itervox action: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("ok")
+}
+
+func invokeAgentAction(endpoint, token string, body any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := strings.TrimSpace(string(bodyBytes))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return fmt.Errorf("%s: %s", resp.Status, msg)
+	}
+	return nil
 }
 
 // repoInfo holds values discovered by scanning the current directory.
@@ -2182,6 +2451,18 @@ func runInit(args []string) {
 	} else {
 		fmt.Printf("  2. Run: %s\n", runCmd)
 	}
+}
+
+func agentActionBaseURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://" + addr
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // listenWithFallback tries to listen on the given host:port. If the port is

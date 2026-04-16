@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/domain"
 
 	"github.com/go-chi/chi/v5"
@@ -111,6 +112,8 @@ type OrchestratorClient interface {
 	ClearSessionSublog(identifier, sessionID string) error
 	FetchSubLogs(identifier string) ([]domain.IssueLogEntry, error)
 	DispatchReviewer(identifier string) error
+	CommentOnIssue(ctx context.Context, identifier, body string) error
+	CreateIssue(ctx context.Context, identifier, title, body, stateName string) (*domain.Issue, error)
 	UpdateIssueState(ctx context.Context, identifier, stateName string) error
 	SetWorkers(n int)
 	BumpWorkers(delta int) int
@@ -120,8 +123,9 @@ type OrchestratorClient interface {
 	AvailableModels() map[string][]ModelOption
 	ReviewerConfig() (profile string, autoReview bool)
 	SetReviewerConfig(profile string, autoReview bool) error
-	UpsertProfile(name string, def ProfileDef) error
+	UpsertProfile(name string, def ProfileDef, originalName string) error
 	DeleteProfile(name string) error
+	SetAutomations(automations []AutomationDef) error
 	SetAgentMode(mode string) error
 	SetAutoClearWorkspace(enabled bool) error
 	ClearAllWorkspaces() error
@@ -139,18 +143,22 @@ type OrchestratorClient interface {
 // Boolean methods return false; error methods return errNotConfigured.
 type noopClient struct{}
 
-func (noopClient) FetchIssues(context.Context) ([]TrackerIssue, error)    { return nil, errNotConfigured }
-func (noopClient) CancelIssue(string) bool                                { return false }
-func (noopClient) ResumeIssue(string) bool                                { return false }
-func (noopClient) TerminateIssue(string) bool                             { return false }
-func (noopClient) ReanalyzeIssue(string) bool                             { return false }
-func (noopClient) FetchLogs(string) []string                              { return nil }
-func (noopClient) ClearLogs(string) error                                 { return errNotConfigured }
-func (noopClient) ClearAllLogs() error                                    { return errNotConfigured }
-func (noopClient) ClearIssueSubLogs(string) error                         { return errNotConfigured }
-func (noopClient) ClearSessionSublog(string, string) error                { return errNotConfigured }
-func (noopClient) FetchSubLogs(string) ([]domain.IssueLogEntry, error)    { return nil, nil }
-func (noopClient) DispatchReviewer(string) error                          { return errNotConfigured }
+func (noopClient) FetchIssues(context.Context) ([]TrackerIssue, error)  { return nil, errNotConfigured }
+func (noopClient) CancelIssue(string) bool                              { return false }
+func (noopClient) ResumeIssue(string) bool                              { return false }
+func (noopClient) TerminateIssue(string) bool                           { return false }
+func (noopClient) ReanalyzeIssue(string) bool                           { return false }
+func (noopClient) FetchLogs(string) []string                            { return nil }
+func (noopClient) ClearLogs(string) error                               { return errNotConfigured }
+func (noopClient) ClearAllLogs() error                                  { return errNotConfigured }
+func (noopClient) ClearIssueSubLogs(string) error                       { return errNotConfigured }
+func (noopClient) ClearSessionSublog(string, string) error              { return errNotConfigured }
+func (noopClient) FetchSubLogs(string) ([]domain.IssueLogEntry, error)  { return nil, nil }
+func (noopClient) DispatchReviewer(string) error                        { return errNotConfigured }
+func (noopClient) CommentOnIssue(context.Context, string, string) error { return errNotConfigured }
+func (noopClient) CreateIssue(context.Context, string, string, string, string) (*domain.Issue, error) {
+	return nil, errNotConfigured
+}
 func (noopClient) UpdateIssueState(context.Context, string, string) error { return errNotConfigured }
 func (noopClient) SetWorkers(int)                                         {}
 func (noopClient) BumpWorkers(int) int                                    { return 0 }
@@ -160,8 +168,9 @@ func (noopClient) ProfileDefs() map[string]ProfileDef                     { retu
 func (noopClient) AvailableModels() map[string][]ModelOption              { return nil }
 func (noopClient) ReviewerConfig() (string, bool)                         { return "", false }
 func (noopClient) SetReviewerConfig(string, bool) error                   { return nil }
-func (noopClient) UpsertProfile(string, ProfileDef) error                 { return errNotConfigured }
+func (noopClient) UpsertProfile(string, ProfileDef, string) error         { return errNotConfigured }
 func (noopClient) DeleteProfile(string) error                             { return errNotConfigured }
+func (noopClient) SetAutomations([]AutomationDef) error                   { return errNotConfigured }
 func (noopClient) SetAgentMode(string) error                              { return errNotConfigured }
 func (noopClient) SetAutoClearWorkspace(bool) error                       { return errNotConfigured }
 func (noopClient) ClearAllWorkspaces() error                              { return errNotConfigured }
@@ -188,6 +197,8 @@ type FuncClient struct {
 	ClearIssueSubLogsFn     func(string) error
 	ClearSessionSublogFn    func(string, string) error
 	DispatchReviewerFn      func(string) error
+	CommentOnIssueFn        func(context.Context, string, string) error
+	CreateIssueFn           func(context.Context, string, string, string, string) (*domain.Issue, error)
 	UpdateIssueStateFn      func(context.Context, string, string) error
 	SetWorkersFn            func(int)
 	BumpWorkersFn           func(int) int
@@ -197,8 +208,9 @@ type FuncClient struct {
 	AvailableModelsFn       func() map[string][]ModelOption
 	ReviewerConfigFn        func() (string, bool)
 	SetReviewerConfigFn     func(string, bool) error
-	UpsertProfileFn         func(string, ProfileDef) error
+	UpsertProfileFn         func(string, ProfileDef, string) error
 	DeleteProfileFn         func(string) error
+	SetAutomationsFn        func([]AutomationDef) error
 	SetAgentModeFn          func(string) error
 	SetAutoClearWorkspaceFn func(bool) error
 	ClearAllWorkspacesFn    func() error
@@ -208,6 +220,8 @@ type FuncClient struct {
 	AddSSHHostFn            func(string, string) error
 	RemoveSSHHostFn         func(string) error
 	SetDispatchStrategyFn   func(string) error
+	ProvideInputFn          func(string, string) bool
+	DismissInputFn          func(string) bool
 }
 
 func (c *FuncClient) FetchIssues(ctx context.Context) ([]TrackerIssue, error) {
@@ -282,6 +296,18 @@ func (c *FuncClient) DispatchReviewer(id string) error {
 	}
 	return errNotConfigured
 }
+func (c *FuncClient) CommentOnIssue(ctx context.Context, identifier, body string) error {
+	if c.CommentOnIssueFn != nil {
+		return c.CommentOnIssueFn(ctx, identifier, body)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) CreateIssue(ctx context.Context, identifier, title, body, state string) (*domain.Issue, error) {
+	if c.CreateIssueFn != nil {
+		return c.CreateIssueFn(ctx, identifier, title, body, state)
+	}
+	return nil, errNotConfigured
+}
 func (c *FuncClient) UpdateIssueState(ctx context.Context, id, state string) error {
 	if c.UpdateIssueStateFn != nil {
 		return c.UpdateIssueStateFn(ctx, id, state)
@@ -333,15 +359,21 @@ func (c *FuncClient) SetReviewerConfig(profile string, autoReview bool) error {
 	}
 	return nil
 }
-func (c *FuncClient) UpsertProfile(name string, def ProfileDef) error {
+func (c *FuncClient) UpsertProfile(name string, def ProfileDef, originalName string) error {
 	if c.UpsertProfileFn != nil {
-		return c.UpsertProfileFn(name, def)
+		return c.UpsertProfileFn(name, def, originalName)
 	}
 	return errNotConfigured
 }
 func (c *FuncClient) DeleteProfile(name string) error {
 	if c.DeleteProfileFn != nil {
 		return c.DeleteProfileFn(name)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) SetAutomations(automations []AutomationDef) error {
+	if c.SetAutomationsFn != nil {
+		return c.SetAutomationsFn(automations)
 	}
 	return errNotConfigured
 }
@@ -393,9 +425,19 @@ func (c *FuncClient) SetDispatchStrategy(strategy string) error {
 	}
 	return errNotConfigured
 }
-func (c *FuncClient) ProvideInput(identifier, message string) bool { return false }
-func (c *FuncClient) DismissInput(identifier string) bool          { return false }
-func (c *FuncClient) SetInlineInput(bool) error                    { return errNotConfigured }
+func (c *FuncClient) ProvideInput(identifier, message string) bool {
+	if c.ProvideInputFn != nil {
+		return c.ProvideInputFn(identifier, message)
+	}
+	return false
+}
+func (c *FuncClient) DismissInput(identifier string) bool {
+	if c.DismissInputFn != nil {
+		return c.DismissInputFn(identifier)
+	}
+	return false
+}
+func (c *FuncClient) SetInlineInput(bool) error { return errNotConfigured }
 
 // StateSnapshot is the payload returned by GET /api/v1/state.
 type StateSnapshot struct {
@@ -458,6 +500,8 @@ type StateSnapshot struct {
 	// InlineInput indicates whether agent input-required signals are posted as
 	// tracker comments (true) or queued in the dashboard UI (false).
 	InlineInput bool `json:"inlineInput,omitempty"`
+	// Automations is the configured set of lightweight cron or event-driven helper rules.
+	Automations []AutomationDef `json:"automations,omitempty"`
 	// InputRequired lists issues whose agent is either waiting for human input
 	// or has already received a reply that is pending resume.
 	InputRequired []InputRequiredRow `json:"inputRequired,omitempty"`
@@ -482,9 +526,42 @@ type SSHHostInfo struct {
 
 // ProfileDef is the JSON representation of one named agent profile.
 type ProfileDef struct {
-	Command string `json:"command"`
-	Prompt  string `json:"prompt,omitempty"`
-	Backend string `json:"backend,omitempty"`
+	Command          string   `json:"command"`
+	Prompt           string   `json:"prompt,omitempty"`
+	Backend          string   `json:"backend,omitempty"`
+	Enabled          bool     `json:"enabled"`
+	AllowedActions   []string `json:"allowedActions,omitempty"`
+	CreateIssueState string   `json:"createIssueState,omitempty"`
+}
+
+type AutomationTriggerDef struct {
+	Type     string `json:"type"`
+	Cron     string `json:"cron,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
+	State    string `json:"state,omitempty"`
+}
+
+type AutomationFilterDef struct {
+	MatchMode         string   `json:"matchMode,omitempty"`
+	States            []string `json:"states,omitempty"`
+	LabelsAny         []string `json:"labelsAny,omitempty"`
+	IdentifierRegex   string   `json:"identifierRegex,omitempty"`
+	Limit             int      `json:"limit,omitempty"`
+	InputContextRegex string   `json:"inputContextRegex,omitempty"`
+}
+
+type AutomationPolicyDef struct {
+	AutoResume bool `json:"autoResume,omitempty"`
+}
+
+type AutomationDef struct {
+	ID           string               `json:"id"`
+	Enabled      bool                 `json:"enabled"`
+	Profile      string               `json:"profile"`
+	Instructions string               `json:"instructions,omitempty"`
+	Trigger      AutomationTriggerDef `json:"trigger"`
+	Filter       AutomationFilterDef  `json:"filter,omitempty"`
+	Policy       AutomationPolicyDef  `json:"policy,omitempty"`
 }
 
 // ModelOption represents an available model for a backend (mirrors config.ModelOption for JSON).
@@ -597,6 +674,8 @@ type Config struct {
 	// /api/ routes except /api/v1/health. Requests must include the header
 	// "Authorization: Bearer <token>".
 	APIToken string
+	// ActionTokenStore validates short-lived per-run grants for agent action routes.
+	ActionTokenStore *agentactions.Store
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -610,6 +689,7 @@ type Server struct {
 	projectManager ProjectManager
 	bc             *broadcaster
 	apiToken       string
+	actionTokens   *agentactions.Store
 }
 
 // New constructs a Server from a Config. Snapshot and RefreshChan must be non-nil.
@@ -628,6 +708,7 @@ func New(cfg Config) *Server {
 		projectManager: cfg.ProjectManager,
 		bc:             newBroadcaster(),
 		apiToken:       cfg.APIToken,
+		actionTokens:   cfg.ActionTokenStore,
 	}
 	s.routes()
 	return s
@@ -689,6 +770,10 @@ func (s *Server) routes() {
 	s.router.Route("/api/v1", func(r chi.Router) {
 		// Health check is unauthenticated so load balancers can reach it.
 		r.Get("/health", s.handleHealth)
+		r.Post("/agent-actions/{identifier}/comment", s.handleAgentComment)
+		r.Post("/agent-actions/{identifier}/create-issue", s.handleAgentCreateIssue)
+		r.Post("/agent-actions/{identifier}/move-state", s.handleAgentMoveState)
+		r.Post("/agent-actions/{identifier}/provide-input", s.handleAgentProvideInput)
 
 		// If an API token is configured, all remaining routes require it.
 		// Use r.Group to create a sub-router so middleware is applied only to
@@ -737,6 +822,7 @@ func (s *Server) routes() {
 			r.Get("/settings/profiles", s.handleListProfiles)
 			r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
 			r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)
+			r.Put("/settings/automations", s.handleSetAutomations)
 			r.Put("/settings/tracker/states", s.handleUpdateTrackerStates)
 			r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
 			r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
