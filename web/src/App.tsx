@@ -14,6 +14,7 @@ import { ThemeToggle } from './components/ui/ThemeToggle/ThemeToggle';
 import AppHeader from './layout/AppHeader';
 import { useFocusTrap } from './hooks/useFocusTrap';
 import { useMultiTabWarning } from './hooks/useMultiTabWarning';
+import { inputRequiredFingerprintValue } from './utils/inputRequired';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Logs = lazy(() => import('./pages/Logs'));
@@ -135,27 +136,38 @@ function AppShell() {
   );
 }
 
+export function buildSnapshotInvalidationFingerprint(
+  snapshot: ReturnType<typeof useItervoxStore.getState>['snapshot'],
+): string | null {
+  if (!snapshot) return null;
+  const sortStrings = (values: readonly string[]) => [...values].sort((a, b) => a.localeCompare(b));
+  return JSON.stringify({
+    running: sortStrings(snapshot.running.map((row) => row.identifier)),
+    retrying: sortStrings(snapshot.retrying.map((row) => row.identifier)),
+    paused: sortStrings(snapshot.paused),
+    pausedWithPR: snapshot.pausedWithPR ?? {},
+    inputRequired: sortStrings(
+      (snapshot.inputRequired ?? []).map((entry) => inputRequiredFingerprintValue(entry)),
+    ),
+  });
+}
+
 /**
  * Invalidates the issues cache whenever the orchestrator's activity fingerprint
- * changes (sessions start, stop, pause, or enter the retry queue).
+ * changes (sessions start, stop, pause, enter input-required, or pick up PR metadata).
  * This bridges the real-time SSE snapshot to the issues list so the kanban
- * board refreshes within seconds of a state change — not on the 30s poll cycle.
+ * board and issue detail refresh immediately instead of waiting for a stale query.
  */
 function useSnapshotInvalidation() {
   const queryClient = useQueryClient();
-  // Subscribe to a minimal derived value to avoid invalidating on every SSE tick.
-  // The fingerprint only changes when the count of active sessions changes.
-  const fingerprint = useItervoxStore((s) => {
-    const snap = s.snapshot;
-    if (!snap) return null;
-    return `${String(snap.running.length)}:${String(snap.paused.length)}:${String(snap.retrying.length)}`;
-  });
+  const fingerprint = useItervoxStore((s) => buildSnapshotInvalidationFingerprint(s.snapshot));
   const prevRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (fingerprint === null) return; // no snapshot yet
     if (prevRef.current !== null && prevRef.current !== fingerprint) {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ['issue'] });
       void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
     }
     prevRef.current = fingerprint;

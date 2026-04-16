@@ -4,6 +4,7 @@
 package app
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/vnovick/itervox/internal/config"
@@ -71,6 +72,9 @@ func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg
 		// more actionable signal, even though the worker has technically paused.
 		ti.OrchestratorState = "input_required"
 		ti.Error = entry.Context
+	} else if entry, pendingResume := snap.PendingInputResumes[issue.Identifier]; pendingResume {
+		ti.OrchestratorState = "pending_input_resume"
+		ti.Error = pendingInputResumeMessage(entry)
 	} else if _, paused := snap.PausedIdentifiers[issue.Identifier]; paused {
 		ti.OrchestratorState = "paused"
 	} else {
@@ -84,4 +88,14 @@ func EnrichIssue(issue domain.Issue, snap orchestrator.State, now time.Time, cfg
 		}
 	}
 	return ti
+}
+
+func pendingInputResumeMessage(entry *orchestrator.PendingInputResumeEntry) string {
+	if entry == nil {
+		return "Reply received, waiting to resume."
+	}
+	if entry.Context == "" {
+		return "Reply received, waiting to resume."
+	}
+	return fmt.Sprintf("Reply received, waiting to resume.\n\nOriginal request:\n%s", entry.Context)
 }

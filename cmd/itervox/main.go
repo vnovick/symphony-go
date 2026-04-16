@@ -660,6 +660,68 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 // is returned unchanged.
 // buildSnapFunc returns the StateSnapshot function wired to the live orchestrator,
 // tracker, and config. Extracted from run() to keep that function scannable.
+func sortedRetryRows(retries map[string]*orchestrator.RetryEntry) []server.RetryRow {
+	rows := make([]server.RetryRow, 0, len(retries))
+	for _, r := range retries {
+		row := server.RetryRow{
+			Identifier: r.Identifier,
+			Attempt:    r.Attempt,
+			DueAt:      r.DueAt,
+		}
+		if r.Error != nil {
+			row.Error = *r.Error
+		}
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].Identifier < rows[j].Identifier
+	})
+	return rows
+}
+
+func sortedPausedIdentifiers(paused map[string]string) []string {
+	identifiers := make([]string, 0, len(paused))
+	for identifier := range paused {
+		identifiers = append(identifiers, identifier)
+	}
+	sort.Strings(identifiers)
+	return identifiers
+}
+
+func sortedInputRequiredRows(entries map[string]*orchestrator.InputRequiredEntry, pending map[string]*orchestrator.PendingInputResumeEntry) []server.InputRequiredRow {
+	rows := make([]server.InputRequiredRow, 0, len(entries)+len(pending))
+	for _, entry := range entries {
+		rows = append(rows, server.InputRequiredRow{
+			Identifier: entry.Identifier,
+			SessionID:  entry.SessionID,
+			State:      "input_required",
+			Context:    entry.Context,
+			Backend:    entry.Backend,
+			Profile:    entry.ProfileName,
+			QueuedAt:   entry.QueuedAt.Format(time.RFC3339),
+		})
+	}
+	for _, entry := range pending {
+		context := "Reply received, waiting to resume."
+		if entry.Context != "" {
+			context = context + "\n\nOriginal request:\n" + entry.Context
+		}
+		rows = append(rows, server.InputRequiredRow{
+			Identifier: entry.Identifier,
+			SessionID:  entry.SessionID,
+			State:      "pending_input_resume",
+			Context:    context,
+			Backend:    entry.Backend,
+			Profile:    entry.ProfileName,
+			QueuedAt:   entry.QueuedAt.Format(time.RFC3339),
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].Identifier < rows[j].Identifier
+	})
+	return rows
+}
+
 func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *config.Config, appSessionID string, logBuf *logbuffer.Buffer) func() server.StateSnapshot {
 	return func() server.StateSnapshot {
 		s := orch.Snapshot()
@@ -706,23 +768,8 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			return running[i].StartedAt.Before(running[j].StartedAt)
 		})
 
-		retrying := make([]server.RetryRow, 0, len(s.RetryAttempts))
-		for _, r := range s.RetryAttempts {
-			row := server.RetryRow{
-				Identifier: r.Identifier,
-				Attempt:    r.Attempt,
-				DueAt:      r.DueAt,
-			}
-			if r.Error != nil {
-				row.Error = *r.Error
-			}
-			retrying = append(retrying, row)
-		}
-
-		paused := make([]string, 0, len(s.PausedIdentifiers))
-		for identifier := range s.PausedIdentifiers {
-			paused = append(paused, identifier)
-		}
+		retrying := sortedRetryRows(s.RetryAttempts)
+		paused := sortedPausedIdentifiers(s.PausedIdentifiers)
 
 		var rateLimits *server.RateLimitInfo
 		var activeProjectFilter []string
@@ -826,17 +873,7 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			ReviewerProfile:     func() string { p, _ := orch.ReviewerCfg(); return p }(),
 			AutoReview:          func() bool { _, a := orch.ReviewerCfg(); return a }(),
 		}
-		// Build input-required rows from the snapshot.
-		for _, entry := range s.InputRequiredIssues {
-			snap.InputRequired = append(snap.InputRequired, server.InputRequiredRow{
-				Identifier: entry.Identifier,
-				SessionID:  entry.SessionID,
-				Context:    entry.Context,
-				Backend:    entry.Backend,
-				Profile:    entry.ProfileName,
-				QueuedAt:   entry.QueuedAt.Format(time.RFC3339),
-			})
-		}
+		snap.InputRequired = sortedInputRequiredRows(s.InputRequiredIssues, s.PendingInputResumes)
 		return snap
 	}
 }
@@ -1237,7 +1274,9 @@ func (a *orchestratorAdapter) ReviewerConfig() (string, bool) {
 }
 
 func (a *orchestratorAdapter) SetReviewerConfig(profile string, autoReview bool) error {
-	a.orch.SetReviewerCfg(profile, autoReview)
+	if err := a.orch.SetReviewerCfg(profile, autoReview); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1325,7 +1364,9 @@ func (a *orchestratorAdapter) ClearAllWorkspaces() error {
 }
 
 func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
-	a.orch.SetAutoClearWorkspaceCfg(enabled)
+	if err := a.orch.SetAutoClearWorkspaceCfg(enabled); err != nil {
+		return err
+	}
 	if err := workflow.PatchWorkspaceBoolField(a.workflowPath, "auto_clear", enabled); err != nil {
 		slog.Warn("failed to persist auto_clear to WORKFLOW.md", "error", err)
 	}
@@ -1393,21 +1434,32 @@ func resolveAgentCommand(command string) string {
 		return command
 	}
 	// Interactive shells may print init messages. Scan every line for either:
-	//   /absolute/path          (binary on PATH)
-	//   alias name=/abs/path    (shell alias — Claude Code installs this way)
+	//   /absolute/path             (binary on PATH)
+	//   alias name=/abs/path       (bash-style alias — Claude Code installs this way)
 	//   alias name='/abs/path'
+	//   name: aliased to /abs/path (zsh-style alias — `command -v` output on zsh)
 	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		l := strings.TrimSpace(line)
 		if filepath.IsAbs(l) {
 			slog.Info("agent command resolved", "command", l)
 			return l
 		}
-		// alias foo=/path  or  alias foo='/path'  or  alias foo="/path"
+		// bash: alias foo=/path  or  alias foo='/path'  or  alias foo="/path"
 		if strings.HasPrefix(l, "alias ") {
 			if _, val, ok := strings.Cut(l, "="); ok {
 				val = strings.Trim(val, `'"`)
 				if filepath.IsAbs(val) {
 					slog.Info("agent command resolved from alias", "command", val)
+					return val
+				}
+			}
+		}
+		// zsh: "claude: aliased to /Users/x/.claude/local/claude"
+		if strings.Contains(l, ": aliased to ") {
+			if _, val, ok := strings.Cut(l, ": aliased to "); ok {
+				val = strings.Trim(strings.TrimSpace(val), `'"`)
+				if filepath.IsAbs(val) {
+					slog.Info("agent command resolved from zsh alias", "command", val)
 					return val
 				}
 			}
@@ -1787,7 +1839,7 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	// Reviewer prompt — used when a reviewer worker is dispatched (via auto_review or AI Review button).
 	// Uses the reviewer_prompt template instead of the main WORKFLOW.md body.
 	b.WriteString("  # reviewer_profile: reviewer       # Uncomment and create a 'reviewer' profile to enable AI code review.\n")
-	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run.\n")
+	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Cannot be combined with workspace.auto_clear.\n")
 	b.WriteString("  reviewer_prompt: |\n")
 	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
 	b.WriteString("\n")
@@ -1836,9 +1888,16 @@ func generateWorkflow(trackerKind, runner string, info repoInfo) string {
 	b.WriteString("\nhooks:\n")
 	b.WriteString("  # after_create and before_run are no longer needed for clone/reset —\n")
 	b.WriteString("  # Itervox maintains a bare clone and creates worktrees automatically.\n")
-	b.WriteString("  # Add custom hooks here if your project needs extra setup:\n")
+	b.WriteString("  # Add custom hooks here if your project needs extra setup.\n")
+	b.WriteString("  # before_run runs once per worker attempt; after_run runs after each turn.\n")
 	b.WriteString("  # after_create: |\n")
 	b.WriteString("  #   npm install\n")
+	b.WriteString("  # before_run: |\n")
+	b.WriteString("  #   make prepare-agent-workspace\n")
+	b.WriteString("  # after_run: |\n")
+	b.WriteString("  #   git status --short\n")
+	b.WriteString("  # before_remove: |\n")
+	b.WriteString("  #   tar -czf ../workspace-backup.tgz .\n")
 
 	b.WriteString("\nserver:\n  port: 8090\n")
 	b.WriteString("---\n\n")

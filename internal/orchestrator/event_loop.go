@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
@@ -124,6 +126,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// Check for tracker comment replies to input-required issues.
 	// If a user replied via Linear/GitHub, auto-resume the agent.
 	state = o.checkTrackerReplies(ctx, state)
+	state = o.processPendingInputResumes(ctx, state, now)
 
 	slots := AvailableSlots(state)
 	slog.Debug("orchestrator: tick",
@@ -232,10 +235,128 @@ func (o *Orchestrator) fireRetries(ctx context.Context, state State, now time.Ti
 // question comments. Used to identify and skip own comments when detecting user replies.
 const itervoxCommentPrefix = "🤖 **Agent needs your input**"
 
+func buildInputRequiredComment(entry *InputRequiredEntry) string {
+	if entry == nil {
+		return ""
+	}
+	return fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n_Reply in the tracker or via the Itervox dashboard to continue._", entry.Context)
+}
+
+func buildPendingInputResumeEntry(entry *InputRequiredEntry, userMessage string) *PendingInputResumeEntry {
+	if entry == nil {
+		return nil
+	}
+	return &PendingInputResumeEntry{
+		IssueID:            entry.IssueID,
+		Identifier:         entry.Identifier,
+		SessionID:          entry.SessionID,
+		Context:            entry.Context,
+		UserMessage:        userMessage,
+		BranchName:         entry.BranchName,
+		Backend:            entry.Backend,
+		Command:            entry.Command,
+		WorkerHost:         entry.WorkerHost,
+		ProfileName:        entry.ProfileName,
+		QuestionCommentID:  entry.QuestionCommentID,
+		QuestionAuthorID:   entry.QuestionAuthorID,
+		QuestionAuthorName: entry.QuestionAuthorName,
+		QueuedAt:           time.Now(),
+	}
+}
+
+func withRecordedQuestionComment(entry *InputRequiredEntry, comment *domain.Comment) *InputRequiredEntry {
+	if entry == nil || comment == nil {
+		return entry
+	}
+	cp := *entry
+	cp.QuestionCommentID = comment.ID
+	cp.QuestionAuthorID = comment.AuthorID
+	cp.QuestionAuthorName = comment.AuthorName
+	return &cp
+}
+
+func withRecordedPendingQuestionComment(entry *PendingInputResumeEntry, comment *domain.Comment) *PendingInputResumeEntry {
+	if entry == nil || comment == nil {
+		return entry
+	}
+	cp := *entry
+	cp.QuestionCommentID = comment.ID
+	cp.QuestionAuthorID = comment.AuthorID
+	cp.QuestionAuthorName = comment.AuthorName
+	return &cp
+}
+
+func inputRequiredEntryFromPending(entry *PendingInputResumeEntry) *InputRequiredEntry {
+	if entry == nil {
+		return nil
+	}
+	return &InputRequiredEntry{
+		IssueID:            entry.IssueID,
+		Identifier:         entry.Identifier,
+		SessionID:          entry.SessionID,
+		Context:            entry.Context,
+		BranchName:         entry.BranchName,
+		Backend:            entry.Backend,
+		Command:            entry.Command,
+		WorkerHost:         entry.WorkerHost,
+		ProfileName:        entry.ProfileName,
+		QuestionCommentID:  entry.QuestionCommentID,
+		QuestionAuthorID:   entry.QuestionAuthorID,
+		QuestionAuthorName: entry.QuestionAuthorName,
+		QueuedAt:           entry.QueuedAt,
+	}
+}
+
+func findLatestItervoxQuestionComment(comments []domain.Comment) (int, domain.Comment, bool) {
+	for i := len(comments) - 1; i >= 0; i-- {
+		if strings.HasPrefix(comments[i].Body, itervoxCommentPrefix) {
+			return i, comments[i], true
+		}
+	}
+	return -1, domain.Comment{}, false
+}
+
+func findTrackedQuestionComment(comments []domain.Comment, entry *InputRequiredEntry) (int, domain.Comment, bool) {
+	if entry != nil && entry.QuestionCommentID != "" {
+		for i, comment := range comments {
+			if comment.ID == entry.QuestionCommentID {
+				return i, comment, true
+			}
+		}
+	}
+	return findLatestItervoxQuestionComment(comments)
+}
+
+func sameCommentAuthor(a, b domain.Comment) bool {
+	if a.AuthorID != "" && b.AuthorID != "" {
+		return a.AuthorID == b.AuthorID
+	}
+	if a.AuthorName != "" && b.AuthorName != "" {
+		return strings.EqualFold(a.AuthorName, b.AuthorName)
+	}
+	return false
+}
+
+func findReplyAfterQuestion(comments []domain.Comment, questionIdx int, question domain.Comment) (domain.Comment, bool) {
+	for i := questionIdx + 1; i < len(comments); i++ {
+		comment := comments[i]
+		if strings.HasPrefix(comment.Body, itervoxCommentPrefix) {
+			continue
+		}
+		if sameCommentAuthor(comment, question) {
+			continue
+		}
+		return comment, true
+	}
+	return domain.Comment{}, false
+}
+
 // recoverInputRequired fetches the full issue detail (with comments) and checks
 // if the latest comment is an unresolved Itervox input-required question.
 // If so, returns an InputRequiredEntry reconstructed from the comment,
-// preventing a wasteful fresh dispatch. Returns nil if no recovery is needed.
+// preventing a wasteful fresh dispatch. This path is intentionally best-effort:
+// session/backend/host continuity comes from the locally persisted
+// InputRequiredIssues file, not tracker comment metadata.
 func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Issue) *InputRequiredEntry {
 	detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID)
 	if err != nil {
@@ -247,36 +368,40 @@ func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Is
 		return nil
 	}
 	// Walk comments in reverse to find the last Itervox question.
-	lastItervoxIdx := -1
-	for i := len(detailed.Comments) - 1; i >= 0; i-- {
-		if strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
-			lastItervoxIdx = i
-			break
-		}
-	}
-	if lastItervoxIdx < 0 {
+	lastItervoxIdx, questionComment, ok := findLatestItervoxQuestionComment(detailed.Comments)
+	if !ok {
 		return nil // no Itervox question comment found
 	}
 	// Check if there's a non-Itervox comment after it (= user replied).
-	for i := lastItervoxIdx + 1; i < len(detailed.Comments); i++ {
-		if !strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
-			return nil // user already replied — safe to dispatch fresh
-		}
+	if _, replied := findReplyAfterQuestion(detailed.Comments, lastItervoxIdx, questionComment); replied {
+		return nil // user already replied — safe to dispatch fresh
 	}
 	// Extract the question context from the comment body.
-	body := detailed.Comments[lastItervoxIdx].Body
+	body := questionComment.Body
 	questionCtx := strings.TrimPrefix(body, itervoxCommentPrefix)
 	questionCtx = strings.TrimSpace(questionCtx)
 	// Strip the trailing instruction line.
 	if idx := strings.LastIndex(questionCtx, "\n---\n"); idx >= 0 {
 		questionCtx = strings.TrimSpace(questionCtx[:idx])
 	}
-	return &InputRequiredEntry{
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		Context:    questionCtx,
-		QueuedAt:   time.Now(),
+	entry := &InputRequiredEntry{
+		IssueID:            issue.ID,
+		Identifier:         issue.Identifier,
+		Context:            questionCtx,
+		BranchName:         branchNameValue(issue.BranchName),
+		QuestionCommentID:  questionComment.ID,
+		QuestionAuthorID:   questionComment.AuthorID,
+		QuestionAuthorName: questionComment.AuthorName,
+		QueuedAt:           time.Now(),
 	}
+	return entry
+}
+
+func branchNameValue(branchName *string) string {
+	if branchName == nil {
+		return ""
+	}
+	return *branchName
 }
 
 // checkTrackerReplies polls tracker comments for each InputRequiredIssues entry.
@@ -293,61 +418,103 @@ func (o *Orchestrator) checkTrackerReplies(ctx context.Context, state State) Sta
 				"identifier", identifier, "error", err)
 			continue
 		}
-		// Find the last Itervox question comment and check for a reply after it.
-		lastItervoxIdx := -1
-		for i := len(detailed.Comments) - 1; i >= 0; i-- {
-			if strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
-				lastItervoxIdx = i
-				break
-			}
-		}
-		if lastItervoxIdx < 0 {
+		questionIdx, questionComment, ok := findTrackedQuestionComment(detailed.Comments, entry)
+		if !ok {
 			continue // no question comment found — wait
 		}
-		// Look for a non-Itervox reply after the question.
-		var userReply string
-		for i := lastItervoxIdx + 1; i < len(detailed.Comments); i++ {
-			if !strings.HasPrefix(detailed.Comments[i].Body, itervoxCommentPrefix) {
-				userReply = detailed.Comments[i].Body
-				break
-			}
-		}
-		if userReply == "" {
+		replyComment, replied := findReplyAfterQuestion(detailed.Comments, questionIdx, questionComment)
+		if !replied || strings.TrimSpace(replyComment.Body) == "" {
 			continue // no reply yet
 		}
-		slog.Info("orchestrator: tracker comment reply detected, resuming agent",
-			"identifier", identifier, "reply_length", len(userReply))
+		slog.Info("orchestrator: tracker comment reply detected, queuing pending resume",
+			"identifier", identifier, "reply_length", len(replyComment.Body))
 		if o.logBuf != nil {
 			o.logBuf.Add(identifier, makeBufLine("INFO",
-				"worker: user replied via tracker comment — resuming agent"))
+				"worker: user replied via tracker comment — awaiting resumed worker"))
 		}
 		delete(state.InputRequiredIssues, identifier)
+		state.PendingInputResumes[identifier] = buildPendingInputResumeEntry(entry, replyComment.Body)
+	}
+	return state
+}
 
-		sid := entry.SessionID
-		var sessionPtr *string
-		if sid != "" {
-			sessionPtr = &sid
+func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state State, now time.Time) State {
+	if len(state.PendingInputResumes) == 0 || AvailableSlots(state) <= 0 {
+		return state
+	}
+
+	identifiers := make([]string, 0, len(state.PendingInputResumes))
+	for identifier := range state.PendingInputResumes {
+		identifiers = append(identifiers, identifier)
+	}
+	sort.Strings(identifiers)
+
+	for _, identifier := range identifiers {
+		if AvailableSlots(state) <= 0 {
+			break
+		}
+		entry := state.PendingInputResumes[identifier]
+		if entry == nil {
+			delete(state.PendingInputResumes, identifier)
+			continue
+		}
+		if _, running := state.Running[entry.IssueID]; running {
+			continue
+		}
+		if _, claimed := state.Claimed[entry.IssueID]; claimed {
+			continue
+		}
+		if _, paused := state.PausedIdentifiers[identifier]; paused {
+			continue
+		}
+		if _, discarding := state.DiscardingIdentifiers[identifier]; discarding {
+			continue
+		}
+
+		detailed, err := o.tracker.FetchIssueDetail(ctx, entry.IssueID)
+		if err != nil {
+			slog.Warn("orchestrator: pending input resume detail fetch failed",
+				"identifier", identifier, "error", err)
+			continue
+		}
+		if detailed == nil {
+			continue
+		}
+		if isTerminalState(detailed.State, state) {
+			delete(state.PendingInputResumes, identifier)
+			slog.Info("orchestrator: dropping pending input resume for terminal issue",
+				"identifier", identifier, "state", detailed.State)
+			continue
+		}
+		if !isActiveState(detailed.State, state) {
+			continue
+		}
+
+		resumeIssue := *detailed
+		if resumeIssue.BranchName == nil && entry.BranchName != "" {
+			branchName := entry.BranchName
+			resumeIssue.BranchName = &branchName
 		}
 		workerCtx, workerCancel := context.WithCancel(ctx)
 		state.Claimed[entry.IssueID] = struct{}{}
 		state.Running[entry.IssueID] = &RunEntry{
-			Issue:      *detailed,
-			SessionID:  entry.SessionID,
-			WorkerHost: entry.WorkerHost,
-			Backend:    entry.Backend,
-			StartedAt:  time.Now(),
+			Issue:              resumeIssue,
+			AgentSessionID:     entry.SessionID,
+			WorkerHost:         entry.WorkerHost,
+			Backend:            entry.Backend,
+			PendingInputResume: true,
+			BranchName:         branchNameValue(resumeIssue.BranchName),
+			StartedAt:          now,
 		}
 		o.workerCancelsMu.Lock()
 		o.workerCancels[identifier] = workerCancel
 		o.workerCancelsMu.Unlock()
-		runnerCommand := entry.Command
-		if entry.Backend != "" {
-			runnerCommand = agent.CommandWithBackendHint(entry.Command, entry.Backend)
-		}
-		go o.runWorkerWithResume(workerCtx, *detailed, entry.WorkerHost, runnerCommand, entry.Backend, entry.ProfileName, sessionPtr, userReply)
-		if o.OnStateChange != nil {
-			o.OnStateChange()
-		}
+		runnerCommand := resolveResumeCommand(inputRequiredEntryFromPending(entry), o.cfg, &o.cfgMu)
+		go o.runWorker(workerCtx, resumeIssue, 0, entry.WorkerHost, runnerCommand, entry.Backend, entry.ProfileName, false, &ResumeContext{
+			SessionID:    entry.SessionID,
+			UserMessage:  entry.UserMessage,
+			InputContext: entry.Context,
+		})
 	}
 	return state
 }
@@ -376,16 +543,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	defaultBackend := o.cfg.Agent.Backend
 	o.cfgMu.RUnlock()
 
-	workerHost := ""
-	if len(hosts) > 0 {
-		if dispatchStrategy == "least-loaded" {
-			workerHost = selectLeastLoadedHost(hosts, state.Running)
-		} else {
-			// Default: round-robin.
-			workerHost = hosts[o.sshHostIdx%len(hosts)]
-			o.sshHostIdx++
-		}
-	}
+	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, state)
 	runnerCommand := agentCommand
 	backend := agent.BackendFromCommand(agentCommand)
 	if defaultBackend != "" {
@@ -465,14 +623,14 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 
 	// If this issue is being resumed from manual pause and we captured a session
 	// ID, pass it through so the agent continues the same session via --resume.
-	resumeSessionID := ""
+	var resumeCtx *ResumeContext
 	if entry, ok := state.PausedSessions[issue.Identifier]; ok && entry != nil {
-		resumeSessionID = entry.SessionID
+		resumeCtx = &ResumeContext{SessionID: entry.SessionID}
 		// Consume the entry — once dispatched, the session info is no longer
 		// needed (the worker now owns the session via its RunEntry).
 		delete(state.PausedSessions, issue.Identifier)
 	}
-	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeSessionID)
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, skipPRCheck, resumeCtx)
 	return state
 }
 
@@ -485,6 +643,8 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	profile, ok := o.cfg.Agent.Profiles[profileName]
 	defaultCommand := o.cfg.Agent.Command
 	defaultBackend := o.cfg.Agent.Backend
+	hosts := append([]string{}, o.cfg.Agent.SSHHosts...)
+	dispatchStrategy := o.cfg.Agent.DispatchStrategy
 	o.cfgMu.RUnlock()
 
 	if !ok {
@@ -510,11 +670,12 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	}
 
 	workerCtx, workerCancel := context.WithCancel(ctx)
+	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, *state)
 
 	if o.DryRun {
 		workerCancel()
 		slog.Info("orchestrator: [DRY-RUN] would dispatch reviewer",
-			"identifier", issue.Identifier, "profile", profileName)
+			"identifier", issue.Identifier, "profile", profileName, "worker_host", workerHost)
 		return
 	}
 
@@ -523,7 +684,7 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	state.Running[issue.ID] = &RunEntry{
 		Issue:        issue,
 		Kind:         "reviewer",
-		WorkerHost:   "",
+		WorkerHost:   workerHost,
 		Backend:      backend,
 		StartedAt:    now,
 		RetryAttempt: &attempt,
@@ -535,7 +696,7 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	o.workerCancelsMu.Unlock()
 
 	slog.Info("orchestrator: dispatching reviewer",
-		"issue_identifier", issue.Identifier, "profile", profileName, "backend", backend)
+		"issue_identifier", issue.Identifier, "profile", profileName, "backend", backend, "worker_host", workerHost)
 
 	// Set the issue's profile to the reviewer profile so runWorker uses the
 	// reviewer's prompt (appended via the profile system).
@@ -543,7 +704,20 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 	o.issueProfiles[issue.Identifier] = profileName
 	o.issueProfilesMu.Unlock()
 
-	go o.runWorker(workerCtx, issue, attempt, "", runnerCommand, backend, profileName, false, "")
+	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil)
+}
+
+func (o *Orchestrator) selectWorkerHost(hosts []string, dispatchStrategy string, state State) string {
+	if len(hosts) == 0 {
+		return ""
+	}
+	if dispatchStrategy == "least-loaded" {
+		return selectLeastLoadedHost(hosts, state.Running)
+	}
+	// Default: round-robin.
+	workerHost := hosts[o.sshHostIdx%len(hosts)]
+	o.sshHostIdx++
+	return workerHost
 }
 
 // transitionToWorking moves the issue to the configured working state (e.g. "In Progress").
@@ -589,6 +763,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			}
 			if ev.RunEntry.AgentSessionID != "" {
 				entry.AgentSessionID = ev.RunEntry.AgentSessionID
+			}
+			if entry.PendingInputResume && (ev.RunEntry.TurnCount > 0 || ev.RunEntry.TotalTokens > 0 || ev.RunEntry.LastMessage != "") {
+				delete(state.PendingInputResumes, entry.Issue.Identifier)
+				entry.PendingInputResume = false
 			}
 		}
 
@@ -681,46 +859,33 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			return state
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
-		slog.Info("orchestrator: user provided input, resuming agent",
+		state.PendingInputResumes[ev.Identifier] = buildPendingInputResumeEntry(entry, ev.Message)
+		slog.Info("orchestrator: user provided input, queued pending resume",
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
 		// Post the user's reply as a tracker comment so the conversation
 		// is visible in Linear/GitHub alongside the agent's question.
 		go func(issueID, ident, msg string) {
 			postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 			defer cancel()
-			if err := o.tracker.CreateComment(postCtx, issueID, msg); err != nil {
+			if _, err := o.tracker.CreateComment(postCtx, issueID, msg); err != nil {
 				slog.Warn("orchestrator: failed to post user input as tracker comment",
 					"identifier", ident, "error", err)
 			}
 		}(entry.IssueID, ev.Identifier, ev.Message)
-		// Dispatch a resumed worker with the user's message as the prompt
-		// and the saved session ID for --resume.
-		sid := entry.SessionID
-		var sessionPtr *string
-		if sid != "" {
-			sessionPtr = &sid
-		}
-		workerCtx, workerCancel := context.WithCancel(ctx)
-		state.Claimed[entry.IssueID] = struct{}{}
-		state.Running[entry.IssueID] = &RunEntry{
-			Issue:      domain.Issue{ID: entry.IssueID, Identifier: entry.Identifier},
-			SessionID:  entry.SessionID,
-			WorkerHost: entry.WorkerHost,
-			Backend:    entry.Backend,
-			StartedAt:  time.Now(),
-		}
-		o.workerCancelsMu.Lock()
-		o.workerCancels[entry.Identifier] = workerCancel
-		o.workerCancelsMu.Unlock()
-		// Build the command with backend hint if needed.
-		runnerCommand := entry.Command
-		if entry.Backend != "" {
-			runnerCommand = agent.CommandWithBackendHint(entry.Command, entry.Backend)
-		}
-		issue := domain.Issue{ID: entry.IssueID, Identifier: entry.Identifier}
-		go o.runWorkerWithResume(workerCtx, issue, entry.WorkerHost, runnerCommand, entry.Backend, entry.ProfileName, sessionPtr, ev.Message)
+		state = o.processPendingInputResumes(ctx, state, time.Now())
 		if o.OnStateChange != nil {
 			o.OnStateChange()
+		}
+
+	case EventInputRequiredCommentRecorded:
+		if ev.Comment == nil || ev.Identifier == "" {
+			return state
+		}
+		if entry, ok := state.InputRequiredIssues[ev.Identifier]; ok {
+			state.InputRequiredIssues[ev.Identifier] = withRecordedQuestionComment(entry, ev.Comment)
+		}
+		if pending, ok := state.PendingInputResumes[ev.Identifier]; ok {
+			state.PendingInputResumes[ev.Identifier] = withRecordedPendingQuestionComment(pending, ev.Comment)
 		}
 
 	case EventDismissInput:
@@ -862,6 +1027,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 
 		if wasTerminatedByUser {
+			if liveEntry != nil && liveEntry.PendingInputResume {
+				delete(state.PendingInputResumes, issue.Identifier)
+				liveEntry.PendingInputResume = false
+			}
 			delete(state.Claimed, ev.IssueID)
 			slog.Info("orchestrator: issue terminated by user (claim released)",
 				"issue_id", ev.IssueID, "identifier", issue.Identifier)
@@ -882,6 +1051,10 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Not recorded — the issue will be re-dispatched.
 
 		case TerminalSucceeded:
+			if liveEntry != nil && liveEntry.PendingInputResume {
+				delete(state.PendingInputResumes, issue.Identifier)
+				liveEntry.PendingInputResume = false
+			}
 			// Release the claim — the issue completed successfully.
 			// Do NOT schedule a retry; successful completions must not appear in
 			// the retry queue and must not cause infinite re-dispatch loops.
@@ -905,7 +1078,14 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// but leaves logs intact (they live under the logs dir, not here).
 			o.cfgMu.RLock()
 			autoClear := o.cfg.Workspace.AutoClearWorkspace
+			reviewerProfile := o.cfg.Agent.ReviewerProfile
+			autoReview := o.cfg.Agent.AutoReview
 			o.cfgMu.RUnlock()
+			if autoClear && autoReview && reviewerProfile != "" && (liveEntry == nil || liveEntry.Kind != "reviewer") {
+				slog.Warn("orchestrator: skipping auto-review because workspace auto-clear is enabled",
+					"issue_id", ev.IssueID, "issue_identifier", issue.Identifier)
+				autoReview = false
+			}
 			if autoClear && o.workspace != nil {
 				// Run in a goroutine — os.RemoveAll can be slow on large workspaces
 				// and must not block the event loop (which would stall all workers).
@@ -938,10 +1118,6 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Only trigger when the completed worker was NOT itself a reviewer
 			// (prevents infinite review loops).
 			if liveEntry == nil || liveEntry.Kind != "reviewer" {
-				o.cfgMu.RLock()
-				reviewerProfile := o.cfg.Agent.ReviewerProfile
-				autoReview := o.cfg.Agent.AutoReview
-				o.cfgMu.RUnlock()
 				if autoReview && reviewerProfile != "" {
 					o.dispatchReviewerForIssue(ctx, &state, issue, reviewerProfile, now)
 				}
@@ -956,19 +1132,52 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 
 		case TerminalInputRequired:
 			delete(state.Claimed, ev.IssueID)
+			if liveEntry != nil && liveEntry.PendingInputResume {
+				delete(state.PendingInputResumes, issue.Identifier)
+				liveEntry.PendingInputResume = false
+			}
 			entry := ev.InputRequiredEntry
 			if entry == nil {
 				break
 			}
+			if liveEntry != nil && ev.RunEntry != nil {
+				if ev.RunEntry.TurnCount > 0 {
+					liveEntry.TurnCount = ev.RunEntry.TurnCount
+				}
+				if ev.RunEntry.TotalTokens > 0 {
+					liveEntry.TotalTokens = ev.RunEntry.TotalTokens
+					liveEntry.InputTokens = ev.RunEntry.InputTokens
+					liveEntry.OutputTokens = ev.RunEntry.OutputTokens
+				}
+				if ev.RunEntry.SessionID != "" {
+					liveEntry.SessionID = ev.RunEntry.SessionID
+				}
+			}
 			// Post the agent's question as a tracker comment so it's visible
 			// in Linear/GitHub. The dashboard shows a reply UI; user replies
 			// are also posted as tracker comments before resuming the agent.
-			commentText := fmt.Sprintf("🤖 **Agent needs your input**\n\n%s\n\n---\n_Reply via the Itervox dashboard to continue._", entry.Context)
+			commentText := buildInputRequiredComment(entry)
 			go func(issueID, ident string) {
 				postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 				defer cancel()
-				if err := o.tracker.CreateComment(postCtx, issueID, commentText); err != nil {
+				comment, err := o.tracker.CreateComment(postCtx, issueID, commentText)
+				if err != nil {
 					slog.Warn("orchestrator: failed to post input-required comment", "identifier", ident, "error", err)
+					return
+				}
+				if comment == nil {
+					return
+				}
+				sendCtx, sendCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer sendCancel()
+				select {
+				case o.events <- OrchestratorEvent{
+					Type:       EventInputRequiredCommentRecorded,
+					Identifier: ident,
+					Comment:    comment,
+				}:
+				case <-sendCtx.Done():
+					slog.Warn("orchestrator: input-required comment event lost", "identifier", ident)
 				}
 			}(entry.IssueID, issue.Identifier)
 			state.InputRequiredIssues[issue.Identifier] = entry
@@ -1036,7 +1245,7 @@ func (o *Orchestrator) commentMaxRetriesExhausted(issue domain.Issue, attempts i
 		attempts, lastErr)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := o.tracker.CreateComment(ctx, issue.ID, comment); err != nil {
+	if _, err := o.tracker.CreateComment(ctx, issue.ID, comment); err != nil {
 		slog.Warn("worker: failed to post max-retries comment", "issue_id", issue.ID, "error", err)
 	}
 }
@@ -1165,6 +1374,48 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 // appended to the rendered prompt when agent teams mode is active.
 // activeProfile is excluded from the list so the agent doesn't try to spawn itself.
 // Returns an empty string when there are no other profiles to list.
+// resolveResumeCommand builds the runner command for a resumed input-required
+// worker. It resolves an empty entry.Command by checking the profile first,
+// then falling back to cfg.Agent.Command. The backend hint is applied so that
+// MultiRunner routes to the correct runner (CodexRunner vs ClaudeRunner).
+//
+// Without this, an entry persisted with an empty Command and Backend="codex"
+// would fall back to cfg.Agent.Command (the claude binary) and the CodexRunner
+// would receive the wrong binary on resume.
+func resolveResumeCommand(entry *InputRequiredEntry, cfg *config.Config, cfgMu *sync.RWMutex) string {
+	cmd := entry.Command
+	if cmd == "" {
+		// Resolution order:
+		// 1. Profile's explicit command (most specific)
+		// 2. Backend name as the binary (e.g. "codex" → the codex binary)
+		// 3. cfg.Agent.Command (global default, always claude)
+		cfgMu.RLock()
+		if entry.ProfileName != "" {
+			if profile, ok := cfg.Agent.Profiles[entry.ProfileName]; ok && profile.Command != "" {
+				cmd = profile.Command
+			}
+		}
+		if cmd == "" && entry.Backend != "" && entry.Backend != "claude" {
+			// The backend name IS the binary name (codex → "codex").
+			// Without this, a backend-only profile would fall through to
+			// cfg.Agent.Command (claude) and CodexRunner would receive
+			// the wrong binary.
+			cmd = entry.Backend
+		}
+		if cmd == "" {
+			cmd = cfg.Agent.Command
+		}
+		cfgMu.RUnlock()
+		slog.Info("orchestrator: resume entry had empty command, resolved from config",
+			"identifier", entry.Identifier, "resolved_command", cmd,
+			"backend", entry.Backend, "profile", entry.ProfileName)
+	}
+	if entry.Backend != "" {
+		cmd = agent.CommandWithBackendHint(cmd, entry.Backend)
+	}
+	return cmd
+}
+
 func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile string, backend string) string {
 	if len(profiles) == 0 {
 		return ""

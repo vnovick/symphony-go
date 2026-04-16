@@ -86,6 +86,13 @@ describe('IssueCard', () => {
     expect(dot).toBeInTheDocument();
   });
 
+  it('shows orange status dot for pending_input_resume issue', () => {
+    const pendingIssue = { ...baseIssue, orchestratorState: 'pending_input_resume' as const };
+    const { container } = render(<IssueCard issue={pendingIssue} onSelect={vi.fn()} />);
+    const dot = container.querySelector('.bg-orange-400');
+    expect(dot).toBeInTheDocument();
+  });
+
   it('shows transparent/muted dot for idle issue', () => {
     const idleIssue = { ...baseIssue, orchestratorState: 'idle' as const };
     const { container } = render(<IssueCard issue={idleIssue} onSelect={vi.fn()} />);
@@ -147,6 +154,12 @@ describe('IssueCard', () => {
     const inputIssue = { ...baseIssue, orchestratorState: 'input_required' as const };
     render(<IssueCard issue={inputIssue} onSelect={vi.fn()} />);
     expect(screen.getByText('Needs Input')).toBeInTheDocument();
+  });
+
+  it('shows "Resuming" badge for pending_input_resume issue', () => {
+    const pendingIssue = { ...baseIssue, orchestratorState: 'pending_input_resume' as const };
+    render(<IssueCard issue={pendingIssue} onSelect={vi.fn()} />);
+    expect(screen.getByText('Resuming')).toBeInTheDocument();
   });
 
   it('does not show state badge for idle issue', () => {

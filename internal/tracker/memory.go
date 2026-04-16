@@ -3,6 +3,7 @@ package tracker
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -16,6 +17,7 @@ type MemoryTracker struct {
 	activeStates   []string
 	terminalStates []string
 	injectedError  error
+	nextCommentID  int
 }
 
 // NewMemoryTracker constructs a MemoryTracker with the given issues and state config.
@@ -111,9 +113,19 @@ func (m *MemoryTracker) FetchIssueStatesByIDs(ctx context.Context, issueIDs []st
 	return result, nil
 }
 
-// CreateComment is a no-op for the in-memory tracker.
-func (m *MemoryTracker) CreateComment(_ context.Context, _, _ string) error {
-	return nil
+// CreateComment fabricates a tracker comment for tests that care about exact
+// comment IDs and author identity. It does not mutate stored issues.
+func (m *MemoryTracker) CreateComment(_ context.Context, _, body string) (*domain.Comment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.nextCommentID++
+	comment := &domain.Comment{
+		ID:         "memory-comment-" + strconv.Itoa(m.nextCommentID),
+		Body:       body,
+		AuthorID:   "memory-tracker",
+		AuthorName: "Itervox",
+	}
+	return comment, nil
 }
 
 // UpdateIssueState updates the in-memory state for testing.

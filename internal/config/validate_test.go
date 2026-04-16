@@ -94,3 +94,34 @@ func TestValidateDispatchGitHubKindAccepted(t *testing.T) {
 	err = config.ValidateDispatch(cfg)
 	assert.NoError(t, err)
 }
+
+func TestValidateDispatchFailsWhenAutoReviewAndAutoClearBothEnabled(t *testing.T) {
+	content := minimal(`agent:
+  reviewer_profile: code-reviewer
+  auto_review: true
+workspace:
+  auto_clear: true
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auto_clear")
+	assert.Contains(t, err.Error(), "auto_review")
+}
+
+func TestValidateDispatchFailsWhenAutoReviewEnabledWithoutReviewerProfile(t *testing.T) {
+	content := minimal(`agent:
+  auto_review: true
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reviewer_profile")
+	assert.Contains(t, err.Error(), "auto_review")
+}

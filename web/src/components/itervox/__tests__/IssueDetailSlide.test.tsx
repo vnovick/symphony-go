@@ -18,6 +18,7 @@ vi.mock('../../../queries/issues', () => ({
   useProvideInput: vi.fn(),
   useDismissInput: vi.fn(),
   ISSUES_KEY: ['issues'],
+  ISSUE_KEY: (identifier: string) => ['issue', identifier],
 }));
 
 import { useItervoxStore } from '../../../store/itervoxStore';
@@ -418,6 +419,18 @@ describe('IssueDetailSlide', () => {
     });
     render(<IssueDetailSlide />, { wrapper: makeWrapper() });
     expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+  });
+
+  it('shows pending resume UI without reply form when orchestratorState is pending_input_resume', async () => {
+    setupDefaultMocks('ENG-10', {
+      orchestratorState: 'pending_input_resume',
+      error: 'Reply received, waiting to resume.',
+    });
+    render(<IssueDetailSlide />, { wrapper: makeWrapper() });
+    expect(screen.getByText('Reply received')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Type your reply/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Reply & Resume Agent')).not.toBeInTheDocument();
+    expect(await screen.findByText('Reply received, waiting to resume.')).toBeInTheDocument();
   });
 
   it('shows comment date when createdAt is present', async () => {

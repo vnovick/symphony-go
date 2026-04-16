@@ -51,11 +51,8 @@ func TestParseLineResultInputRequired(t *testing.T) {
 }
 
 func TestIsContentInputRequired(t *testing.T) {
-	// IsContentInputRequired is a thin wrapper over IsSentinelInputRequired —
-	// the agent MUST emit the <!-- itervox:needs-input --> sentinel to signal
-	// input-required. No heuristic pattern matching, no LLM classification.
-	// The prompt template in WORKFLOW.md instructs the agent how/when to emit
-	// the sentinel; the detector's only job is to look for the literal token.
+	// IsContentInputRequired is the literal sentinel detector. Semantic fallback
+	// for plain-English blocking questions is exercised at the orchestrator layer.
 	tests := []struct {
 		name string
 		text string
@@ -63,7 +60,7 @@ func TestIsContentInputRequired(t *testing.T) {
 	}{
 		{"empty string", "", false},
 		{"plain output no sentinel", "I've fixed the bug and pushed the changes.", false},
-		{"questions without sentinel are ignored", "How would you like to proceed?", false},
+		{"questions without sentinel do not match sentinel detector", "How would you like to proceed?", false},
 		{"question mark alone", "Is the test passing?", false},
 		{"sentinel alone", "<!-- itervox:needs-input -->", true},
 		{"sentinel with question", "All done.\n<!-- itervox:needs-input -->\nWhich path do you prefer?", true},

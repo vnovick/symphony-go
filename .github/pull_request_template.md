@@ -19,7 +19,7 @@
 - [ ] `go build ./...` passes
 - [ ] `go test -race ./...` passes (or `make test` if touching Go)
 - [ ] `cd web && pnpm test` passes (or `make web-test` if touching frontend)
-- [ ] `golangci-lint run ./...` passes (if touching Go)
+- [ ] `golangci-lint run ./cmd/... ./internal/...` passes (if touching Go)
 - [ ] `cd web && pnpm lint` passes (if touching frontend)
 - [ ] New behaviour is covered by tests
 - [ ] No API tokens, secrets, or credentials in the diff

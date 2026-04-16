@@ -89,7 +89,7 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 | `make tui-golden` | Regenerate catwalk golden files after intentional TUI render changes |
 | `make fmt` | `gofmt -l -w .` |
 | `make vet` | `go vet ./...` |
-| `make lint-go` | `golangci-lint run ./...` |
+| `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
 | `make web-build` | `pnpm install --frozen-lockfile && pnpm build` in `web/` |
 | `make web-test` | `pnpm install --frozen-lockfile && pnpm test` in `web/` |
 | `make web-spelling` | Guard against the legacy `Symphony` brand name leaking into user-visible TS/TSX strings |
@@ -297,7 +297,7 @@ These are skipped (not silently passed) in CI without credentials.
 
 ### Linting
 
-**Go:** `golangci-lint run ./...`
+**Go:** `golangci-lint run ./cmd/... ./internal/...`
 
 **Frontend:**
 

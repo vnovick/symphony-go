@@ -68,7 +68,7 @@ Pluggable agent backends — Claude Code and Codex are supported today; new back
 - **Concurrent agents** — run up to N agents in parallel with per-state concurrency limits. Scale from 1 to 50+ without config changes.
 - **Retry queue** — failed agents auto-retry with exponential backoff (10s, 20s, 40s… capped at 5 min).
 - **Pause & resume** — free up a slot; resume later via `--resume` and continue the same session from exactly where it stopped.
-- **Input required** — agents can request human input. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
+- **Input required** — agents can request human input. The preferred contract is the explicit `<!-- itervox:needs-input -->` marker, but Itervox also has a best-effort English-oriented fallback for successful final messages that end in a real blocking decision or confirmation prompt. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
 - **Auto-clear workspaces** — delete cloned workspaces after successful completion. Disk stays clean, logs are preserved.
 - **Project filters** — filter issues by Linear project when working across multiple repos.
 - **Stall detection** — no output inside the stall window? Worker is killed and retried automatically.
@@ -225,8 +225,8 @@ Define named agent profiles with their own command, backend, and Liquid-template
 
 Autonomous, not unsupervised. Agents do the work. You stay in control at every checkpoint.
 
-- **AI Code Review.** Configure a `reviewer_prompt` and trigger a second agent to review the PR on the correct branch. The reviewer uses the same runner and profile as the original worker.
-- **Agent asks for help.** When an agent needs input it pauses and posts a comment directly on the Linear or GitHub issue. Reply from the dashboard or from your tracker — the agent picks up your response and resumes automatically.
+- **AI Code Review.** Configure a `reviewer_profile` and optionally `auto_review` to dispatch a second worker for PR review. `agent.auto_review` and `workspace.auto_clear` are mutually exclusive today because the reviewer needs the workspace to remain available after the main worker exits.
+- **Agent asks for help.** When an agent needs input it pauses and posts a comment directly on the Linear or GitHub issue. Explicit `<!-- itervox:needs-input -->` remains the recommended way for prompts and skills to signal this. Itervox also catches common plain-English blocking questions like final choice or confirmation requests with a deterministic fallback detector, but that fallback is heuristic and English-oriented. If your prompts or skills use non-English wording or unusual phrasing, emit the explicit marker. Reply from the dashboard or from your tracker — the agent picks up your response and resumes automatically in the same session.
 - **You merge the PR.** Agents submit PRs and post a session summary as a comment — they never merge. PR links are auto-commented on the tracker issue.
 
 ---
@@ -268,16 +268,26 @@ Shell scripts run at lifecycle events inside each workspace, via `bash -lc`.
 | Hook | Runs | On failure |
 |---|---|---|
 | `after_create` | Once, right after the workspace directory is created | Fatal — aborts the run attempt |
-| `before_run` | Before every agent turn | Fatal — aborts the run attempt |
-| `after_run` | After every agent turn | Logged and ignored |
-| `before_remove` | Before the workspace is removed (auto-clear) | Logged and ignored |
+| `before_run` | Once per worker invocation, before the first agent turn of that attempt | Fatal — aborts the run attempt |
+| `after_run` | After each completed agent turn | Logged and ignored |
+| `before_remove` | Before the workspace is removed (`auto_clear` or manual clear/remove) | Logged and ignored |
+
+`before_run` is intentionally per-attempt, not per-turn, so setup hooks like `git reset --hard` do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
 
 ```yaml
 hooks:
   after_create: |
     git clone git@github.com:org/repo.git .
+    npm ci
   before_run: |
-    git fetch origin && git reset --hard origin/main
+    git fetch origin
+    git checkout main
+    git reset --hard origin/main
+  after_run: |
+    git status --short
+  before_remove: |
+    tar -czf ../workspace-backup.tgz .
+  timeout_ms: 120000
 ```
 
 ---
@@ -362,6 +372,8 @@ Implement the change, run tests, and open a PR.
 The prompt template has access to `issue.*` fields (`identifier`, `title`, `description`, `state`, `priority`, `labels`, `blocked_by`, …) and the `attempt` counter on retries.
 
 Full field reference: **[itervox.dev/configuration/](https://itervox.dev/configuration/)**.
+
+`workspace.auto_clear` and `agent.auto_review` cannot be enabled together. Auto-review runs after the main worker finishes and needs that workspace and branch state to still exist.
 
 ---
 

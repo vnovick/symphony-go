@@ -119,9 +119,12 @@ func TestMemoryTrackerInjectError(t *testing.T) {
 
 func TestMemoryTrackerCreateComment(t *testing.T) {
 	mem := tracker.NewMemoryTracker(nil, nil, nil)
-	// CreateComment is a no-op; it must not error.
-	err := mem.CreateComment(context.Background(), "id-1", "a comment")
+	comment, err := mem.CreateComment(context.Background(), "id-1", "a comment")
 	require.NoError(t, err)
+	require.NotNil(t, comment)
+	assert.NotEmpty(t, comment.ID)
+	assert.Equal(t, "a comment", comment.Body)
+	assert.Equal(t, "memory-tracker", comment.AuthorID)
 }
 
 func TestMemoryTrackerUpdateIssueStateViaMethod(t *testing.T) {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,32 @@ import (
 var supportedTrackerKinds = map[string]bool{
 	"linear": true,
 	"github": true,
+}
+
+// ErrAutoClearAutoReviewConflict reports that workspace cleanup and automatic
+// reviewer dispatch were enabled together in a way that would race.
+var ErrAutoClearAutoReviewConflict = errors.New("workspace.auto_clear and agent.auto_review cannot both be enabled")
+
+// ErrAutoReviewRequiresReviewerProfile reports that automatic review was
+// enabled without a configured reviewer profile.
+var ErrAutoReviewRequiresReviewerProfile = errors.New("agent.auto_review requires agent.reviewer_profile to be set")
+
+// ValidateReviewerAutoReview rejects configurations where auto-review was
+// enabled without a reviewer profile to dispatch.
+func ValidateReviewerAutoReview(reviewerProfile string, autoReview bool) error {
+	if autoReview && strings.TrimSpace(reviewerProfile) == "" {
+		return fmt.Errorf("%w: set agent.reviewer_profile or disable agent.auto_review", ErrAutoReviewRequiresReviewerProfile)
+	}
+	return nil
+}
+
+// ValidateAutoClearAutoReview rejects configurations where automatic review is
+// enabled for a reviewer profile while workspace auto-clear is also enabled.
+func ValidateAutoClearAutoReview(autoClear bool, reviewerProfile string, autoReview bool) error {
+	if autoClear && autoReview && strings.TrimSpace(reviewerProfile) != "" {
+		return fmt.Errorf("%w: disable either workspace.auto_clear or agent.auto_review", ErrAutoClearAutoReviewConflict)
+	}
+	return nil
 }
 
 // ValidateDispatch runs the spec §6.3 dispatch preflight checks against an
@@ -65,6 +92,17 @@ func ValidateDispatch(cfg *Config) error {
 			return fmt.Errorf("invalid profile %q: command %q contains shell metacharacters (%s); use a wrapper script instead",
 				name, profile.Command, shellMetachars)
 		}
+	}
+
+	if err := ValidateReviewerAutoReview(cfg.Agent.ReviewerProfile, cfg.Agent.AutoReview); err != nil {
+		return err
+	}
+	if err := ValidateAutoClearAutoReview(
+		cfg.Workspace.AutoClearWorkspace,
+		cfg.Agent.ReviewerProfile,
+		cfg.Agent.AutoReview,
+	); err != nil {
+		return err
 	}
 
 	return nil

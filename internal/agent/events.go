@@ -137,8 +137,8 @@ func isInputRequiredMsg(msg string) bool {
 const InputRequiredSentinel = "<!-- itervox:needs-input -->"
 
 // IsSentinelInputRequired returns true when the agent's output contains the
-// reliable opt-in sentinel. Prefer this over the heuristic detector — it has
-// no false positives and no locale dependence.
+// reliable opt-in sentinel. Prefer this when an explicit signal is available —
+// it has no false positives and no locale dependence.
 func IsSentinelInputRequired(text string) bool {
 	if len(text) == 0 {
 		return false
@@ -147,10 +147,9 @@ func IsSentinelInputRequired(text string) bool {
 }
 
 // IsContentInputRequired returns true when the agent's output contains the
-// input-required sentinel. This is the single source of truth — no heuristics,
-// no pattern matching, no LLM classifiers. The prompt template in WORKFLOW.md
-// instructs the agent to emit the sentinel when it needs human input. The
-// agent telling us it's blocked is the only reliable signal.
+// input-required sentinel. This helper is intentionally literal; higher layers
+// may apply additional deterministic fallback handling when a successful turn
+// asked the human a blocking question without emitting the sentinel.
 func IsContentInputRequired(text string) bool {
 	return IsSentinelInputRequired(text)
 }

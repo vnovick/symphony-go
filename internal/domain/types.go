@@ -38,8 +38,10 @@ type IssueLogEntry struct {
 
 // Comment — a comment on a tracker issue.
 type Comment struct {
+	ID         string
 	Body       string
 	CreatedAt  *time.Time
+	AuthorID   string
 	AuthorName string
 }
 

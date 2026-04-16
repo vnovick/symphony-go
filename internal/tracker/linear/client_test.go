@@ -661,6 +661,15 @@ func TestCreateComment(t *testing.T) {
 	resp := map[string]interface{}{
 		"data": map[string]interface{}{
 			"commentCreate": map[string]interface{}{
+				"comment": map[string]interface{}{
+					"id":        "comment-1",
+					"body":      "This is a comment",
+					"createdAt": "2026-04-15T10:00:00Z",
+					"user": map[string]interface{}{
+						"id":   "user-1",
+						"name": "Itervox",
+					},
+				},
 				"success": true,
 			},
 		},
@@ -673,8 +682,12 @@ func TestCreateComment(t *testing.T) {
 		Endpoint: srv.URL,
 	})
 
-	err := client.CreateComment(context.Background(), "issue-1", "This is a comment")
+	comment, err := client.CreateComment(context.Background(), "issue-1", "This is a comment")
 	require.NoError(t, err)
+	require.NotNil(t, comment)
+	assert.Equal(t, "comment-1", comment.ID)
+	assert.Equal(t, "user-1", comment.AuthorID)
+	assert.Equal(t, "Itervox", comment.AuthorName)
 }
 
 func TestCreateCommentFailure(t *testing.T) {
@@ -693,8 +706,9 @@ func TestCreateCommentFailure(t *testing.T) {
 		Endpoint: srv.URL,
 	})
 
-	err := client.CreateComment(context.Background(), "issue-1", "This is a comment")
+	comment, err := client.CreateComment(context.Background(), "issue-1", "This is a comment")
 	require.Error(t, err)
+	assert.Nil(t, comment)
 	assert.Contains(t, err.Error(), "linear_create_comment")
 }
 

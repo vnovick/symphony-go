@@ -238,11 +238,20 @@ func (o *Orchestrator) SetAgentModeCfg(mode string) {
 }
 
 // SetAutoClearWorkspaceCfg toggles automatic workspace removal after a task succeeds.
+// Returns an error when the change would conflict with auto-review.
 // Safe to call from any goroutine.
-func (o *Orchestrator) SetAutoClearWorkspaceCfg(enabled bool) {
+func (o *Orchestrator) SetAutoClearWorkspaceCfg(enabled bool) error {
 	o.cfgMu.Lock()
+	defer o.cfgMu.Unlock()
+	if err := config.ValidateAutoClearAutoReview(
+		enabled,
+		o.cfg.Agent.ReviewerProfile,
+		o.cfg.Agent.AutoReview,
+	); err != nil {
+		return err
+	}
 	o.cfg.Workspace.AutoClearWorkspace = enabled
-	o.cfgMu.Unlock()
+	return nil
 }
 
 // ClearHistory wipes the in-memory completed-run ring buffer and deletes the
@@ -293,11 +302,23 @@ func (o *Orchestrator) ReviewerCfg() (profile string, autoReview bool) {
 }
 
 // SetReviewerCfg sets the reviewer profile name and auto-review flag under cfgMu.
-func (o *Orchestrator) SetReviewerCfg(profile string, autoReview bool) {
+// Returns an error when the change would conflict with auto-clear.
+func (o *Orchestrator) SetReviewerCfg(profile string, autoReview bool) error {
 	o.cfgMu.Lock()
+	defer o.cfgMu.Unlock()
+	if err := config.ValidateReviewerAutoReview(profile, autoReview); err != nil {
+		return err
+	}
+	if err := config.ValidateAutoClearAutoReview(
+		o.cfg.Workspace.AutoClearWorkspace,
+		profile,
+		autoReview,
+	); err != nil {
+		return err
+	}
 	o.cfg.Agent.ReviewerProfile = profile
 	o.cfg.Agent.AutoReview = autoReview
-	o.cfgMu.Unlock()
+	return nil
 }
 
 // ProfilesCfg returns a shallow copy of cfg.Agent.Profiles under cfgMu.

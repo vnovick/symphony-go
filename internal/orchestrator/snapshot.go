@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -55,6 +56,43 @@ func (o *Orchestrator) Snapshot() State {
 }
 
 const maxHistory = 200
+
+func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+
+	tmp, err := os.CreateTemp(dir, base+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	removeTmp = false
+	return nil
+}
 
 // SetHistoryFile sets the path for persisting completed runs across restarts.
 // Must be called before Run; calling after Run starts is a no-op with a logged error.
@@ -145,7 +183,7 @@ func (o *Orchestrator) addCompletedRun(run CompletedRun) {
 			slog.Warn("orchestrator: failed to marshal history entries", "error", err)
 			return
 		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
+		if err := writeFileAtomically(path, data, 0o644); err != nil {
 			slog.Warn("orchestrator: failed to write history file", "path", path, "error", err)
 		}
 	}
@@ -207,7 +245,8 @@ func (o *Orchestrator) loadPausedFromDisk(state State) State {
 	return state
 }
 
-// SetInputRequiredFile sets the path for persisting InputRequiredIssues across restarts.
+// SetInputRequiredFile sets the path for persisting input-required waiting
+// entries and pending resumes across restarts.
 // Must be called before Run.
 func (o *Orchestrator) SetInputRequiredFile(path string) {
 	o.inputRequiredMu.Lock()
@@ -217,50 +256,103 @@ func (o *Orchestrator) SetInputRequiredFile(path string) {
 
 // inputRequiredDisk is the JSON-serializable form of InputRequiredEntry.
 type inputRequiredDisk struct {
-	IssueID     string `json:"issue_id"`
-	Identifier  string `json:"identifier"`
-	SessionID   string `json:"session_id"`
-	Context     string `json:"context"`
-	Backend     string `json:"backend"`
-	Command     string `json:"command"`
-	WorkerHost  string `json:"worker_host,omitempty"`
-	ProfileName string `json:"profile_name,omitempty"`
-	QueuedAt    string `json:"queued_at"`
+	IssueID            string `json:"issue_id"`
+	Identifier         string `json:"identifier"`
+	SessionID          string `json:"session_id"`
+	Context            string `json:"context"`
+	BranchName         string `json:"branch_name,omitempty"`
+	Backend            string `json:"backend"`
+	Command            string `json:"command"`
+	WorkerHost         string `json:"worker_host,omitempty"`
+	ProfileName        string `json:"profile_name,omitempty"`
+	QuestionCommentID  string `json:"question_comment_id,omitempty"`
+	QuestionAuthorID   string `json:"question_author_id,omitempty"`
+	QuestionAuthorName string `json:"question_author_name,omitempty"`
+	QueuedAt           string `json:"queued_at"`
 }
 
-// saveInputRequiredToDisk writes InputRequiredIssues to disk.
-func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequiredEntry) {
+type pendingInputResumeDisk struct {
+	IssueID            string `json:"issue_id"`
+	Identifier         string `json:"identifier"`
+	SessionID          string `json:"session_id"`
+	Context            string `json:"context"`
+	UserMessage        string `json:"user_message"`
+	BranchName         string `json:"branch_name,omitempty"`
+	Backend            string `json:"backend"`
+	Command            string `json:"command"`
+	WorkerHost         string `json:"worker_host,omitempty"`
+	ProfileName        string `json:"profile_name,omitempty"`
+	QuestionCommentID  string `json:"question_comment_id,omitempty"`
+	QuestionAuthorID   string `json:"question_author_id,omitempty"`
+	QuestionAuthorName string `json:"question_author_name,omitempty"`
+	QueuedAt           string `json:"queued_at"`
+}
+
+type inputRequiredStateDisk struct {
+	Awaiting      map[string]inputRequiredDisk      `json:"awaiting,omitempty"`
+	PendingResume map[string]pendingInputResumeDisk `json:"pending_resume,omitempty"`
+}
+
+// saveInputRequiredToDisk writes InputRequiredIssues and PendingInputResumes to disk.
+func (o *Orchestrator) saveInputRequiredToDisk(entries map[string]*InputRequiredEntry, pending map[string]*PendingInputResumeEntry) {
 	o.inputRequiredMu.RLock()
 	path := o.inputRequiredFile
 	o.inputRequiredMu.RUnlock()
 	if path == "" {
 		return
 	}
-	disk := make(map[string]inputRequiredDisk, len(entries))
+	awaitingDisk := make(map[string]inputRequiredDisk, len(entries))
 	for k, v := range entries {
-		disk[k] = inputRequiredDisk{
-			IssueID:     v.IssueID,
-			Identifier:  v.Identifier,
-			SessionID:   v.SessionID,
-			Context:     v.Context,
-			Backend:     v.Backend,
-			Command:     v.Command,
-			WorkerHost:  v.WorkerHost,
-			ProfileName: v.ProfileName,
-			QueuedAt:    v.QueuedAt.Format(time.RFC3339),
+		awaitingDisk[k] = inputRequiredDisk{
+			IssueID:            v.IssueID,
+			Identifier:         v.Identifier,
+			SessionID:          v.SessionID,
+			Context:            v.Context,
+			BranchName:         v.BranchName,
+			Backend:            v.Backend,
+			Command:            v.Command,
+			WorkerHost:         v.WorkerHost,
+			ProfileName:        v.ProfileName,
+			QuestionCommentID:  v.QuestionCommentID,
+			QuestionAuthorID:   v.QuestionAuthorID,
+			QuestionAuthorName: v.QuestionAuthorName,
+			QueuedAt:           v.QueuedAt.Format(time.RFC3339),
 		}
 	}
-	data, err := json.Marshal(disk)
+	pendingDisk := make(map[string]pendingInputResumeDisk, len(pending))
+	for k, v := range pending {
+		pendingDisk[k] = pendingInputResumeDisk{
+			IssueID:            v.IssueID,
+			Identifier:         v.Identifier,
+			SessionID:          v.SessionID,
+			Context:            v.Context,
+			UserMessage:        v.UserMessage,
+			BranchName:         v.BranchName,
+			Backend:            v.Backend,
+			Command:            v.Command,
+			WorkerHost:         v.WorkerHost,
+			ProfileName:        v.ProfileName,
+			QuestionCommentID:  v.QuestionCommentID,
+			QuestionAuthorID:   v.QuestionAuthorID,
+			QuestionAuthorName: v.QuestionAuthorName,
+			QueuedAt:           v.QueuedAt.Format(time.RFC3339),
+		}
+	}
+	data, err := json.Marshal(inputRequiredStateDisk{
+		Awaiting:      awaitingDisk,
+		PendingResume: pendingDisk,
+	})
 	if err != nil {
 		slog.Warn("orchestrator: failed to marshal input-required entries", "error", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeFileAtomically(path, data, 0o644); err != nil {
 		slog.Warn("orchestrator: failed to write input-required file", "path", path, "error", err)
 	}
 }
 
-// loadInputRequiredFromDisk reads the input-required file and pre-populates state.InputRequiredIssues.
+// loadInputRequiredFromDisk reads the input-required file and pre-populates
+// state.InputRequiredIssues and state.PendingInputResumes.
 func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 	o.inputRequiredMu.RLock()
 	path := o.inputRequiredFile
@@ -275,26 +367,67 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 		}
 		return state
 	}
-	var disk map[string]inputRequiredDisk
-	if err := json.Unmarshal(data, &disk); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		slog.Warn("orchestrator: failed to parse input-required file", "path", path, "error", err)
 		return state
 	}
-	for k, v := range disk {
-		queuedAt, _ := time.Parse(time.RFC3339, v.QueuedAt)
-		state.InputRequiredIssues[k] = &InputRequiredEntry{
-			IssueID:     v.IssueID,
-			Identifier:  v.Identifier,
-			SessionID:   v.SessionID,
-			Context:     v.Context,
-			Backend:     v.Backend,
-			Command:     v.Command,
-			WorkerHost:  v.WorkerHost,
-			ProfileName: v.ProfileName,
-			QueuedAt:    queuedAt,
+
+	var awaiting map[string]inputRequiredDisk
+	var pending map[string]pendingInputResumeDisk
+	if _, ok := raw["awaiting"]; ok || raw["pending_resume"] != nil {
+		var disk inputRequiredStateDisk
+		if err := json.Unmarshal(data, &disk); err != nil {
+			slog.Warn("orchestrator: failed to parse input-required state file", "path", path, "error", err)
+			return state
+		}
+		awaiting = disk.Awaiting
+		pending = disk.PendingResume
+	} else {
+		if err := json.Unmarshal(data, &awaiting); err != nil {
+			slog.Warn("orchestrator: failed to parse legacy input-required file", "path", path, "error", err)
+			return state
 		}
 	}
-	slog.Info("orchestrator: loaded input-required entries", "path", path, "count", len(disk))
+
+	for k, v := range awaiting {
+		queuedAt, _ := time.Parse(time.RFC3339, v.QueuedAt)
+		state.InputRequiredIssues[k] = &InputRequiredEntry{
+			IssueID:            v.IssueID,
+			Identifier:         v.Identifier,
+			SessionID:          v.SessionID,
+			Context:            v.Context,
+			BranchName:         v.BranchName,
+			Backend:            v.Backend,
+			Command:            v.Command,
+			WorkerHost:         v.WorkerHost,
+			ProfileName:        v.ProfileName,
+			QuestionCommentID:  v.QuestionCommentID,
+			QuestionAuthorID:   v.QuestionAuthorID,
+			QuestionAuthorName: v.QuestionAuthorName,
+			QueuedAt:           queuedAt,
+		}
+	}
+	for k, v := range pending {
+		queuedAt, _ := time.Parse(time.RFC3339, v.QueuedAt)
+		state.PendingInputResumes[k] = &PendingInputResumeEntry{
+			IssueID:            v.IssueID,
+			Identifier:         v.Identifier,
+			SessionID:          v.SessionID,
+			Context:            v.Context,
+			UserMessage:        v.UserMessage,
+			BranchName:         v.BranchName,
+			Backend:            v.Backend,
+			Command:            v.Command,
+			WorkerHost:         v.WorkerHost,
+			ProfileName:        v.ProfileName,
+			QuestionCommentID:  v.QuestionCommentID,
+			QuestionAuthorID:   v.QuestionAuthorID,
+			QuestionAuthorName: v.QuestionAuthorName,
+			QueuedAt:           queuedAt,
+		}
+	}
+	slog.Info("orchestrator: loaded input-required entries", "path", path, "awaiting", len(awaiting), "pending_resume", len(pending))
 	return state
 }
 
@@ -329,6 +462,16 @@ func copyStructMap(m map[string]struct{}) map[string]struct{} {
 // Entries are pointers but are never mutated after creation, so sharing is safe.
 func copyInputRequiredMap(m map[string]*InputRequiredEntry) map[string]*InputRequiredEntry {
 	cp := make(map[string]*InputRequiredEntry, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+// copyPendingInputResumeMap returns a shallow copy of the PendingInputResumes map.
+// Entries are pointers but are never mutated after creation, so sharing is safe.
+func copyPendingInputResumeMap(m map[string]*PendingInputResumeEntry) map[string]*PendingInputResumeEntry {
+	cp := make(map[string]*PendingInputResumeEntry, len(m))
 	for k, v := range m {
 		cp[k] = v
 	}
@@ -383,7 +526,7 @@ func (o *Orchestrator) savePausedToDisk(paused map[string]string) {
 		slog.Warn("orchestrator: failed to marshal paused identifiers", "error", err)
 		return
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeFileAtomically(path, data, 0o644); err != nil {
 		slog.Warn("orchestrator: failed to write paused file", "path", path, "error", err)
 	}
 }
@@ -415,6 +558,7 @@ func (o *Orchestrator) storeSnap(s State) {
 	snap.PrevActiveIdentifiers = copyStructMap(s.PrevActiveIdentifiers)
 	snap.DiscardingIdentifiers = copyStructMap(s.DiscardingIdentifiers)
 	snap.InputRequiredIssues = copyInputRequiredMap(s.InputRequiredIssues)
+	snap.PendingInputResumes = copyPendingInputResumeMap(s.PendingInputResumes)
 	snap.InlineInputIssues = copyInlineInputMap(s.InlineInputIssues)
 
 	o.snapMu.Lock()
@@ -422,7 +566,7 @@ func (o *Orchestrator) storeSnap(s State) {
 	o.snapMu.Unlock()
 
 	o.savePausedToDisk(snap.PausedIdentifiers)
-	o.saveInputRequiredToDisk(snap.InputRequiredIssues)
+	o.saveInputRequiredToDisk(snap.InputRequiredIssues, snap.PendingInputResumes)
 	if o.OnStateChange != nil {
 		o.OnStateChange()
 	}

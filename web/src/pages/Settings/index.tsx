@@ -11,7 +11,6 @@ import { ReviewerCard } from './ReviewerCard';
 import { CapacityCard } from './CapacityCard';
 import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
 import { useClearAllLogs, useClearAllWorkspaces } from '../../queries/issues';
-import { useQueryClient } from '@tanstack/react-query';
 import { EMPTY_PROFILE_DEFS, EMPTY_PROFILES, EMPTY_STATES } from '../../utils/constants';
 
 export default function Settings() {
@@ -36,11 +35,11 @@ export default function Settings() {
     setProjectFilter,
     setReviewerConfig,
   } = useSettingsActions();
-  const queryClient = useQueryClient();
   const clearAllLogs = useClearAllLogs();
   const clearAllWorkspaces = useClearAllWorkspaces();
   const trackerKind = useItervoxStore((s) => s.snapshot?.trackerKind);
   const activeProjectFilter = useItervoxStore((s) => s.snapshot?.activeProjectFilter);
+  const autoReviewEnabled = autoReview && reviewerProfile !== '';
 
   return (
     <>
@@ -88,6 +87,7 @@ export default function Settings() {
           <ReviewerCard
             reviewerProfile={reviewerProfile}
             autoReview={autoReview}
+            autoClearWorkspace={autoClearWorkspace}
             availableProfiles={availableProfiles}
             onSave={setReviewerConfig}
           />
@@ -122,7 +122,11 @@ export default function Settings() {
           >
             Workspace
           </h2>
-          <WorkspaceCard autoClearWorkspace={autoClearWorkspace} onToggle={setAutoClearWorkspace} />
+          <WorkspaceCard
+            autoClearWorkspace={autoClearWorkspace}
+            autoReviewEnabled={autoReviewEnabled}
+            onToggle={setAutoClearWorkspace}
+          />
         </section>
 
         {/* ── Agents ────────────────────────────────────────────────────── */}
@@ -186,13 +190,7 @@ export default function Settings() {
                 pendingLabel="Resetting…"
                 isPending={clearAllWorkspaces.isPending}
                 onConfirm={() => {
-                  clearAllWorkspaces.mutate(undefined, {
-                    onSuccess: () => {
-                      void useItervoxStore.getState().refreshSnapshot();
-                      void queryClient.invalidateQueries({ queryKey: ['logs'] });
-                      void queryClient.invalidateQueries({ queryKey: ['sublogs'] });
-                    },
-                  });
+                  clearAllWorkspaces.mutate(undefined);
                 }}
               />
             </div>

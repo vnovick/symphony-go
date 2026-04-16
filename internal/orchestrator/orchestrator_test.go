@@ -89,8 +89,11 @@ func TestCancelResumeRace(t *testing.T) {
 	orch.SetPausedFile(filepath.Join(dir, "paused.json"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	go orch.Run(ctx) //nolint:errcheck
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = orch.Run(ctx)
+	}()
 
 	// Let the orchestrator start.
 	time.Sleep(30 * time.Millisecond)
@@ -109,6 +112,12 @@ func TestCancelResumeRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orchestrator did not stop after cancel")
+	}
 }
 
 // TestReviewerRespectsCancellation verifies that a reviewer goroutine exits

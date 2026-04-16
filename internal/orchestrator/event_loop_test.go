@@ -395,9 +395,19 @@ func TestSetAppSessionID(t *testing.T) {
 
 func TestAutoClearWorkspaceCfgRoundtrip(t *testing.T) {
 	o := newOrch()
-	o.SetAutoClearWorkspaceCfg(true)
+	require.NoError(t, o.SetAutoClearWorkspaceCfg(true))
 	assert.True(t, o.AutoClearWorkspaceCfg())
-	o.SetAutoClearWorkspaceCfg(false)
+	require.NoError(t, o.SetAutoClearWorkspaceCfg(false))
+	assert.False(t, o.AutoClearWorkspaceCfg())
+}
+
+func TestAutoClearWorkspaceCfgRejectsReviewerConflict(t *testing.T) {
+	o := newOrch()
+	require.NoError(t, o.SetReviewerCfg("reviewer", true))
+
+	err := o.SetAutoClearWorkspaceCfg(true)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, config.ErrAutoClearAutoReviewConflict)
 	assert.False(t, o.AutoClearWorkspaceCfg())
 }
 
@@ -1726,7 +1736,7 @@ func TestInputRequiredFilePersistence(t *testing.T) {
 	orch.SetInputRequiredFile(irFile)
 
 	// Write a test file manually (simulating what saveInputRequiredToDisk does).
-	testData := `{"ENG-1":{"issue_id":"id1","identifier":"ENG-1","session_id":"s1","context":"need API key","backend":"claude","command":"claude","queued_at":"2025-01-01T00:00:00Z"}}`
+	testData := `{"ENG-1":{"issue_id":"id1","identifier":"ENG-1","session_id":"s1","context":"need API key","backend":"claude","command":"claude","branch_name":"feature/eng-1","queued_at":"2025-01-01T00:00:00Z"}}`
 	require.NoError(t, writeTestFile(irFile, testData))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
@@ -1741,6 +1751,7 @@ func TestInputRequiredFilePersistence(t *testing.T) {
 	if ok {
 		assert.Equal(t, "id1", entry.IssueID)
 		assert.Equal(t, "need API key", entry.Context)
+		assert.Equal(t, "feature/eng-1", entry.BranchName)
 	}
 }
 
@@ -1762,9 +1773,10 @@ type resumeTestRunner struct {
 	mu         sync.Mutex
 	calls      int
 	sessionIDs []string // sessionID pointer values seen on each call
+	prompts    []string
 }
 
-func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, _, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
 	r.mu.Lock()
 	r.calls++
 	callNum := r.calls
@@ -1773,6 +1785,7 @@ func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(a
 		sid = *sessionID
 	}
 	r.sessionIDs = append(r.sessionIDs, sid)
+	r.prompts = append(r.prompts, prompt)
 	r.mu.Unlock()
 
 	switch callNum {
@@ -1805,6 +1818,7 @@ func (r *resumeTestRunner) RunTurn(ctx context.Context, _ agent.Logger, _ func(a
 func TestManualPauseResumePreservesSession(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
+	cfg.PromptTemplate = "Resume {{ issue.identifier }} :: {{ issue.title }}"
 	mt := singleIssueTracker(t, "In Progress")
 	runner := &resumeTestRunner{}
 	orch := orchestrator.New(cfg, mt, runner, nil)
@@ -1853,26 +1867,29 @@ func TestManualPauseResumePreservesSession(t *testing.T) {
 	// User clicks Resume.
 	require.True(t, orch.ResumeIssue("ENG-1"))
 
-	// Wait for the runner to be called a second time.
+	// Wait for the resumed worker invocation (third RunTurn call overall:
+	// first-turn success, second-turn stall, third-turn resumed worker).
 	deadline = time.After(3 * time.Second)
 	for {
 		runner.mu.Lock()
 		callCount := runner.calls
 		var lastSid string
-		if len(runner.sessionIDs) >= 2 {
-			lastSid = runner.sessionIDs[1]
+		var resumedPrompt string
+		if len(runner.sessionIDs) >= 3 {
+			lastSid = runner.sessionIDs[2]
+			resumedPrompt = runner.prompts[2]
 		}
 		runner.mu.Unlock()
-		if callCount >= 2 {
-			// CRITICAL ASSERTION: the second call must have received the
-			// captured session ID via the resumeSessionID parameter.
+		if callCount >= 3 {
 			require.Equal(t, "agent-session-xyz", lastSid,
 				"resumed worker must call RunTurn with the captured session ID")
+			require.Equal(t, "Resume ENG-1 :: T", resumedPrompt,
+				"manual pause/resume should keep the rendered workflow prompt")
 			return
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("runner was not called a second time after resume; calls=%d", callCount)
+			t.Fatalf("runner was not called by the resumed worker; calls=%d", callCount)
 		case <-time.After(20 * time.Millisecond):
 		}
 	}

@@ -43,10 +43,15 @@ const (
 // profileName is the active named profile for this issue (may be ""); used to
 // exclude the current agent from its own sub-agent context in teams mode.
 // skipPRCheck bypasses the open-PR guard (used when a forced re-analysis is requested).
-// resumeSessionID, if non-empty, instructs the runner to use --resume <id> on
-// turn 1 so the agent continues an existing session (set when an issue is
-// resumed from manual pause and we have a captured session ID).
-func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool, resumeSessionID string) {
+// resume, when non-nil, continues an existing agent session via --resume:
+//   - SessionID set, UserMessage empty: pause/resume — normal prompt rendering.
+//   - SessionID set, UserMessage set: input-required resume — the user's reply
+//     replaces the rendered prompt, the run is capped at one turn, and PR
+//     detection is skipped (the worktree already exists from the original
+//     dispatch and we're continuing in-place).
+//
+// See ResumeContext in state.go for the full contract.
+func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attempt int, workerHost string, agentCommand string, backend string, profileName string, skipPRCheck bool, resume *ResumeContext) {
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("worker panic: %v", r)
@@ -78,8 +83,21 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	// --- Workspace ---
+	hasResumeSession := resume != nil && resume.SessionID != ""
+	hasResumeMessage := resume != nil && resume.UserMessage != ""
+	inputRequiredResume := hasResumeSession && hasResumeMessage
+	// Input-required resumes usually continue inside the workspace created by
+	// the original dispatch. Keep that workspace when it still exists, but
+	// fall back to fresh-dispatch setup if EnsureWorkspace has to recreate it
+	// after a restart or manual cleanup.
+	if inputRequiredResume {
+		skipPRCheck = true
+	}
+	skipFreshDispatchSetup := inputRequiredResume
+
 	wsPath := ""
 	branchName := workspace.ResolveWorktreeBranch(issue.BranchName, issue.Identifier)
+	activeBranchName := branchName
 
 	// Detect open PR (best-effort). On success, use the PR branch so the worktree
 	// checks out the existing branch instead of creating a new one.
@@ -96,6 +114,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 		if prCtx != nil {
 			branchName = prCtx.Branch
+			activeBranchName = prCtx.Branch
 			detectedPRURL = prCtx.URL
 			slog.Info("worker: open PR detected, using PR branch",
 				"issue_identifier", issue.Identifier, "branch", prCtx.Branch, "pr_url", prCtx.URL)
@@ -105,10 +124,16 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 		}
 	} else {
-		slog.Info("worker: skipping PR check (forced re-analysis requested)",
-			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
+		reason := "forced re-analysis requested"
+		logMsg := "worker: forced re-analysis of existing PR"
+		if inputRequiredResume {
+			reason = "input-required resume"
+			logMsg = "worker: resuming existing workspace after input request"
+		}
+		slog.Info("worker: skipping PR check",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "reason", reason)
 		if o.logBuf != nil {
-			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", "worker: forced re-analysis of existing PR", runLogID))
+			o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", logMsg, runLogID))
 		}
 	}
 
@@ -124,8 +149,16 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			return
 		}
 		wsPath = ws.Path
+		if inputRequiredResume && ws.CreatedNow {
+			skipFreshDispatchSetup = false
+			slog.Info("worker: input-required resume recreated workspace, rerunning setup",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier)
+			if o.logBuf != nil {
+				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", "worker: recreated workspace for input-required resume", runLogID))
+			}
+		}
 
-		if ws.CreatedNow {
+		if ws.CreatedNow && !skipFreshDispatchSetup {
 			hookLog := o.hookLogFn(issue.Identifier, runLogID)
 			if err := workspace.RunHook(ctx, o.cfg.Hooks.AfterCreate, wsPath, o.cfg.Hooks.TimeoutMs, hookLog); err != nil {
 				slog.Warn("worker: after_create hook failed, removing workspace so next retry re-runs it",
@@ -147,7 +180,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	// Transition issue to working state (e.g. Todo → In Progress).
-	o.transitionToWorking(ctx, issue)
+	if !skipFreshDispatchSetup {
+		o.transitionToWorking(ctx, issue)
+	}
 
 	// Log the backend being used for this worker.
 	displayBackend := backend
@@ -176,7 +211,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// before_run hook runs once per worker invocation (not per turn), so that
 	// hooks like "git reset --hard origin/main" set up a clean workspace for the
 	// attempt without wiping Claude's work between turns.
-	if wsPath != "" {
+	if wsPath != "" && !skipFreshDispatchSetup {
 		hookLog := o.hookLogFn(issue.Identifier, runLogID)
 		if err := workspace.RunHook(ctx, beforeRunHook, wsPath, hookTimeoutMs, hookLog); err != nil {
 			slog.Warn("worker: before_run hook failed",
@@ -201,7 +236,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	o.cfgMu.RLock()
 	worktreeMode := o.cfg.Workspace.Worktree
 	o.cfgMu.RUnlock()
-	if wsPath != "" && !worktreeMode && issue.BranchName != nil && *issue.BranchName != "" {
+	if wsPath != "" && !skipFreshDispatchSetup && !worktreeMode && issue.BranchName != nil && *issue.BranchName != "" {
 		if b := *issue.BranchName; !workspace.IsDefaultBranch(b) {
 			if err := workspace.CheckoutBranch(ctx, wsPath, b); err != nil {
 				slog.Warn("worker: branch checkout failed, agent will start from current branch",
@@ -215,21 +250,28 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	}
 
 	var claudeSessionID *string
-	// If the orchestrator passed in a resume session ID (set when an issue is
-	// dispatched after manual pause), pre-populate claudeSessionID so the first
-	// turn uses --resume / `exec resume` and continues the existing session.
-	if resumeSessionID != "" {
-		sid := resumeSessionID
+	// Pre-populate sessionID for --resume when this worker is continuing an
+	// existing agent session (pause/resume or input-required resume).
+	if resume != nil && resume.SessionID != "" {
+		sid := resume.SessionID
 		claudeSessionID = &sid
-		slog.Info("worker: resuming from manual pause",
-			"issue_id", issue.ID, "issue_identifier", issue.Identifier, "session_id", resumeSessionID)
+		slog.Info("worker: resuming existing session",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+			"session_id", resume.SessionID,
+			"input_required", resume.UserMessage != "")
 	}
 	var allTextBlocks []string                                  // accumulate all Claude text blocks for the final tracker comment
 	var cumulativeInput, cumulativeCached, cumulativeOutput int // accumulate tokens across turns for dashboard display
 	var prevResultText string                                   // detect repeated identical responses (Codex resume loop)
+	// Input-required resume: single turn with the user's reply as the prompt.
+	// Normal dispatch and pause/resume use the configured max.
+	effectiveMaxTurns := maxTurns
+	if inputRequiredResume {
+		effectiveMaxTurns = 1
+	}
 	startedAt := time.Now()
 	turn := 1
-	for ; turn <= maxTurns; turn++ {
+	for ; turn <= effectiveMaxTurns; turn++ {
 		// Enrich issue with comments before rendering the first-turn prompt.
 		if turn == 1 {
 			if detailed, err := o.tracker.FetchIssueDetail(ctx, issue.ID); err != nil {
@@ -308,6 +350,30 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			}
 		}
 
+		// Input-required resume: replace the rendered prompt with the user's
+		// reply so the agent receives the answer to its question.
+		// For pause/resume (UserMessage empty), keep the rendered prompt
+		// as-is — Claude Code's `--resume <sid> -p <prompt>` continues the
+		// conversation with the prompt as a new user message. Without -p,
+		// --resume requires a deferred-tool marker in the session, which
+		// doesn't exist when the session was paused between tool calls.
+		if hasResumeMessage {
+			if inputRequiredResume {
+				renderedPrompt = resume.UserMessage
+			} else {
+				var b strings.Builder
+				b.WriteString(renderedPrompt)
+				b.WriteString("\n\nA previous Itervox run asked the human for input before continuing.")
+				if resume.InputContext != "" {
+					b.WriteString("\n\nAgent request:\n")
+					b.WriteString(resume.InputContext)
+				}
+				b.WriteString("\n\nUser reply:\n")
+				b.WriteString(resume.UserMessage)
+				renderedPrompt = b.String()
+			}
+		}
+
 		// Run agent turn — pass a logger pre-seeded with the issue identifier so
 		// Claude's live output appears in the log stream and can be filtered by identifier.
 		// onProgress sends a live EventWorkerUpdate each time Claude produces output so
@@ -378,6 +444,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 					} else {
 						b := currentBranch
 						issue.BranchName = &b
+						activeBranchName = currentBranch
 						workerLog.Info("worker: branch tracked on issue", "branch", currentBranch)
 					}
 				}
@@ -425,16 +492,6 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			break
 		}
 
-		// Codex runs to completion in a single turn — "codex exec" produces
-		// the full result and exits. Resuming a completed Codex session just
-		// replays the same answer (burning tokens). Exit after the first
-		// successful turn for Codex backends.
-		if backend == "codex" && !result.Failed {
-			slog.Info("worker: codex turn completed — exiting loop (single-turn backend)",
-				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
-			break
-		}
-
 		// InputRequired means the agent needs human input to continue (e.g.
 		// permission prompt, API key). Send TerminalInputRequired so the event
 		// loop queues the issue for user input instead of retrying or completing.
@@ -457,11 +514,24 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if claudeSessionID != nil {
 				sid = *claudeSessionID
 			}
-			o.sendExitWithInputRequired(ctx, issue, attempt, &InputRequiredEntry{
+			o.sendExitWithInputRequired(ctx, buildInputRequiredExitRunEntry(
+				issue,
+				attempt,
+				startedAt,
+				turn,
+				runLogID,
+				workerHost,
+				backend,
+				cumulativeInput,
+				cumulativeCached,
+				cumulativeOutput,
+				result,
+			), &InputRequiredEntry{
 				IssueID:     issue.ID,
 				Identifier:  issue.Identifier,
 				SessionID:   sid,
 				Context:     inputContext,
+				BranchName:  activeBranchName,
 				Backend:     backend,
 				Command:     agentCommand,
 				WorkerHost:  workerHost,
@@ -469,6 +539,41 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 				QueuedAt:    time.Now(),
 			})
 			return
+		}
+
+		if o.queueSuccessfulTurnInputRequired(
+			ctx,
+			issue,
+			attempt,
+			result,
+			backend,
+			agentCommand,
+			workerHost,
+			profileName,
+			activeBranchName,
+			runLogID,
+			claudeSessionID,
+			startedAt,
+			turn,
+			cumulativeInput,
+			cumulativeCached,
+			cumulativeOutput,
+		) {
+			return
+		}
+
+		// Codex runs to completion in a single turn — "codex exec" produces
+		// the full result and exits. Resuming a completed Codex session just
+		// replays the same answer (burning tokens). Exit after the first
+		// successful turn for Codex backends.
+		//
+		// InputRequired is handled above: a Codex turn that asks the user
+		// something must enter the input_required state instead of being
+		// treated as an ordinary successful single-turn completion.
+		if backend == "codex" && !result.Failed {
+			slog.Info("worker: codex turn completed — exiting loop (single-turn backend)",
+				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "turn", turn)
+			break
 		}
 
 		// Detect repeated identical responses — a sign the session has
@@ -540,59 +645,6 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		}
 	}
 
-	// Content-based input detection: the agent succeeded but its output contains
-	// questions for the user (e.g. "Questions for you:", "How would you like to
-	// proceed?"). Route to input_required instead of the normal success path so
-	// the dashboard shows the "Needs Input" badge.
-	//
-	// Questions appear in assistant text blocks (the full conversational output),
-	// not in result text (a brief summary). Scan the tail of allTextBlocks —
-	// the last few blocks are where concluding questions land.
-	if ctx.Err() == nil {
-		// Build the check text from the last text blocks (where questions appear).
-		// Cap at 3 blocks to keep the scan focused on the conclusion, not the
-		// entire multi-turn conversation.
-		var checkText string
-		if n := len(allTextBlocks); n > 0 {
-			start := max(0, n-3)
-			checkText = strings.Join(allTextBlocks[start:], "\n")
-		}
-		// Also include ResultText — some agents put the summary there.
-		if prevResultText != "" {
-			checkText = checkText + "\n" + prevResultText
-		}
-		if agent.IsSentinelInputRequired(checkText) {
-			// Use the last text block as context — it contains the actual questions
-			// the agent asked, which gets posted as the tracker comment in inline mode.
-			inputContext := checkText
-			if len(inputContext) > 4000 {
-				inputContext = inputContext[len(inputContext)-4000:]
-			}
-			slog.Info("worker: agent output contains questions — queuing for user input",
-				"issue_id", issue.ID, "issue_identifier", issue.Identifier)
-			if o.logBuf != nil {
-				o.logBuf.Add(issue.Identifier, makeBufLineWithSession("WARN",
-					fmt.Sprintf("worker: agent requires input — %s", inputContext), runLogID))
-			}
-			var sid string
-			if claudeSessionID != nil {
-				sid = *claudeSessionID
-			}
-			o.sendExitWithInputRequired(ctx, issue, attempt, &InputRequiredEntry{
-				IssueID:     issue.ID,
-				Identifier:  issue.Identifier,
-				SessionID:   sid,
-				Context:     inputContext,
-				Backend:     backend,
-				Command:     agentCommand,
-				WorkerHost:  workerHost,
-				ProfileName: profileName,
-				QueuedAt:    time.Now(),
-			})
-			return
-		}
-	}
-
 	// If the agent created a PR during this run, comment its URL on the tracker
 	// issue.  This runs before the session summary so the PR link is visible even
 	// on trackers that truncate long comments.  Uses the same gh CLI check as the
@@ -612,7 +664,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if alreadyPosted {
 				slog.Info("worker: PR comment already posted, skipping",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "pr_url", prURL)
-			} else if err := o.tracker.CreateComment(ctx, issue.ID, prComment); err != nil {
+			} else if _, err := o.tracker.CreateComment(ctx, issue.ID, prComment); err != nil {
 				slog.Warn("worker: create PR comment failed (ignored)",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 			} else {
@@ -666,7 +718,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 	// Skip when there is an open PR: the summary was already posted as a PR comment
 	// above, so posting it again on the tracker issue would create a duplicate (GO-R10-3).
 	if sessionComment != "" && prCtx == nil {
-		if err := o.tracker.CreateComment(ctx, issue.ID, sessionComment); err != nil {
+		if _, err := o.tracker.CreateComment(ctx, issue.ID, sessionComment); err != nil {
 			slog.Warn("worker: create session comment failed (ignored)",
 				"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
 		}
@@ -761,7 +813,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 
 	// Pass branchName so the auto-clear handler uses the actual worktree branch
 	// (which may be prCtx.Branch on a PR-continuation run, not issue.BranchName).
-	o.sendExitWithBranch(ctx, issue, attempt, TerminalSucceeded, nil, branchName, detectedPRURL)
+	o.sendExitWithBranch(ctx, issue, attempt, TerminalSucceeded, nil, activeBranchName, detectedPRURL)
 }
 
 // hookLogFn returns a function suitable for workspace.RunHook's logFn parameter.
@@ -774,6 +826,188 @@ func (o *Orchestrator) hookLogFn(identifier, sessionID string) func(string) {
 	}
 	return func(line string) {
 		o.logBuf.Add(identifier, makeBufLineWithSession("INFO", "hook: "+line, sessionID))
+	}
+}
+
+func (o *Orchestrator) queueSuccessfulTurnInputRequired(
+	ctx context.Context,
+	issue domain.Issue,
+	attempt int,
+	result agent.TurnResult,
+	backend, agentCommand, workerHost, profileName, branchName, runLogID string,
+	claudeSessionID *string,
+	startedAt time.Time,
+	turn, cumulativeInput, cumulativeCached, cumulativeOutput int,
+) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+
+	checkText := buildSuccessfulTurnInputCheckText(result)
+	if checkText == "" {
+		return false
+	}
+
+	if agent.IsSentinelInputRequired(checkText) {
+		o.queueInputRequiredEntry(
+			ctx,
+			issue,
+			attempt,
+			runLogID,
+			claudeSessionID,
+			backend,
+			agentCommand,
+			workerHost,
+			profileName,
+			branchName,
+			trimInputRequiredContext(checkText),
+			"",
+			buildInputRequiredExitRunEntry(
+				issue,
+				attempt,
+				startedAt,
+				turn,
+				runLogID,
+				workerHost,
+				backend,
+				cumulativeInput,
+				cumulativeCached,
+				cumulativeOutput,
+				result,
+			),
+		)
+		return true
+	}
+
+	decision := agent.DetectInputRequiredFallback(checkText)
+	if !decision.NeedsInput {
+		return false
+	}
+
+	inputContext := strings.TrimSpace(decision.Question)
+	if inputContext == "" {
+		inputContext = checkText
+	}
+	o.queueInputRequiredEntry(
+		ctx,
+		issue,
+		attempt,
+		runLogID,
+		claudeSessionID,
+		backend,
+		agentCommand,
+		workerHost,
+		profileName,
+		branchName,
+		trimInputRequiredContext(inputContext),
+		decision.Reason,
+		buildInputRequiredExitRunEntry(
+			issue,
+			attempt,
+			startedAt,
+			turn,
+			runLogID,
+			workerHost,
+			backend,
+			cumulativeInput,
+			cumulativeCached,
+			cumulativeOutput,
+			result,
+		),
+	)
+	return true
+}
+
+func buildSuccessfulTurnInputCheckText(result agent.TurnResult) string {
+	var blocks string
+	if n := len(result.AllTextBlocks); n > 0 {
+		start := max(0, n-3)
+		blocks = strings.Join(result.AllTextBlocks[start:], "\n")
+	}
+
+	resultText := strings.TrimSpace(result.ResultText)
+	blocks = strings.TrimSpace(blocks)
+	if blocks == "" {
+		return resultText
+	}
+	if resultText == "" {
+		return blocks
+	}
+	return blocks + "\n" + resultText
+}
+
+func trimInputRequiredContext(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= 4000 {
+		return text
+	}
+	return text[len(text)-4000:]
+}
+
+func (o *Orchestrator) queueInputRequiredEntry(
+	ctx context.Context,
+	issue domain.Issue,
+	attempt int,
+	runLogID string,
+	claudeSessionID *string,
+	backend, agentCommand, workerHost, profileName, branchName, inputContext, reason string,
+	runEntry *RunEntry,
+) {
+	if reason == "" {
+		slog.Info("worker: agent requires input — queuing for user input",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier)
+	} else {
+		slog.Info("worker: fallback detector queued issue for user input",
+			"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+			"reason", reason)
+	}
+	if o.logBuf != nil {
+		o.logBuf.Add(issue.Identifier, makeBufLineWithSession("WARN",
+			fmt.Sprintf("worker: agent requires input — %s", inputContext), runLogID))
+	}
+	var sid string
+	if claudeSessionID != nil {
+		sid = *claudeSessionID
+	}
+	o.sendExitWithInputRequired(ctx, runEntry, &InputRequiredEntry{
+		IssueID:     issue.ID,
+		Identifier:  issue.Identifier,
+		SessionID:   sid,
+		Context:     inputContext,
+		BranchName:  branchName,
+		Backend:     backend,
+		Command:     agentCommand,
+		WorkerHost:  workerHost,
+		ProfileName: profileName,
+		QueuedAt:    time.Now(),
+	})
+}
+
+func buildInputRequiredExitRunEntry(
+	issue domain.Issue,
+	attempt int,
+	startedAt time.Time,
+	turn int,
+	runLogID, workerHost, backend string,
+	cumulativeInput, cumulativeCached, cumulativeOutput int,
+	result agent.TurnResult,
+) *RunEntry {
+	attemptCopy := attempt
+	inputTokens := cumulativeInput + result.InputTokens
+	outputTokens := cumulativeOutput + result.OutputTokens
+	totalTokens := inputTokens + cumulativeCached + result.CachedInputTokens + outputTokens
+	return &RunEntry{
+		Issue:          issue,
+		SessionID:      runLogID,
+		WorkerHost:     workerHost,
+		Backend:        backend,
+		TerminalReason: TerminalInputRequired,
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
+		TotalTokens:    totalTokens,
+		TurnCount:      turn,
+		RetryAttempt:   &attemptCopy,
+		StartedAt:      startedAt,
 	}
 }
 
@@ -795,65 +1029,6 @@ func generateRunID() string {
 		return fmt.Sprintf("run-%d", time.Now().UnixNano())
 	}
 	return "run-" + hex.EncodeToString(b)
-}
-
-// runWorkerWithResume dispatches a resumed worker for an input-required issue.
-// The user's message is used as the prompt and the session ID enables --resume.
-// Runs a single turn; on success proceeds to completion state transition.
-func (o *Orchestrator) runWorkerWithResume(ctx context.Context, issue domain.Issue, workerHost, agentCommand, backend, profileName string, sessionID *string, userMessage string) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("resumed worker panicked",
-				"issue_identifier", issue.Identifier, "panic", r)
-			o.sendExit(ctx, issue, 0, TerminalFailed, fmt.Errorf("resumed worker panic: %v", r))
-		}
-	}()
-
-	workerLog := &bufLogger{
-		base:       slog.With("issue_id", issue.ID, "issue_identifier", issue.Identifier, "kind", "resumed"),
-		buf:        o.logBuf,
-		identifier: issue.Identifier,
-	}
-	workerLog.Info("worker: resuming with user input", "session_id", sessionID)
-
-	o.cfgMu.RLock()
-	readTimeoutMs := o.cfg.Agent.ReadTimeoutMs
-	turnTimeoutMs := o.cfg.Agent.TurnTimeoutMs
-	o.cfgMu.RUnlock()
-
-	logDir := ""
-	if o.agentLogDir != "" {
-		logDir = filepath.Join(o.agentLogDir, workspace.SanitizeKey(issue.Identifier))
-	}
-
-	result, runErr := o.runner.RunTurn(ctx, workerLog, nil, sessionID, userMessage, "",
-		agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
-
-	if runErr != nil || result.Failed {
-		cause := runErr
-		if cause == nil {
-			cause = fmt.Errorf("resumed turn failed: %s", result.FailureText)
-		}
-		workerLog.Warn("worker: resumed turn failed", "error", cause)
-		o.sendExit(ctx, issue, 0, TerminalFailed, cause)
-		return
-	}
-
-	workerLog.Info("worker: resumed turn succeeded")
-
-	// Transition to completion state.
-	o.cfgMu.RLock()
-	completionState := o.cfg.Tracker.CompletionState
-	o.cfgMu.RUnlock()
-	if completionState != "" && ctx.Err() == nil {
-		transCtx, cancelTrans := context.WithTimeout(context.Background(), postRunTimeout)
-		defer cancelTrans()
-		if err := o.tracker.UpdateIssueState(transCtx, issue.ID, completionState); err != nil {
-			workerLog.Warn("worker: completion state transition failed after resume", "error", err)
-		}
-	}
-
-	o.sendExit(ctx, issue, 0, TerminalSucceeded, nil)
 }
 
 func (o *Orchestrator) sendExit(ctx context.Context, issue domain.Issue, attempt int, reason TerminalReason, err error) {
@@ -900,15 +1075,15 @@ func (o *Orchestrator) sendExitWithBranch(ctx context.Context, issue domain.Issu
 	}
 }
 
-func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, issue domain.Issue, attempt int, entry *InputRequiredEntry) {
+func (o *Orchestrator) sendExitWithInputRequired(ctx context.Context, runEntry *RunEntry, entry *InputRequiredEntry) {
+	if runEntry == nil {
+		return
+	}
+	issue := runEntry.Issue
 	ev := OrchestratorEvent{
-		Type:    EventWorkerExited,
-		IssueID: issue.ID,
-		RunEntry: &RunEntry{
-			Issue:          issue,
-			TerminalReason: TerminalInputRequired,
-			RetryAttempt:   &attempt,
-		},
+		Type:               EventWorkerExited,
+		IssueID:            issue.ID,
+		RunEntry:           runEntry,
 		InputRequiredEntry: entry,
 	}
 	sendCtx := ctx

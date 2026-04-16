@@ -612,6 +612,28 @@ func TestHeaderLineCount_AllExtras(t *testing.T) {
 	assert.Equal(t, 6, m.headerLineCount())
 }
 
+func TestHeaderLineCount_WithInputRows(t *testing.T) {
+	m := Model{
+		snap: newTestSnap(server.StateSnapshot{
+			InputRequired: []server.InputRequiredRow{
+				{Identifier: "PROJ-1", State: "input_required"},
+			},
+		}),
+		cfg: Config{},
+	}
+	assert.Equal(t, 4, m.headerLineCount())
+}
+
+func TestInputStateCounts(t *testing.T) {
+	waiting, pending := inputStateCounts([]server.InputRequiredRow{
+		{Identifier: "PROJ-1", State: "input_required"},
+		{Identifier: "PROJ-2", State: "pending_input_resume"},
+		{Identifier: "PROJ-3", State: "input_required"},
+	})
+	assert.Equal(t, 2, waiting)
+	assert.Equal(t, 1, pending)
+}
+
 // ---------------------------------------------------------------------------
 // currentNavItem / stableKey
 // ---------------------------------------------------------------------------
@@ -1512,6 +1534,24 @@ func TestView_HistoryTabRenders(t *testing.T) {
 
 	out := m.View()
 	assert.NotEmpty(t, out)
+}
+
+func TestView_InputSectionRenders(t *testing.T) {
+	snap := newTestSnap(server.StateSnapshot{
+		InputRequired: []server.InputRequiredRow{
+			{Identifier: "WAIT-1", State: "input_required"},
+			{Identifier: "RESUME-1", State: "pending_input_resume"},
+		},
+	})
+	m := readyModel(snap)
+
+	out := m.View()
+	assert.Contains(t, out, "INPUT")
+	assert.Contains(t, out, "WAIT-1")
+	assert.Contains(t, out, "RESUME-1")
+	assert.Contains(t, out, "reply in tracker/dashboard")
+	assert.Contains(t, out, "waiting for reply")
+	assert.Contains(t, out, "reply received")
 }
 
 func TestView_SplitModeRenders(t *testing.T) {

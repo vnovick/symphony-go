@@ -123,6 +123,7 @@ export const StateSnapshotSchema = z.object({
       z.object({
         identifier: z.string(),
         sessionId: z.string(),
+        state: z.enum(['input_required', 'pending_input_resume']),
         context: z.string(),
         backend: z.string().optional(),
         profile: z.string().optional(),
@@ -159,7 +160,14 @@ export const TrackerIssueSchema = z.object({
   state: z.string(),
   description: z.string().optional(), // omitempty — absent when ""
   url: z.string().optional(), // omitempty — absent when ""
-  orchestratorState: z.enum(['idle', 'running', 'retrying', 'paused', 'input_required']),
+  orchestratorState: z.enum([
+    'idle',
+    'running',
+    'retrying',
+    'paused',
+    'input_required',
+    'pending_input_resume',
+  ]),
   turnCount: z.number().optional(), // omitempty — absent when 0
   tokens: z.number().optional(), // omitempty — absent when 0
   elapsedMs: z.number().optional(), // omitempty — absent when 0

@@ -29,6 +29,9 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if _, inputReq := state.InputRequiredIssues[issue.Identifier]; inputReq {
 		return "input_required"
 	}
+	if _, pendingResume := state.PendingInputResumes[issue.Identifier]; pendingResume {
+		return "pending_input_resume"
+	}
 	if _, running := state.Running[issue.ID]; running {
 		return "already_running"
 	}

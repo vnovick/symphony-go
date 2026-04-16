@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 )
 
@@ -806,6 +808,10 @@ func (s *Server) handleSetReviewer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.client.SetReviewerConfig(body.Profile, body.AutoReview); err != nil {
+		if errors.Is(err, config.ErrAutoClearAutoReviewConflict) || errors.Is(err, config.ErrAutoReviewRequiresReviewerProfile) {
+			writeError(w, http.StatusBadRequest, "invalid_combination", err.Error())
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -908,6 +914,10 @@ func (s *Server) handleSetAutoClearWorkspace(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err := s.client.SetAutoClearWorkspace(*body.Enabled); err != nil {
+		if errors.Is(err, config.ErrAutoClearAutoReviewConflict) {
+			writeError(w, http.StatusBadRequest, "invalid_combination", err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
 		return
 	}

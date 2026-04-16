@@ -44,6 +44,10 @@ const (
 	// dispatch a reviewer worker through the event loop so state mutations
 	// happen in the single event-loop goroutine.
 	EventDispatchReviewer EventType = "DispatchReviewer"
+	// EventInputRequiredCommentRecorded is sent after the tracker successfully
+	// creates the input-required question comment so the event loop can persist
+	// the exact tracker comment ID and author identity locally.
+	EventInputRequiredCommentRecorded EventType = "InputRequiredCommentRecorded"
 )
 
 // OrchestratorEvent is sent over the event channel to the orchestrator loop.
@@ -57,6 +61,7 @@ type OrchestratorEvent struct { //nolint:revive
 	Message            string              // user-provided text for EventProvideInput
 	ReviewerProfile    string              // profile name for EventDispatchReviewer
 	InputRequiredEntry *InputRequiredEntry // used by TerminalInputRequired
+	Comment            *domain.Comment     // used by EventInputRequiredCommentRecorded
 }
 
 // TerminalReason classifies why a worker stopped.
@@ -77,19 +82,62 @@ const (
 	TerminalInputRequired TerminalReason = "input_required"
 )
 
+// ResumeContext, when non-nil, configures a worker to continue an existing
+// agent session via --resume instead of starting a fresh one. It unifies two
+// resume flows that used to be handled separately:
+//
+//   - Pause/resume: SessionID set, UserMessage empty. The worker re-renders
+//     the WORKFLOW.md prompt normally; the agent picks up where it left off.
+//   - Input-required resume: SessionID set, UserMessage set to the user's
+//     reply. The worker substitutes UserMessage for the rendered prompt, caps
+//     the run at a single turn, and skips PR detection (the worktree and
+//     branch already exist from the original dispatch).
+//
+// When nil, the worker performs a normal fresh dispatch.
+type ResumeContext struct {
+	SessionID    string // agent session ID for --resume <id>
+	UserMessage  string // latest human reply
+	InputContext string // the agent question/request that prompted the reply
+}
+
 // InputRequiredEntry holds context for an issue whose agent is blocked waiting
 // for human input. Stored in State.InputRequiredIssues until the user provides
 // input (via ProvideInput) or dismisses it (via DismissInput).
 type InputRequiredEntry struct {
-	IssueID     string
-	Identifier  string
-	SessionID   string // for --resume
-	Context     string // what the agent was waiting for (from FailureText/ResultText)
-	Backend     string // which runner was used
-	Command     string // agent command (for resume on same runner)
-	WorkerHost  string // SSH host (for resume on same host)
-	ProfileName string // active profile
-	QueuedAt    time.Time
+	IssueID            string
+	Identifier         string
+	SessionID          string // for --resume
+	Context            string // what the agent was waiting for (from FailureText/ResultText)
+	BranchName         string // actual branch/worktree checkout to reuse on resume
+	Backend            string // which runner was used
+	Command            string // agent command (for resume on same runner)
+	WorkerHost         string // SSH host (for resume on same host)
+	ProfileName        string // active profile
+	QuestionCommentID  string // exact tracker comment ID for the agent question
+	QuestionAuthorID   string // exact tracker author ID for the agent question
+	QuestionAuthorName string // display author for the agent question
+	QueuedAt           time.Time
+}
+
+// PendingInputResumeEntry holds a user reply that has been accepted but not
+// yet durably consumed by a resumed worker turn. This state is persisted so a
+// daemon restart between "reply accepted" and "resumed worker produced output"
+// can continue the same agent session and host/backend selection.
+type PendingInputResumeEntry struct {
+	IssueID            string
+	Identifier         string
+	SessionID          string
+	Context            string
+	UserMessage        string
+	BranchName         string
+	Backend            string
+	Command            string
+	WorkerHost         string
+	ProfileName        string
+	QuestionCommentID  string
+	QuestionAuthorID   string
+	QuestionAuthorName string
+	QueuedAt           time.Time
 }
 
 // RunEntry tracks a live agent worker goroutine.
@@ -107,18 +155,23 @@ type RunEntry struct {
 	WorkerHost     string // SSH host used for this worker, empty = local
 	Backend        string // e.g. "claude", "codex", or "" when unknown
 	Kind           string // "worker" (default) | "reviewer"
-	BranchName     string // actual resolved branch used for the worktree (may differ from issue.BranchName when a PR branch was used)
-	PRURL          string // URL of the PR created or continued during this run (empty if none)
-	TerminalReason TerminalReason
-	LastEventAt    *time.Time // when last EventWorkerUpdate was received
-	LastMessage    string
-	InputTokens    int
-	OutputTokens   int
-	TotalTokens    int
-	TurnCount      int
-	RetryAttempt   *int
-	StartedAt      time.Time
-	WorkerCancel   context.CancelFunc
+	// PendingInputResume is true while this run is consuming a locally
+	// persisted human reply from PendingInputResumes. The event loop uses it to
+	// clear the pending-resume record only after the resumed run has actually
+	// started producing output or has exited.
+	PendingInputResume bool
+	BranchName         string // actual resolved branch used for the worktree (may differ from issue.BranchName when a PR branch was used)
+	PRURL              string // URL of the PR created or continued during this run (empty if none)
+	TerminalReason     TerminalReason
+	LastEventAt        *time.Time // when last EventWorkerUpdate was received
+	LastMessage        string
+	InputTokens        int
+	OutputTokens       int
+	TotalTokens        int
+	TurnCount          int
+	RetryAttempt       *int
+	StartedAt          time.Time
+	WorkerCancel       context.CancelFunc
 }
 
 // CompletedRun is a snapshot of a finished worker session, kept in the history ring buffer.
@@ -230,6 +283,10 @@ type State struct {
 	// human input to continue. Key: identifier. These issues are not dispatched
 	// until the user provides input or dismisses.
 	InputRequiredIssues map[string]*InputRequiredEntry
+	// PendingInputResumes tracks replies that were accepted locally or detected
+	// in the tracker, but have not yet been durably consumed by a resumed
+	// worker. Key: identifier.
+	PendingInputResumes map[string]*PendingInputResumeEntry
 	// InlineInputIssues is deprecated but kept for snapshot copy compatibility.
 	// All input-required handling now uses InputRequiredIssues.
 	InlineInputIssues map[string]*InlineInputEntry
@@ -269,6 +326,7 @@ func NewState(cfg *config.Config) State {
 		PrevActiveIdentifiers: make(map[string]struct{}),
 		DiscardingIdentifiers: make(map[string]struct{}),
 		InputRequiredIssues:   make(map[string]*InputRequiredEntry),
+		PendingInputResumes:   make(map[string]*PendingInputResumeEntry),
 		InlineInputIssues:     make(map[string]*InlineInputEntry),
 	}
 }

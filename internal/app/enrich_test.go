@@ -31,10 +31,13 @@ func emptyState() orchestrator.State {
 		PausedIdentifiers:     make(map[string]string),
 		PausedSessions:        make(map[string]*orchestrator.PausedSessionInfo),
 		IssueProfiles:         make(map[string]string),
+		IssueBackends:         make(map[string]string),
 		PausedOpenPRs:         make(map[string]string),
 		ForceReanalyze:        make(map[string]struct{}),
 		PrevActiveIdentifiers: make(map[string]struct{}),
 		DiscardingIdentifiers: make(map[string]struct{}),
+		InputRequiredIssues:   make(map[string]*orchestrator.InputRequiredEntry),
+		PendingInputResumes:   make(map[string]*orchestrator.PendingInputResumeEntry),
 		ActiveStates:          []string{"In Progress"},
 		TerminalStates:        []string{"Done"},
 		MaxConcurrentAgents:   5,
@@ -155,6 +158,29 @@ func TestEnrichIssue(t *testing.T) {
 			check: func(t *testing.T, ti server.TrackerIssue) {
 				if ti.OrchestratorState != "paused" {
 					t.Fatalf("expected paused, got %s", ti.OrchestratorState)
+				}
+			},
+		},
+		{
+			name:  "pending input resume shows dedicated non-idle state",
+			issue: baseIssue(),
+			snap: func() orchestrator.State {
+				s := emptyState()
+				s.PendingInputResumes["ENG-42"] = &orchestrator.PendingInputResumeEntry{
+					IssueID:     "uuid-1",
+					Identifier:  "ENG-42",
+					Context:     "Need approval",
+					UserMessage: "Approved.",
+				}
+				return s
+			}(),
+			cfg: baseCfg(),
+			check: func(t *testing.T, ti server.TrackerIssue) {
+				if ti.OrchestratorState != "pending_input_resume" {
+					t.Fatalf("expected pending_input_resume, got %s", ti.OrchestratorState)
+				}
+				if ti.Error == "" {
+					t.Fatalf("expected pending resume message, got empty error")
 				}
 			},
 		},

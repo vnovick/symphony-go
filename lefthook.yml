@@ -4,7 +4,7 @@ pre-commit:
     go-vet:
       run: go vet ./...
     go-lint:
-      run: golangci-lint run --timeout=5m
+      run: golangci-lint run --timeout=5m ./cmd/... ./internal/...
     web-typecheck:
       root: web/
       run: pnpm exec tsc --noEmit -p tsconfig.app.json

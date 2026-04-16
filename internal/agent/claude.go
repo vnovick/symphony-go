@@ -221,7 +221,11 @@ var sharedFlagsSlice = []string{"--output-format", "stream-json", "--verbose", "
 func buildDirectArgs(sessionID *string, prompt string) []string {
 	base := append([]string{}, sharedFlagsSlice...)
 	if sessionID != nil && *sessionID != "" {
-		return append(base, "--resume", *sessionID)
+		args := append(base, "--resume", *sessionID)
+		if prompt != "" {
+			args = append(args, "-p", prompt)
+		}
+		return args
 	}
 	return append(base, "-p", prompt)
 }
@@ -242,7 +246,16 @@ func buildShellCmd(command string, sessionID *string, prompt string) string {
 	}
 	base := command + sharedFlagsStr
 	if sessionID != nil && *sessionID != "" {
-		return base + " --resume " + shellQuote(*sessionID)
+		// Resume an existing session. When a prompt is also provided (e.g.,
+		// the user's reply to an input-required question), append it with -p
+		// so Claude receives the message. Without -p, Claude expects a
+		// deferred-tool marker in the session and errors with "No deferred
+		// tool marker found" if it's not there.
+		resumed := base + " --resume " + shellQuote(*sessionID)
+		if prompt != "" {
+			resumed += " -p " + shellQuote(prompt)
+		}
+		return resumed
 	}
 	return base + " -p " + shellQuote(prompt)
 }

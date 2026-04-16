@@ -271,12 +271,22 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				continue
 			}
 			var authorName string
+			var authorID string
 			if user, ok := cm["user"].(map[string]any); ok {
 				authorName, _ = user["login"].(string)
+				if id, ok := tracker.ToIntVal(user["id"]); ok {
+					authorID = strconv.Itoa(id)
+				}
+			}
+			commentID := ""
+			if id, ok := tracker.ToIntVal(cm["id"]); ok {
+				commentID = strconv.Itoa(id)
 			}
 			comment := domain.Comment{
+				ID:         commentID,
 				Body:       body,
 				CreatedAt:  tracker.ParseTime(cm["created_at"]),
+				AuthorID:   authorID,
 				AuthorName: authorName,
 			}
 			issue.Comments = append(issue.Comments, comment)
@@ -438,7 +448,8 @@ const itervoxBranchPrefix = "<!-- itervox:branch:"
 // on subsequent fetches, enabling retried workers to resume the correct branch.
 func (c *Client) SetIssueBranch(ctx context.Context, issueID, branchName string) error {
 	body := itervoxBranchPrefix + branchName + " -->"
-	return c.CreateComment(ctx, issueID, body)
+	_, err := c.CreateComment(ctx, issueID, body)
+	return err
 }
 
 // FetchIssueByIdentifier returns a single issue by its human-readable identifier
@@ -450,15 +461,15 @@ func (c *Client) FetchIssueByIdentifier(ctx context.Context, identifier string) 
 
 // CreateComment posts a comment on the GitHub issue identified by issueID.
 // issueID is expected to be the numeric issue number (as a string, e.g. "42").
-func (c *Client) CreateComment(ctx context.Context, issueID, body string) error {
+func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
 	u := fmt.Sprintf("%s/repos/%s/%s/issues/%s/comments", c.cfg.Endpoint, c.owner, c.repo, issueID)
 	payload, err := json.Marshal(map[string]string{"body": body})
 	if err != nil {
-		return fmt.Errorf("github_create_comment: marshal: %w", err)
+		return nil, fmt.Errorf("github_create_comment: marshal: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("github_create_comment: %w", err)
+		return nil, fmt.Errorf("github_create_comment: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -466,13 +477,31 @@ func (c *Client) CreateComment(ctx context.Context, issueID, body string) error 
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("github_create_comment: %w", err)
+		return nil, fmt.Errorf("github_create_comment: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("github_create_comment: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("github_create_comment: status %d", resp.StatusCode)
 	}
-	return nil
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("github_create_comment: decode body: %w", err)
+	}
+	comment := &domain.Comment{Body: body}
+	if id, ok := tracker.ToIntVal(raw["id"]); ok {
+		comment.ID = strconv.Itoa(id)
+	}
+	comment.CreatedAt = tracker.ParseTime(raw["created_at"])
+	if user, ok := raw["user"].(map[string]any); ok {
+		if id, ok := tracker.ToIntVal(user["id"]); ok {
+			comment.AuthorID = strconv.Itoa(id)
+		}
+		comment.AuthorName, _ = user["login"].(string)
+	}
+	if postedBody, ok := raw["body"].(string); ok && postedBody != "" {
+		comment.Body = postedBody
+	}
+	return comment, nil
 }
 
 func (c *Client) get(ctx context.Context, url string) (any, string, error) {

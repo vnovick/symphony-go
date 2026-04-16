@@ -2380,7 +2380,7 @@ const githubUrl = 'https://github.com/vnovick/itervox';
             <code>  <span class="t-accent-s">after_create:</span> <span class="t-muted">|</span></code>
             <code>    <span class="t-text">cd {'{{workspace}}'} && npm install</span></code>
             <code>  <span class="t-accent-s">before_run:</span> <span class="t-muted">|</span></code>
-            <code>    <span class="t-text">golangci-lint run ./...</span></code>
+            <code>    <span class="t-text">golangci-lint run ./cmd/... ./internal/...</span></code>
             <code>  <span class="t-accent-s">after_run:</span> <span class="t-muted">|</span></code>
             <code>    <span class="t-text">go test -race ./...</span></code>
             <code>  <span class="t-accent-s">timeout_ms:</span> <span class="t-teal">60000</span></code>

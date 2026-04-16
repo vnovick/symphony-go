@@ -2,7 +2,12 @@ import { useState, useMemo } from 'react';
 import Badge from '../../../components/ui/badge/Badge';
 import type { TrackerIssue, ProfileDef } from '../../../types/schemas';
 import { useCancelIssue, useResumeIssue } from '../../../queries/issues';
-import { orchDotClass, stateBadgeColor, EMPTY_PROFILE_LABEL } from '../../../utils/format';
+import {
+  orchDotClass,
+  stateBadgeColor,
+  EMPTY_PROFILE_LABEL,
+  formatOrchestratorState,
+} from '../../../utils/format';
 
 type SortKey = 'identifier' | 'title' | 'state';
 type SortDir = 'asc' | 'desc';
@@ -224,7 +229,7 @@ export function ListView({
                         <span
                           className={`h-2 w-2 rounded-full ${orchDotClass(issue.orchestratorState)}`}
                         />
-                        {issue.orchestratorState}
+                        {formatOrchestratorState(issue.orchestratorState)}
                         {issue.agentProfile && (
                           <span className="border-theme-line ml-1 rounded border px-1 py-0.5 text-[10px]">
                             {issue.agentProfile}

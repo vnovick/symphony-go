@@ -458,14 +458,16 @@ type StateSnapshot struct {
 	// InlineInput indicates whether agent input-required signals are posted as
 	// tracker comments (true) or queued in the dashboard UI (false).
 	InlineInput bool `json:"inlineInput,omitempty"`
-	// InputRequired lists issues whose agent is blocked waiting for human input.
+	// InputRequired lists issues whose agent is either waiting for human input
+	// or has already received a reply that is pending resume.
 	InputRequired []InputRequiredRow `json:"inputRequired,omitempty"`
 }
 
-// InputRequiredRow is one issue waiting for human input in the snapshot.
+// InputRequiredRow is one input-related issue in the snapshot.
 type InputRequiredRow struct {
 	Identifier string `json:"identifier"`
 	SessionID  string `json:"sessionId"`
+	State      string `json:"state"` // "input_required" | "pending_input_resume"
 	Context    string `json:"context"`
 	Backend    string `json:"backend,omitempty"`
 	Profile    string `json:"profile,omitempty"`
@@ -505,7 +507,7 @@ type TrackerIssue struct {
 	State             string `json:"state"`
 	Description       string `json:"description,omitempty"`
 	URL               string `json:"url,omitempty"`
-	OrchestratorState string `json:"orchestratorState"` // running, retrying, paused, idle
+	OrchestratorState string `json:"orchestratorState"` // idle, running, retrying, paused, input_required, pending_input_resume
 	TurnCount         int    `json:"turnCount,omitempty"`
 	Tokens            int    `json:"tokens,omitempty"`
 	ElapsedMs         int64  `json:"elapsedMs,omitempty"`

@@ -140,7 +140,7 @@ Controls where Itervox creates per-issue working directories and how they are ma
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `root` | string | `~/.itervox/workspaces` | Directory where per-issue workspaces are created. Supports `~` expansion and `$VAR_NAME` env var references. |
-| `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted after an issue reaches `completion_state`, reclaiming disk space. Logs are retained. |
+| `auto_clear` | bool | `false` | When `true`, the workspace directory is deleted after an issue reaches `completion_state`, reclaiming disk space. Logs are retained. Cannot be combined with `agent.auto_review` because review runs after the worker exits and needs the workspace to remain available. |
 | `worktree` | bool | `false` | When `true`, Itervox uses `git worktree` to create per-issue branches inside a shared clone at `root` instead of making separate empty directories. Requires a git repository to already exist at `root` (or `clone_url` to be set). |
 | `clone_url` | string | `""` | Git remote URL used to initialise the bare clone when `worktree: true` and the `root` directory does not yet contain a git repository. |
 | `base_branch` | string | `"main"` | Branch that new worktrees are created from when `worktree: true`. |
@@ -189,7 +189,7 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |
 | `reviewer_profile` | string | `""` | Name of the agent profile used for code review. When set, the reviewer runs as a regular worker using this profile's command, backend, and prompt. Enables the AI Review button in the dashboard. |
-| `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. |
+| `auto_review` | bool | `false` | When `true`, automatically dispatches a reviewer worker after each successful agent run. Requires `reviewer_profile` to be set. Cannot be combined with `workspace.auto_clear`. |
 
 ```yaml
 agent:
@@ -294,10 +294,12 @@ Shell commands run at lifecycle points in each issue's workspace. All hooks run 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `after_create` | string | `""` | Shell command run after the workspace directory is created, before any agent runs. Typically used to clone the repository. |
-| `before_run` | string | `""` | Shell command run before each agent session starts. Typically used to sync the branch (`git fetch`, `git reset`). |
-| `after_run` | string | `""` | Shell command run after each agent session completes (success or failure). |
+| `before_run` | string | `""` | Shell command run once per worker invocation, before the first agent turn of that attempt. Typically used to sync the branch (`git fetch`, `git reset`). |
+| `after_run` | string | `""` | Shell command run after each completed agent turn. |
 | `before_remove` | string | `""` | Shell command run before the workspace directory is deleted (when `workspace.auto_clear: true` or on manual removal). |
 | `timeout_ms` | int | `60000` | Maximum time allowed for any single hook to complete (60 seconds). |
+
+All hooks run via `bash -lc` in the issue workspace. Itervox does not inject any per-issue environment variables into hook processes; hooks inherit the daemon's environment as-is. `before_run` is intentionally per-attempt, not per-turn, so setup hooks do not wipe agent progress between turns. On an in-place `input_required` resume, Itervox skips `before_run`; if the workspace had to be recreated first, the normal setup hooks run again.
 
 Multi-line shell scripts are supported using YAML block scalars:
 
@@ -305,11 +307,15 @@ Multi-line shell scripts are supported using YAML block scalars:
 hooks:
   after_create: |
     git clone git@github.com:owner/repo.git .
-    npm install
+    npm ci
   before_run: |
     git fetch origin main
     git checkout main
     git reset --hard origin/main
+  after_run: |
+    git status --short
+  before_remove: |
+    tar -czf ../workspace-backup.tgz .
   timeout_ms: 120000
 ```
 
@@ -415,3 +421,25 @@ Issue URL: {{ issue.url }}
 Create a branch named `{{ issue.branch_name | default: issue.identifier | downcase }}`,
 implement the change, run tests, then open a PR that closes {{ issue.url }}.
 ```
+
+### Asking for human input
+
+When the agent genuinely cannot continue without a human answer, the preferred
+contract is to end its final message with the literal marker
+`<!-- itervox:needs-input -->` on its own line, followed by the actual
+question or confirmation prompt. That marker is deterministic and lets Itervox
+pause the issue immediately without any ambiguity.
+
+Itervox also has a deterministic fallback for successful turns that end in a real
+blocking question, such as a choice between two options or a confirmation
+request. That means plain-English messages like "Which option should I take?"
+or "Type discard to confirm" can still move the issue into `input_required`.
+
+The fallback is backup behavior, not the recommended path:
+
+- The explicit marker is more reliable.
+- The fallback is heuristic and tuned for common English phrasing.
+- The explicit marker makes prompt and skill behavior easier to reason about.
+
+When the user replies from the dashboard or tracker, Itervox resumes the same
+agent session with that reply as the next user message.

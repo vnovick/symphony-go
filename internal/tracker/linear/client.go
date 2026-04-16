@@ -165,6 +165,11 @@ func (c *Client) RateLimitSnapshot() *tracker.RateLimitSnapshot {
 	}
 }
 
+func stringValue(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
 // FetchCandidateIssues returns paginated active-state issues respecting the
 // current runtime project filter. If no runtime filter is set, it falls back
 // to the WORKFLOW.md project_slug value (or all issues if that is also empty).
@@ -303,26 +308,42 @@ mutation ItervoxUpdateIssueState($issueId: String!, $stateId: String!) {
 }
 
 // CreateComment posts a comment body on the given Linear issue ID.
-func (c *Client) CreateComment(ctx context.Context, issueID, body string) error {
+func (c *Client) CreateComment(ctx context.Context, issueID, body string) (*domain.Comment, error) {
 	const mutation = `
 mutation ItervoxCreateComment($issueId: String!, $body: String!) {
   commentCreate(input: {issueId: $issueId, body: $body}) {
+    comment {
+      id
+      body
+      createdAt
+      user { id name }
+    }
     success
   }
 }`
 	vars := map[string]any{"issueId": issueID, "body": body}
 	resp, err := c.graphql(ctx, mutation, vars)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if data, ok := resp["data"].(map[string]any); ok {
 		if cc, ok := data["commentCreate"].(map[string]any); ok {
 			if success, _ := cc["success"].(bool); success {
-				return nil
+				comment := &domain.Comment{Body: body}
+				if rawComment, ok := cc["comment"].(map[string]any); ok {
+					comment.ID, _ = rawComment["id"].(string)
+					comment.Body, _ = rawComment["body"].(string)
+					comment.CreatedAt = tracker.ParseTime(rawComment["createdAt"])
+					if user, ok := rawComment["user"].(map[string]any); ok {
+						comment.AuthorID, _ = user["id"].(string)
+						comment.AuthorName, _ = user["name"].(string)
+					}
+				}
+				return comment, nil
 			}
 		}
 	}
-	return fmt.Errorf("linear_create_comment: unexpected response: %v", resp)
+	return nil, fmt.Errorf("linear_create_comment: unexpected response: %v", resp)
 }
 
 // SetIssueBranch updates the branchName field on the Linear issue so retried
@@ -381,8 +402,13 @@ func (c *Client) FetchIssueDetail(ctx context.Context, issueID string) (*domain.
 				if b == "" {
 					continue
 				}
-				c := domain.Comment{Body: b, CreatedAt: tracker.ParseTime(node["createdAt"])}
+				c := domain.Comment{
+					ID:        stringValue(node["id"]),
+					Body:      b,
+					CreatedAt: tracker.ParseTime(node["createdAt"]),
+				}
 				if user, ok := node["user"].(map[string]any); ok {
+					c.AuthorID = stringValue(user["id"])
 					c.AuthorName, _ = user["name"].(string)
 				}
 				issue.Comments = append(issue.Comments, c)

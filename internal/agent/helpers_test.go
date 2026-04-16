@@ -50,13 +50,46 @@ func TestBuildShellCmdNewSession(t *testing.T) {
 	assert.NotContains(t, cmd, "--resume")
 }
 
-func TestBuildShellCmdResume(t *testing.T) {
+func TestBuildShellCmdResumeWithoutPrompt(t *testing.T) {
 	id := "sess-abc"
-	cmd := buildShellCmd("claude", &id, "ignored prompt")
+	cmd := buildShellCmd("claude", &id, "")
 	assert.Contains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "sess-abc")
-	// When resuming, the new-session flag ` -p ` should not appear (note spaces).
+	// Resume without a prompt should not include -p.
 	assert.NotContains(t, cmd, " -p ")
+}
+
+func TestBuildShellCmdResumeWithPrompt(t *testing.T) {
+	id := "sess-abc"
+	cmd := buildShellCmd("claude", &id, "the user reply")
+	assert.Contains(t, cmd, "--resume")
+	assert.Contains(t, cmd, "sess-abc")
+	// Resume WITH a prompt (input-required flow) should include both flags.
+	assert.Contains(t, cmd, " -p ")
+	assert.Contains(t, cmd, "the user reply")
+}
+
+func TestBuildDirectArgsResumeWithoutPrompt(t *testing.T) {
+	id := "sess-abc"
+	args := buildDirectArgs(&id, "")
+	assert.Equal(t, []string{
+		"--output-format", "stream-json",
+		"--verbose",
+		"--dangerously-skip-permissions",
+		"--resume", "sess-abc",
+	}, args)
+}
+
+func TestBuildDirectArgsResumeWithPrompt(t *testing.T) {
+	id := "sess-abc"
+	args := buildDirectArgs(&id, "the user reply")
+	assert.Equal(t, []string{
+		"--output-format", "stream-json",
+		"--verbose",
+		"--dangerously-skip-permissions",
+		"--resume", "sess-abc",
+		"-p", "the user reply",
+	}, args)
 }
 
 // Regression: an empty command must not produce a shell line that starts with

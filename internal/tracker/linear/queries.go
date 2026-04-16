@@ -52,9 +52,10 @@ query ItervoxIssueDetail($id: String!) {
     }
     comments(first: 50, orderBy: createdAt) {
       nodes {
+        id
         body
         createdAt
-        user { name }
+        user { id name }
       }
     }
     createdAt

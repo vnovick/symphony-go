@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/server"
 )
@@ -732,6 +733,32 @@ func TestHandleSetReviewer_DisableReviewer(t *testing.T) {
 	assert.Equal(t, "", savedProfile)
 }
 
+func TestHandleSetReviewer_InvalidAutoClearCombinationReturns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(string, bool) error {
+			return config.ErrAutoClearAutoReviewConflict
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/reviewer", `{"profile":"reviewer","auto_review":true}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "auto_clear")
+}
+
+func TestHandleSetReviewer_MissingReviewerProfileReturns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetReviewerConfigFn: func(string, bool) error {
+			return config.ErrAutoReviewRequiresReviewerProfile
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/reviewer", `{"profile":"","auto_review":true}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "reviewer_profile")
+}
+
 // ─── handleListProjects / handleGetProjectFilter / handleSetProjectFilter ─────
 
 type fakeProjectManager struct {
@@ -1195,6 +1222,17 @@ func TestHandleSetAutoClearWorkspace_ServerError(t *testing.T) {
 	srv := server.New(cfg)
 	w := postJSON(t, srv, "/api/v1/settings/workspace/auto-clear", `{"enabled":true}`)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleSetAutoClearWorkspace_InvalidReviewerCombinationReturns400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetAutoClearWorkspaceFn: func(bool) error { return config.ErrAutoClearAutoReviewConflict },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/workspace/auto-clear", `{"enabled":true}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "auto_review")
 }
 
 // ─── handleClearAllWorkspaces ────────────────────────────────────────────────

@@ -2,21 +2,49 @@ import { useEffect, useState, startTransition } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useItervoxStore } from '../store/itervoxStore';
 import { MobileMenuButton } from '../components/ui/MobileMenuButton';
+import { formatOrchestratorState } from '../utils/format';
+import { inputRequiredRowState } from '../utils/inputRequired';
 
 const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
   const sseConnected = useItervoxStore((s) => s.sseConnected);
-  const { running, paused, retrying, maxAgents, agentMode, hasSnapshot } = useItervoxStore(
+  const {
+    running,
+    paused,
+    retrying,
+    awaitingInput,
+    pendingInputResumes,
+    maxAgents,
+    agentMode,
+    hasSnapshot,
+  } = useItervoxStore(
     useShallow((s) => ({
       running: s.snapshot?.running.length ?? 0,
       paused: s.snapshot?.paused.length ?? 0,
       retrying: s.snapshot?.retrying.length ?? 0,
+      pendingInputResumes: (s.snapshot?.inputRequired ?? []).filter(
+        (entry) => inputRequiredRowState(entry) === 'pending_input_resume',
+      ).length,
+      awaitingInput: (s.snapshot?.inputRequired ?? []).filter(
+        (entry) => inputRequiredRowState(entry) === 'input_required',
+      ).length,
       maxAgents: s.snapshot?.maxConcurrentAgents ?? 0,
       agentMode: s.snapshot?.agentMode ?? '',
       hasSnapshot: s.snapshot !== null,
     })),
   );
   const [timedOut, setTimedOut] = useState(false);
-  const orchestratorState = running > 0 ? 'running' : 'idle';
+  const orchestratorState =
+    running > 0
+      ? 'running'
+      : retrying > 0
+        ? 'retrying'
+        : pendingInputResumes > 0
+          ? 'pending_input_resume'
+          : awaitingInput > 0
+            ? 'input_required'
+            : paused > 0
+              ? 'paused'
+              : 'idle';
   const pct = maxAgents > 0 ? Math.round((running / maxAgents) * 100) : 0;
 
   // After 6 s without a snapshot, flip from "Connecting" to "Disconnected"
@@ -63,7 +91,7 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
 
       {/* Orchestrator state */}
       <span className="bg-theme-bg-elevated text-theme-text-secondary rounded px-2 py-0.5 font-mono text-xs">
-        {orchestratorState}
+        {formatOrchestratorState(orchestratorState)}
       </span>
 
       {/* Running count */}
@@ -77,6 +105,18 @@ const AppHeader: React.FC<{ onMenuClick?: () => void }> = ({ onMenuClick }) => {
       {paused > 0 && (
         <span className="bg-theme-danger-soft text-theme-danger rounded-full px-2 py-0.5 text-xs">
           {paused} paused
+        </span>
+      )}
+
+      {awaitingInput > 0 && (
+        <span className="rounded-full bg-orange-500/15 px-2 py-0.5 text-xs text-orange-400">
+          {awaitingInput} need input
+        </span>
+      )}
+
+      {pendingInputResumes > 0 && (
+        <span className="rounded-full bg-orange-500/15 px-2 py-0.5 text-xs text-orange-400">
+          {pendingInputResumes} resuming
         </span>
       )}
 

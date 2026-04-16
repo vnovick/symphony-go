@@ -23,6 +23,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -357,6 +358,7 @@ type Model struct {
 	history     []server.HistoryRow
 	retrying    []server.RetryRow
 	paused      []string
+	inputRows   []server.InputRequiredRow
 	navItems    []leftItem                // flat navigation list (issues + their subagents)
 	selectedNav int                       // cursor into navItems
 	subagents   map[string][]subagentInfo // per-identifier subagent segments
@@ -499,6 +501,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.history = s.History
 		m.retrying = s.Retrying
 		m.paused = s.Paused
+		m.inputRows = s.InputRequired
 		// Keep paused cursor in bounds after list changes.
 		if m.inPausedSection {
 			if len(m.paused) == 0 {
@@ -1220,6 +1223,9 @@ func (m *Model) headerLineCount() int {
 	if m.killMsg != "" || m.dispatchMsg != "" {
 		n++
 	}
+	if len(s.InputRequired) > 0 {
+		n++
+	}
 	return n
 }
 
@@ -1373,6 +1379,20 @@ func (m Model) View() string {
 	hdr.WriteString(hdrTop + "\n")
 	hdr.WriteString(row1 + "\n")
 
+	if waiting, pending := inputStateCounts(s.InputRequired); waiting > 0 || pending > 0 {
+		var parts []string
+		if waiting > 0 {
+			parts = append(parts, styleYellow.Render(fmt.Sprintf("%d waiting", waiting)))
+		}
+		if pending > 0 {
+			parts = append(parts, styleCyan.Render(fmt.Sprintf("%d resuming", pending)))
+		}
+		hdr.WriteString(styleGray.Render("║ ") +
+			styleLabel.Render("INPUT ") + styleGray.Render(" ▸ ") +
+			strings.Join(parts, styleGray.Render("   ")) +
+			styleMuted.Render("  reply in tracker/dashboard") + "\n")
+	}
+
 	if m.cfg.DashboardURL != "" {
 		hdr.WriteString(styleGray.Render("║ ") +
 			styleLabel.Render("WEB   ") + styleGray.Render(" ▸ ") +
@@ -1420,7 +1440,7 @@ func (m Model) View() string {
 	return hdr.String() + body + "\n" + gantt + footer + "\n"
 }
 
-// renderLeft builds the left pane (issue list with subagents, retry queue, paused).
+// renderLeft builds the left pane (issue list with subagents, retry queue, paused, input).
 // It always produces exactly bodyHeight lines, each leftPaneWidth chars wide.
 func (m *Model) renderLeft() string {
 	if m.profilePickerOpen {
@@ -1673,6 +1693,26 @@ func (m *Model) renderLeft() string {
 		}
 	}
 
+	if len(m.inputRows) > 0 && len(lines) < bh {
+		add(styleGray.Render(strings.Repeat("━", leftPaneWidth)))
+		add(styleYellow.Render("◆─[ INPUT ]") + styleMuted.Render("  reply in tracker/dashboard"))
+		for _, row := range m.inputRows {
+			if len(lines) >= bh {
+				break
+			}
+			glyph := "?"
+			status := "waiting for reply"
+			rowStyle := styleYellow.Faint(true)
+			if row.State == "pending_input_resume" {
+				glyph = "↺"
+				status = "reply received"
+				rowStyle = styleCyan.Faint(true)
+			}
+			rendered := fmt.Sprintf("  %s %-12s %s", glyph, truncate(row.Identifier, 12), status)
+			add(rowStyle.Render(rendered))
+		}
+	}
+
 	for len(lines) < bh {
 		lines = append(lines, leftStyle.Render(""))
 	}
@@ -1814,6 +1854,17 @@ func (m *Model) renderRight() string {
 		infoRow = "\n"
 	}
 	return title + "\n" + infoRow + sep + "\n" + m.logVP.View()
+}
+
+func inputStateCounts(rows []server.InputRequiredRow) (waiting, pending int) {
+	for _, row := range rows {
+		if row.State == "pending_input_resume" {
+			pending++
+			continue
+		}
+		waiting++
+	}
+	return waiting, pending
 }
 
 // prefix renders a coloured terminal-style prefix symbol followed by the message.
@@ -3034,6 +3085,9 @@ func extractPRLink(lines []string) string {
 }
 
 // openURL opens a URL in the system default browser (macOS / Linux).
+// The child process is placed in its own session (Setsid) so it cannot
+// steal the terminal's foreground process group, which would cause the
+// TUI to receive SIGTTOU/SIGTTIN and freeze.
 func openURL(url string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
@@ -3044,5 +3098,6 @@ func openURL(url string) {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	_ = cmd.Start()
 }

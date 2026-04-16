@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/config"
+	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
 	"github.com/vnovick/itervox/internal/tracker"
 )
@@ -267,6 +269,58 @@ func TestServerModelOption_JSONRoundTrip(t *testing.T) {
 	var decoded server.ModelOption
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	assert.Equal(t, m, decoded)
+}
+
+func TestSortedPausedIdentifiers(t *testing.T) {
+	got := sortedPausedIdentifiers(map[string]string{
+		"ENG-20": "id-20",
+		"ENG-3":  "id-3",
+		"ENG-10": "id-10",
+	})
+
+	want := append([]string{}, got...)
+	sort.Strings(want)
+	assert.Equal(t, want, got)
+}
+
+func TestSortedRetryRows(t *testing.T) {
+	got := sortedRetryRows(map[string]*orchestrator.RetryEntry{
+		"id-20": {Identifier: "ENG-20", Attempt: 2},
+		"id-3":  {Identifier: "ENG-3", Attempt: 1},
+		"id-10": {Identifier: "ENG-10", Attempt: 3},
+	})
+
+	require.Len(t, got, 3)
+	assert.Equal(t, []string{"ENG-10", "ENG-20", "ENG-3"}, []string{
+		got[0].Identifier,
+		got[1].Identifier,
+		got[2].Identifier,
+	})
+}
+
+func TestSortedInputRequiredRows(t *testing.T) {
+	now := time.Now().UTC()
+	got := sortedInputRequiredRows(
+		map[string]*orchestrator.InputRequiredEntry{
+			"ENG-20": {Identifier: "ENG-20", Context: "c20", QueuedAt: now},
+			"ENG-3":  {Identifier: "ENG-3", Context: "c3", QueuedAt: now},
+		},
+		map[string]*orchestrator.PendingInputResumeEntry{
+			"ENG-10": {Identifier: "ENG-10", Context: "c10", UserMessage: "approved", QueuedAt: now},
+		},
+	)
+
+	require.Len(t, got, 3)
+	assert.Equal(t, []string{"ENG-10", "ENG-20", "ENG-3"}, []string{
+		got[0].Identifier,
+		got[1].Identifier,
+		got[2].Identifier,
+	})
+	assert.Equal(t, []string{"pending_input_resume", "input_required", "input_required"}, []string{
+		got[0].State,
+		got[1].State,
+		got[2].State,
+	})
 }
 
 // ─── API endpoint smoke test ──────────────────────────────────────────────────

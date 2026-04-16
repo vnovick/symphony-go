@@ -24,12 +24,14 @@ import {
   useDismissInput,
   useTriggerAIReview,
   ISSUES_KEY,
+  ISSUE_KEY,
 } from '../../queries/issues';
 import {
   stateBadgeColor,
   EMPTY_PROFILE_LABEL,
   EMPTY_PROFILES,
   proseClass,
+  formatOrchestratorState,
 } from '../../utils/format';
 
 export default function IssueDetailSlide() {
@@ -63,6 +65,7 @@ export default function IssueDetailSlide() {
   useEffect(() => {
     if (selectedIdentifier) {
       void queryClient.invalidateQueries({ queryKey: ISSUES_KEY });
+      void queryClient.invalidateQueries({ queryKey: ISSUE_KEY(selectedIdentifier) });
     }
   }, [selectedIdentifier, queryClient]);
 
@@ -83,13 +86,14 @@ export default function IssueDetailSlide() {
             color={
               issue.orchestratorState === 'running'
                 ? 'success'
-                : issue.orchestratorState === 'retrying'
+                : issue.orchestratorState === 'retrying' ||
+                    issue.orchestratorState === 'pending_input_resume'
                   ? 'warning'
                   : 'light'
             }
             size="sm"
           >
-            {issue.orchestratorState}
+            {formatOrchestratorState(issue.orchestratorState)}
           </Badge>
           {/* Backend badge (read-only — backend is determined by profile) */}
           {(() => {
@@ -360,6 +364,25 @@ export default function IssueDetailSlide() {
                 {dismissInputMutation.isPending ? 'Dismissing…' : 'Dismiss'}
               </button>
             </div>
+          </div>
+        )}
+
+        {issue.orchestratorState === 'pending_input_resume' && (
+          <div className="space-y-3 rounded-lg border border-orange-500/30 bg-orange-500/5 p-4">
+            <div className="flex items-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-orange-400" />
+              <h4 className="text-sm font-semibold text-orange-400">Reply received</h4>
+            </div>
+            <p className="text-theme-text-secondary text-sm">
+              Itervox has your reply and is waiting to resume the agent.
+            </p>
+            {issue.error && (
+              <div className={proseClass}>
+                <Suspense fallback={<div className="animate-pulse">Loading...</div>}>
+                  <LazyMarkdown>{issue.error}</LazyMarkdown>
+                </Suspense>
+              </div>
+            )}
           </div>
         )}
       </div>

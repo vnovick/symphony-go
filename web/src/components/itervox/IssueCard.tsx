@@ -42,6 +42,8 @@ function statusDotClass(state: string): string {
       return 'bg-theme-danger';
     case 'input_required':
       return 'bg-orange-400';
+    case 'pending_input_resume':
+      return 'bg-orange-400';
     default:
       return 'bg-theme-muted';
   }
@@ -60,9 +62,11 @@ export default memo(function IssueCard({
 }: CardProps) {
   const isRunning = issue.orchestratorState === 'running';
   const isInputRequired = issue.orchestratorState === 'input_required';
+  const isPendingInputResume = issue.orchestratorState === 'pending_input_resume';
   const isActive =
     isRunning ||
     isInputRequired ||
+    isPendingInputResume ||
     issue.orchestratorState === 'paused' ||
     issue.orchestratorState === 'retrying';
   // Show dropdown only in backlog columns (signaled by onDispatch being present)
@@ -182,7 +186,12 @@ export default memo(function IssueCard({
             Needs Input
           </span>
         )}
-        {hasActivity && !isInputRequired && (
+        {isPendingInputResume && (
+          <span className="rounded bg-orange-500/15 px-1.5 py-0.5 text-[10px] font-medium text-orange-400">
+            Resuming
+          </span>
+        )}
+        {hasActivity && !isInputRequired && !isPendingInputResume && (
           <span
             className={`rounded px-1.5 py-0.5 text-[10px] font-medium capitalize ${
               isRunning
