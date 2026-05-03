@@ -323,20 +323,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			if err != nil {
 				slog.Warn("worker: resume prompt render failed",
 					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
-				if o.logBuf != nil {
-					o.logBuf.Add(issue.Identifier, makeBufLineWithSession("ERROR", fmt.Sprintf("worker: resume prompt render failed: %v", err), runLogID))
-				}
-				if wsPath != "" {
-					hookCtx, hookCancel := context.WithTimeout(context.Background(), hookFallbackTimeout)
-					if hookErr := workspace.RunHook(hookCtx, afterRunHook, wsPath, hookTimeoutMs, o.hookLogFn(issue.Identifier, runLogID)); hookErr != nil {
-						slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issue.ID, "error", hookErr)
-					}
-					hookCancel()
-				}
-				o.sendExit(ctx, issue, attempt, TerminalFailed, err)
-				return
+			} else {
+				turnPrompt = appendPromptSections(resumePrompt, firstResumeContext...)
 			}
-			turnPrompt = appendPromptSections(resumePrompt, firstResumeContext...)
 		}
 
 		// Run agent turn — pass a logger pre-seeded with the issue identifier so

@@ -2003,3 +2003,33 @@ func TestClaudeResumeTurnsUseResumePrompt(t *testing.T) {
 	assert.Equal(t, "Resume ENG-1 from existing context.", prompts[1])
 	assert.Equal(t, "agent-session-xyz", sessionIDs[1])
 }
+
+func TestClaudeResumePromptRenderErrorFallsBackToWorkflowPrompt(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 2
+	cfg.Agent.Command = "claude"
+	cfg.Agent.ResumePrompt = "Resume {{ issue.missing_field }}."
+	cfg.PromptTemplate = "Full workflow prompt for {{ issue.identifier }}."
+	mt := singleIssueTracker(t, "In Progress")
+	runner := &resumePromptRunner{done: make(chan struct{})}
+	orch := orchestrator.New(cfg, mt, runner, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	select {
+	case <-runner.done:
+	case <-ctx.Done():
+		t.Fatal("runner did not receive a Claude resume turn within 3s")
+	}
+
+	prompts, sessionIDs := runner.snapshot()
+	require.Len(t, prompts, 2)
+	require.Len(t, sessionIDs, 2)
+	assert.Equal(t, "Full workflow prompt for ENG-1.", prompts[0])
+	assert.Equal(t, "", sessionIDs[0])
+	assert.Equal(t, "Full workflow prompt for ENG-1.", prompts[1])
+	assert.Equal(t, "agent-session-xyz", sessionIDs[1])
+}

@@ -65,8 +65,8 @@ func TestBuildShellCmdResume(t *testing.T) {
 
 func TestBuildDirectArgsNewSession(t *testing.T) {
 	args := buildDirectArgs(nil, "do the thing")
-	joined := strings.Join(args, " ")
-	assert.Contains(t, joined, "--output-format stream-json")
+	assert.Contains(t, args, "--output-format")
+	assert.Contains(t, args, "stream-json")
 	assert.Contains(t, args, "-p")
 	assert.Contains(t, args, "do the thing")
 	assert.NotContains(t, args, "--resume")
