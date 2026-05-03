@@ -37,6 +37,7 @@ func TestDefaults(t *testing.T) {
 	assert.Equal(t, 5, cfg.Agent.MaxRetries)
 	assert.Equal(t, "", cfg.Tracker.FailedState)
 	assert.Equal(t, "claude", cfg.Agent.Command)
+	assert.Equal(t, config.DefaultResumePrompt, cfg.Agent.ResumePrompt)
 	assert.Equal(t, 3600000, cfg.Agent.TurnTimeoutMs)
 	assert.Equal(t, 30000, cfg.Agent.ReadTimeoutMs)
 	assert.Equal(t, 300000, cfg.Agent.StallTimeoutMs)
@@ -185,6 +186,28 @@ func TestAgentBackendField(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "run-codex-wrapper", cfg.Agent.Command)
 	assert.Equal(t, "codex", cfg.Agent.Backend)
+}
+
+func TestAgentResumePromptField(t *testing.T) {
+	content := minimal(`agent:
+  resume_prompt: "Continue {{ issue.identifier }}"
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "Continue {{ issue.identifier }}", cfg.Agent.ResumePrompt)
+}
+
+func TestValidateDispatchRejectsInvalidResumePromptTemplate(t *testing.T) {
+	content := minimal(`agent:
+  resume_prompt: "{% for %}"
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.resume_prompt")
 }
 
 func TestWorktreeDefaultsFalse(t *testing.T) {

@@ -108,7 +108,7 @@ func ValidateClaudeCLICommand(command string) error {
 // RunTurn runs a single claude turn as a subprocess.
 //
 // First turn (sessionID == nil): claude -p <prompt> --output-format stream-json
-// Continuation (sessionID != nil): claude --resume <sessionID> --output-format stream-json
+// Continuation (sessionID != nil): claude --resume <sessionID> -p <prompt> --output-format stream-json
 //
 // readTimeoutMs is the per-line idle deadline; if no output arrives within that
 // window the turn is aborted as a stall. turnTimeoutMs is the hard wall-clock
@@ -218,17 +218,21 @@ const sharedFlagsStr = " --output-format stream-json --verbose --dangerously-ski
 var sharedFlagsSlice = []string{"--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
 
 // buildDirectArgs returns CLI args for direct (non-shell) invocation.
+//
+// `-p <prompt>` is always emitted. Claude Code ≥ 2.1.119 rejects `--resume`
+// with no prompt unless the resumed transcript ends in a deferred-tool marker;
+// callers choose the prompt text for resumed turns.
 func buildDirectArgs(sessionID *string, prompt string) []string {
-	base := append([]string{}, sharedFlagsSlice...)
+	args := append([]string{}, sharedFlagsSlice...)
 	if sessionID != nil && *sessionID != "" {
-		return append(base, "--resume", *sessionID)
+		args = append(args, "--resume", *sessionID)
 	}
-	return append(base, "-p", prompt)
+	return append(args, "-p", prompt)
 }
 
 // buildShellCmd returns the full shell command string for bash/zsh -lc.
-// The prompt is passed via a shell variable to avoid quoting issues with
-// special characters (backticks, $, !, quotes) in the rendered template.
+// The prompt is shell-quoted to preserve special characters (backticks, $, !,
+// quotes) in the rendered template.
 //
 // Defensive: if command is empty or whitespace, fall back to "claude" and
 // log a warning. Without this, sharedFlagsStr's leading space would produce
@@ -240,11 +244,11 @@ func buildShellCmd(command string, sessionID *string, prompt string) string {
 		slog.Warn("agent: empty command resolved at dispatch — falling back to 'claude'. Check WORKFLOW.md agent.command and any profile.command fields.")
 		command = "claude"
 	}
-	base := command + sharedFlagsStr
+	cmd := command + sharedFlagsStr
 	if sessionID != nil && *sessionID != "" {
-		return base + " --resume " + shellQuote(*sessionID)
+		cmd += " --resume " + shellQuote(*sessionID)
 	}
-	return base + " -p " + shellQuote(prompt)
+	return cmd + " -p " + shellQuote(prompt)
 }
 
 // todoItems parses a TodoWrite input and returns the content of each todo.

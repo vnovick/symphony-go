@@ -1931,3 +1931,75 @@ func TestManualPauseResumeWithoutSession(t *testing.T) {
 		}
 	}
 }
+
+type resumePromptRunner struct {
+	mu         sync.Mutex
+	once       sync.Once
+	done       chan struct{}
+	prompts    []string
+	sessionIDs []string
+}
+
+func (r *resumePromptRunner) RunTurn(_ context.Context, _ agent.Logger, _ func(agent.TurnResult), sessionID *string, prompt, _, _, _, _ string, _, _ int) (agent.TurnResult, error) {
+	r.mu.Lock()
+	sid := ""
+	if sessionID != nil {
+		sid = *sessionID
+	}
+	r.prompts = append(r.prompts, prompt)
+	r.sessionIDs = append(r.sessionIDs, sid)
+	callNum := len(r.prompts)
+	r.mu.Unlock()
+
+	if callNum == 1 {
+		return agent.TurnResult{
+			SessionID:    "agent-session-xyz",
+			InputTokens:  10,
+			OutputTokens: 10,
+			TotalTokens:  20,
+			ResultText:   "first turn",
+		}, nil
+	}
+
+	r.once.Do(func() { close(r.done) })
+	return agent.TurnResult{
+		SessionID:  "agent-session-xyz",
+		ResultText: "session concluded",
+	}, nil
+}
+
+func (r *resumePromptRunner) snapshot() (prompts []string, sessionIDs []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string{}, r.prompts...), append([]string{}, r.sessionIDs...)
+}
+
+func TestClaudeResumeTurnsUseResumePrompt(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 2
+	cfg.Agent.Command = "claude"
+	cfg.Agent.ResumePrompt = "Resume {{ issue.identifier }} from existing context."
+	cfg.PromptTemplate = "Full workflow prompt for {{ issue.identifier }}."
+	mt := singleIssueTracker(t, "In Progress")
+	runner := &resumePromptRunner{done: make(chan struct{})}
+	orch := orchestrator.New(cfg, mt, runner, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+
+	select {
+	case <-runner.done:
+	case <-ctx.Done():
+		t.Fatal("runner did not receive a Claude resume turn within 3s")
+	}
+
+	prompts, sessionIDs := runner.snapshot()
+	require.Len(t, prompts, 2)
+	require.Len(t, sessionIDs, 2)
+	assert.Equal(t, "Full workflow prompt for ENG-1.", prompts[0])
+	assert.Equal(t, "", sessionIDs[0])
+	assert.Equal(t, "Resume ENG-1 from existing context.", prompts[1])
+	assert.Equal(t, "agent-session-xyz", sessionIDs[1])
+}
