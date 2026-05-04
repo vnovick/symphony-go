@@ -1,0 +1,170 @@
+---
+title: What's New in v0.2.0
+description: Automations, agent profiles, daemon actions, skills inventory, retry controls, and capabilities dashboard — everything new in Itervox v0.2.0.
+sidebar:
+  order: 1
+---
+
+import { Image } from 'astro:assets';
+
+Itervox v0.2.0 is the biggest release since launch. It adds event-driven automations, a richer agent profile system with daemon-backed actions, a capabilities and skills inventory dashboard, and retry/rate-limit controls — all manageable from the web UI without editing YAML.
+
+---
+
+## Dashboard
+
+The dashboard now shows a unified overview with hero stats, host pool utilization, running sessions with inline logs, and a multi-view issue board.
+
+<Image src="/screenshots/v0.2.0/dashboard-kanban.png" alt="Full dashboard showing hero stats (Running, Paused, Retrying, Input Required, Automations, Capacity), host pool with local worker at 0/3, and Kanban board with Backlog, Todo, In Progress, and In Review columns. View switcher shows Board, List, Agents, and Notifications tabs." width={900} height={680} />
+
+The hero stats bar now includes **Automations** (how many fired today) and **Capacity** (used/total agent slots). Below the host pool, the **Running Sessions** panel shows every active agent with expandable inline logs:
+
+<Image src="/screenshots/v0.2.0/running-sessions.png" alt="Dashboard with one running agent session expanded, showing live tool-call logs (Bash, Grep, Read), session ID run-1608, worker host 'local', elapsed time 35s, and Pause/Cancel action buttons." width={900} height={620} />
+
+Each running session row shows the issue identifier, state badge, turn count, last output preview, and elapsed time. Expand a row to see the full live log stream with color-coded tool calls (Bash, Grep, Read). Pause or cancel any session directly from the dashboard.
+
+### Notifications tab
+
+The issue board now has a **Notifications** tab that surfaces issues ready for human attention — PRs awaiting review, input-required items, and completed work needing sign-off:
+
+<Image src="/screenshots/v0.2.0/notifications.png" alt="Notifications tab showing 'Ready for Review' section with 39 issues, each displaying identifier, state badge, and title." width={900} height={290} />
+
+The notification count badge (e.g. "Notifications · 39") is visible from any view tab, so you always know how many items need attention.
+
+---
+
+## Automations
+
+Automations let Itervox dispatch an agent profile automatically when a trigger fires — on a cron schedule, when an issue enters a state, when a run fails, or when an agent blocks on input.
+
+<Image src="/screenshots/v0.2.0/automations.png" alt="Automations card showing the three suggested templates — Input Responder, QA Validation, and PM Backlog Review — with trigger type badges and profile references" width={900} height={540} />
+
+The Automations card lives in the Settings page. When no automations are configured yet, Itervox offers three **starter templates** you can adopt with one click:
+
+- **Input Responder** — fires on `input_required`, dispatches a helper agent that can draft or auto-resume blocked runs.
+- **QA Validation** — fires on a cron schedule, runs a QA profile against issues ready for verification.
+- **PM Backlog Review** — fires on cron weekday mornings, reviews backlog issues for missing clarity and acceptance criteria.
+
+Each template pre-fills the automation ID, trigger type, profile reference, filter, and instructions. You can customize everything before saving.
+
+### Trigger types and the automation editor
+
+<Image src="/screenshots/v0.2.0/crons-triggers.png" alt="Automation editor modal showing the PM Backlog Review template with the trigger dropdown open, listing all eight trigger types: Cron, Input Required, Tracker Comment Added, Issue Entered State, Issue Moved To Backlog, Run Failed, PR Opened, and Rate Limited" width={900} height={580} />
+
+The automation editor modal lets you configure every aspect of an automation rule:
+
+- **Automation ID** — a stable identifier used in logs and YAML.
+- **Enabled** toggle — disabled automations stay in config but don't fire.
+- **Profile** — which agent profile runs when the trigger fires.
+- **Trigger type** — choose from eight types:
+  - **Cron** — five-field cron schedule with a visual picker and IANA timezone typeahead.
+  - **Input Required** — fires when a running agent blocks and asks for human input.
+  - **Tracker Comment Added** — fires when a new comment is detected on an issue.
+  - **Issue Entered State** — fires when an issue transitions into a specific tracker state.
+  - **Issue Moved To Backlog** — fires when an issue enters a backlog state.
+  - **Run Failed** — fires when a worker run fails permanently after retries are exhausted.
+  - **PR Opened** — fires when a pull request is detected on the issue.
+  - **Rate Limited** — fires when the rate-limit switch cap is reached.
+
+For `cron` triggers, the visual picker and the raw expression field stay in sync — edit either one and the other updates. The expression field accepts standard five-field cron syntax (`minute hour day month weekday`).
+
+All automations are persisted to the `automations:` block in `WORKFLOW.md` and take effect on the next tick without a daemon restart.
+
+See the [Automations guide](/guides/automations/) for the full configuration reference, filter syntax, and prompt variables.
+
+---
+
+## Agent profiles and daemon actions
+
+Agent profiles now have a richer configuration surface. The profile editor lets you set the backend, model, prompt, and — new in v0.2.0 — **daemon-backed actions** that give the agent controlled access to tracker and daemon operations.
+
+<Image src="/screenshots/v0.2.0/agents.png" alt="Agents page showing a 'pm' profile card with Claude backend, Sonnet 4.6 model, context budget estimate of 106k tokens across 36 skills, and three action buttons: Edit, Deactivate, Delete. Below are three profile templates: Code Reviewer, QA Engineer, and Input Responder." width={900} height={560} />
+
+The Agents page shows all configured profiles at a glance:
+
+- **Backend and model** — visible on each card.
+- **Context budget** — estimated token cost from skills, MCP servers, and instructions. Helps you spot bloated profiles before they slow down first-token latency.
+- **Active/Inactive** toggle — inactive profiles stay in config but are hidden from dispatch selectors and automations.
+- **Templates** — pre-configured profiles you can adopt: Code Reviewer (Opus 4.6), QA Engineer (Sonnet 4.6), and Input Responder.
+
+### Profile editor and daemon actions
+
+<Image src="/screenshots/v0.2.0/v0.2agent-permissions.png" alt="Profile editor modal for the 'pm' profile showing backend (Claude), model (Sonnet 4.6 — Balanced), and the Daemon Actions section with five checkboxes: Comment on current issue, Post structured review, Create follow-up issue, Move current issue state, and Provide input to blocked run" width={900} height={560} />
+
+The profile editor now includes a **Daemon Actions** section. These are not arbitrary permissions — they are tightly scoped, short-lived bearer grants for specific `/api/v1/agent-actions/*` routes:
+
+| Action | What it does |
+|---|---|
+| **Comment on current issue** | Post a tracker comment on the issue the agent is handling. |
+| **Post structured review** (`comment_pr`) | Post a file/line/severity review comment on the tracker issue. |
+| **Create follow-up issue** | Open a new issue in the configured tracker state. |
+| **Move current issue state** | Transition the issue to another tracker column. |
+| **Provide input to blocked run** | Answer an input-required prompt and resume the blocked session through the daemon. |
+
+These actions are invoked by the agent via `itervox action ...` CLI commands, not via the model's native tool use. The daemon validates every request against the profile's `allowed_actions` list and the per-run bearer grant.
+
+See the [Agent Profiles guide](/guides/agent-profiles/) for YAML examples and the full field reference.
+
+---
+
+## Skills Inventory and Capabilities
+
+Itervox v0.2.0 introduces a **capabilities dashboard** that scans your project's skills, plugins, MCP servers, hooks, and instructions — then surfaces actionable recommendations.
+
+<Image src="/screenshots/v0.2.0/capabilities.png" alt="Capabilities panel showing counts: 36 skills (105k tokens), 0 plugins, 1 MCP server (800 tokens), 1 hook (28 tokens), 14 instructions (24k tokens). Below is a 'By provider' skill cost breakdown bar chart (Claude 4 / Codex 24 / Shared 8) and a Runtime analytics section with 42 recommendations." width={900} height={380} />
+
+The **Capabilities** section provides:
+
+- **Aggregate counts** — total skills, plugins, MCP servers, hooks, and instruction files with their estimated token costs.
+- **Per-provider cost split** — a bar chart showing how skill tokens are distributed between Claude, Codex, and shared scopes. Provider is inferred from the source path (`~/.claude/skills/` = Claude, `~/.codex/skills/` = Codex, `~/.agents/skills/` = shared).
+- **Runtime analytics** — how many skills were actually loaded at runtime (vs. just configured), hook events observed, and the total recommendation count.
+
+### How runtime analytics work — and why they get sharper over time
+
+Runtime analytics are **evidence-based**, not prescriptive. The analyzer reads JSONL session logs the daemon already writes for every dispatch under `~/.itervox/logs/<issue>/<session>.jsonl` (Claude Code) and `~/.codex/history.jsonl` + `~/.codex/sessions/**` (Codex). It walks the most recent 25 sessions and aggregates:
+
+- which skills the model actually loaded (vs. which were merely configured)
+- how often each hook fired
+- which tools each profile used and at what frequency
+
+Because the data source is real session history, **the recommendations compound over time**:
+
+- **Day 1** (zero session logs) — you'll see static-analyzer output only: duplicate skills, bloated profiles, stale schedules. Runtime warnings like `HIGH_COST_LOW_USAGE` and `HOOK_STORM` need real runs to fire.
+- **After a representative sample** (~25 sessions across your real profiles) — runtime evidence catches the high-leverage findings: skills that pay their token cost but never get loaded, hooks that fire 50+ times per run, capabilities the model used implicitly but aren't in the YAML.
+- **Long-running daemons** — the 25-session lookback window slides forward, so stale evidence ages out automatically. A skill you trimmed last week stops showing up as heavy once enough new sessions accumulate.
+
+Practical consequence: don't expect actionable runtime recommendations on a fresh install. Leave the daemon running, accumulate evidence, then come back and act on the warnings — the longer the daemon has been running real work, the more confident the recommendations are.
+
+For the full reference (rule list, HTTP endpoints, one-click fixes, architecture), see the [Skills Inventory guide](/guides/skills-inventory/).
+
+### Skills inventory and recommendations
+
+<Image src="/screenshots/v0.2.0/skills-scanning.png" alt="Skills Inventory panel showing 9 recommendations. Top warning: 'Profiles carry a heavy capability surface — Inventory carries 36 skills and 1 MCP server.' Below are multiple INFO items: 'Same skill name in multiple scopes' for graphify, imagegen, openai-docs, plugin-creator, and skill-creator — each naming the conflicting scopes." width={900} height={480} />
+
+The **Skills Inventory** scans your file system on demand and produces severity-graded recommendations:
+
+- **WARN: Heavy capability surface** — your profiles inherit a large number of skills and MCP servers, inflating the system prompt. Consider splitting into focused sub-profiles.
+- **INFO: Same skill name in multiple scopes** — a skill appears in both system-level and user-level directories (e.g. `system-codex` and `user-codex`). The duplicate adds token cost without adding capability. Remove one.
+
+Each recommendation is expandable for detailed guidance. The **Re-scan** button triggers a fresh file-system scan.
+
+---
+
+## Retry and rate-limit controls
+
+<Image src="/screenshots/v0.2.0/retries settings.png" alt="Retries settings section with three controls: Max retries per issue (set to 5), On exhausted retries dropdown (set to 'Pause — do not move'), and Rate-limit switch cap (2 switches per 6 hours)" width={900} height={380} />
+
+The Settings page now surfaces retry and rate-limit controls that were previously YAML-only:
+
+- **Max retries per issue** — how many times the daemon retries a failing worker before giving up. Each retry uses exponential backoff. Set to 0 for unlimited retries.
+- **On exhausted retries** — what happens when the retry budget is burned. Options include pausing the issue (do not move) or transitioning it to a configured failure state.
+- **Rate-limit switch cap** — how many times a `rate_limited` automation can switch an issue to a different profile within a rolling window. Prevents automation ping-pong between profiles. Set to 0 for unlimited.
+
+---
+
+## Next steps
+
+- [Automations guide](/guides/automations/) — triggers, filters, instructions, and YAML examples.
+- [Agent Profiles guide](/guides/agent-profiles/) — modes, daemon actions, SSH, and reviewer config.
+- [Configuration reference](/configuration/) — full WORKFLOW.md field reference.
+- [Changelog](https://github.com/vnovick/itervox/blob/main/CHANGELOG.md) — complete v0.2.0 changelog.

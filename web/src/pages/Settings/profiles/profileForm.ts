@@ -19,7 +19,9 @@ export const profileFormSchema = z
     model: z.string(),
     command: z.string().min(1, 'Command is required.'),
     prompt: z.string(),
-    allowedActions: z.array(z.enum(['comment', 'create_issue', 'move_state', 'provide_input'])),
+    allowedActions: z.array(
+      z.enum(['comment', 'comment_pr', 'create_issue', 'move_state', 'provide_input']),
+    ),
     createIssueState: z.string(),
   })
   .superRefine((values, ctx) => {

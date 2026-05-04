@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -61,8 +62,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	sub := s.bc.subscribe()
 	defer s.bc.unsubscribe(sub)
 
-	// Keep-alive ticker (every 25s) to prevent proxy timeouts.
-	ticker := time.NewTicker(25 * time.Second)
+	// Keep-alive ticker (every 25s) to prevent proxy timeouts. Reset on
+	// every real event sent so a busy stream (one snapshot per second)
+	// doesn't ALSO emit a keepalive every 25s — gap §7.2. The reset
+	// halves outbound byte volume on heavy systems while still firing
+	// the keepalive within 25s of any quiet period.
+	const keepaliveInterval = 25 * time.Second
+	ticker := time.NewTicker(keepaliveInterval)
 	defer ticker.Stop()
 
 	for {
@@ -73,9 +79,25 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if err := s.writeSSEEvent(w, flusher); err != nil {
 				return
 			}
+			ticker.Reset(keepaliveInterval) // §7.2 — defer keepalive after activity
 		case <-ticker.C:
-			// Send SSE comment as heartbeat.
-			if _, err := fmt.Fprintf(w, ": ping\n\n"); err != nil {
+			// G-04 (gaps_280426_2): set a per-tick write deadline so a
+			// half-closed TCP connection (proxy gone, client crashed) is
+			// detected within the deadline rather than waiting for OS-level
+			// keepalive. ResponseController returns ErrNotSupported on net
+			// implementations that don't support deadlines (rare in practice);
+			// we ignore the error and fall through to the legacy behavior.
+			rc := http.NewResponseController(w)
+			_ = rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			// Send SSE keepalive as a NAMED event (not a comment) so the
+			// client's @microsoft/fetch-event-source delivers it to onMessage.
+			// Comments (`: ping`) are stripped by the SSE parser per spec —
+			// using them meant the dashboard's silence watchdog could not
+			// distinguish "no real updates" from "connection dead", so the
+			// "Reconnecting…" banner kept appearing on quiet systems. The
+			// payload is intentionally tiny; the client checks event type
+			// and short-circuits without re-parsing the snapshot.
+			if _, err := fmt.Fprintf(w, "event: keepalive\ndata: {}\n\n"); err != nil {
 				return
 			}
 			flusher.Flush()
@@ -212,11 +234,19 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	const tail = 16 * 1024
 	if fi, err := f.Stat(); err == nil && fi.Size() > tail {
 		_, _ = f.Seek(-tail, io.SeekEnd)
-		// Skip to next newline so we don't send a partial line.
-		buf := make([]byte, 1)
+		// Skip to next newline so we don't send a partial line. T-51: read a
+		// small chunk at a time instead of byte-by-byte so we don't issue 1
+		// syscall per byte for the (potentially long) leading partial line.
+		var skipBuf [256]byte
 		for {
-			n, err := f.Read(buf)
-			if err != nil || n == 0 || buf[0] == '\n' {
+			n, err := f.Read(skipBuf[:])
+			if err != nil || n == 0 {
+				break
+			}
+			if idx := bytes.IndexByte(skipBuf[:n], '\n'); idx >= 0 {
+				// Rewind so the next read starts AFTER the newline (not
+				// somewhere mid-following-line).
+				_, _ = f.Seek(int64(idx+1-n), io.SeekCurrent)
 				break
 			}
 		}
@@ -339,11 +369,16 @@ func (s *Server) handleIssueLogStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	// cursor tracks how many lines from the buffer have already been sent.
-	sent := 0
+	// On reconnect we honor the Last-Event-ID header (T-18) so the client
+	// resumes after the last event it acknowledged. Browsers (and the
+	// @microsoft/fetch-event-source library used by web/) automatically
+	// echo this header on reconnect when the server emits "id:" lines.
+	sent := parseLastEventID(r.Header.Get("Last-Event-ID"))
 
 	sendNew := func() bool {
 		lines := s.client.FetchLogs(identifier)
-		// Guard against buffer reset (cleared while streaming).
+		// Guard against buffer reset (cleared while streaming) or a stale
+		// Last-Event-ID pointing past the current buffer length.
 		if sent > len(lines) {
 			sent = 0
 		}
@@ -357,7 +392,9 @@ func (s *Server) handleIssueLogStream(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "event: log\ndata: %s\n\n", b); err != nil {
+			// id: <cursor> lets the client resume from this point on
+			// reconnect via the Last-Event-ID header.
+			if _, err := fmt.Fprintf(w, "id: %d\nevent: log\ndata: %s\n\n", sent, b); err != nil {
 				return false
 			}
 		}
@@ -380,6 +417,122 @@ func (s *Server) handleIssueLogStream(w http.ResponseWriter, r *http.Request) {
 			if !sendNew() {
 				return
 			}
+		}
+	}
+}
+
+// parseLastEventID reads a numeric Last-Event-ID header value. Empty,
+// negative, or non-numeric values resolve to 0 (replay from beginning) —
+// the conservative default that callers fall through to.
+func parseLastEventID(h string) int {
+	if h == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(h)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// handleSubLogStream streams parsed session/subagent log entries for one issue
+// as SSE. The source data still comes from per-issue JSONL files, but the
+// browser receives push updates instead of polling every few seconds.
+// GET /api/v1/issues/{identifier}/sublog-stream
+func (s *Server) handleSubLogStream(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	initialEntries, err := s.client.FetchSubLogs(identifier)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "fetch_failed", err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	// Honor Last-Event-ID for resume-after-reconnect (T-18).
+	sent := parseLastEventID(r.Header.Get("Last-Event-ID"))
+	sendNew := func(entries []domain.IssueLogEntry) bool {
+		if sent > len(entries) {
+			sent = 0
+		}
+		for _, entry := range entries[sent:] {
+			sent++
+			b, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "id: %d\nevent: sublog\ndata: %s\n\n", sent, b); err != nil {
+				return false
+			}
+		}
+		flusher.Flush()
+		return true
+	}
+
+	if !sendNew(initialEntries) {
+		return
+	}
+
+	// G-01 (gaps_280426_2): 5-second cadence (was 1 second). FetchSubLogs
+	// re-reads + re-parses every `.jsonl` line in the per-issue session
+	// directory on every tick, scaling with `(open viewers × session size)`.
+	// 5s is a stop-gap that 5x-reduces the disk/CPU cost while keeping
+	// dashboard latency tolerable (most sublog activity is multi-second
+	// agent reasoning, not sub-second). A proper fix tracks per-stream file
+	// offsets and only reads appended bytes; deferred to a future T-NN.
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			entries, err := s.client.FetchSubLogs(identifier)
+			if err != nil {
+				// T-45 (03.G-06): emit a structured SSE `error` frame before
+				// returning so the dashboard can distinguish a tracker fetch
+				// failure from a clean disconnect (user closed tab). Without
+				// this, the per-issue sublog modal silently disappears with
+				// no signal of what went wrong.
+				writeSubLogErrorEvent(w, err)
+				return
+			}
+			if !sendNew(entries) {
+				return
+			}
+		}
+	}
+}
+
+// writeSubLogErrorEvent emits an SSE `event: error` frame carrying a JSON
+// payload `{code, message}` so the dashboard can render a toast or banner
+// instead of treating the disconnect as benign. T-45 (03.G-06).
+func writeSubLogErrorEvent(w http.ResponseWriter, err error) {
+	const code = "fetch_failed"
+	// JSON-encode inline to keep this self-contained — the payload is small
+	// enough that pulling in encoding/json's error path is overkill.
+	msg := err.Error()
+	// Replace characters that would break the SSE single-line data: framing.
+	msg = strings.ReplaceAll(msg, "\n", " ")
+	msg = strings.ReplaceAll(msg, "\r", " ")
+	// Produce a compact JSON envelope; quoting via fmt.Sprintf is safe here
+	// because both code and the cleaned message are plain ASCII strings —
+	// %q escapes embedded quotes for us.
+	payload := fmt.Sprintf(`{"code":%q,"message":%q}`, code, msg)
+	if _, werr := fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload); werr == nil {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
 		}
 	}
 }
@@ -641,7 +794,7 @@ func (s *Server) handleSetProjectFilter(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		Slugs *[]string `json:"slugs"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_body", "expected JSON with optional 'slugs' array")
 		return
 	}
@@ -660,7 +813,7 @@ func (s *Server) handleUpdateIssueState(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		State string `json:"state"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.State == "" {
+	if err := decodeJSONBody(w, r, &body); err != nil || body.State == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "state field required")
 		return
 	}
@@ -685,7 +838,7 @@ func (s *Server) handleSetIssueProfile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Profile string `json:"profile"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -701,7 +854,7 @@ func (s *Server) handleSetIssueBackend(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Backend string `json:"backend"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -714,7 +867,7 @@ func (s *Server) handleProvideInput(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -771,7 +924,7 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Body string `json:"body"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Body) == "" {
+	if err := decodeJSONBody(w, r, &body); err != nil || strings.TrimSpace(body.Body) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "body field required")
 		return
 	}
@@ -779,6 +932,9 @@ func (s *Server) handleAgentComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "comment_failed", err.Error())
 		return
 	}
+	// T-6: track per-issue comment counts so the dashboard can surface a
+	// "📝 N reviews" badge on the issue card without re-querying the tracker.
+	s.client.BumpCommentCount(identifier)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -792,7 +948,7 @@ func (s *Server) handleAgentCreateIssue(w http.ResponseWriter, r *http.Request) 
 		Title string `json:"title"`
 		Body  string `json:"body"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Title) == "" {
+	if err := decodeJSONBody(w, r, &body); err != nil || strings.TrimSpace(body.Title) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "title field required")
 		return
 	}
@@ -816,7 +972,7 @@ func (s *Server) handleAgentMoveState(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		State string `json:"state"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.State) == "" {
+	if err := decodeJSONBody(w, r, &body); err != nil || strings.TrimSpace(body.State) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "state field required")
 		return
 	}
@@ -839,7 +995,7 @@ func (s *Server) handleAgentProvideInput(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Message) == "" {
+	if err := decodeJSONBody(w, r, &body); err != nil || strings.TrimSpace(body.Message) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "message field required")
 		return
 	}
@@ -854,7 +1010,7 @@ func (s *Server) handleSetInlineInput(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -873,7 +1029,7 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 		Workers int `json:"workers"`
 		Delta   int `json:"delta"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -881,10 +1037,18 @@ func (s *Server) handleSetWorkers(w http.ResponseWriter, r *http.Request) {
 	if body.Workers > 0 {
 		// Absolute set: clamp and apply directly.
 		target = max(1, min(body.Workers, 50))
-		s.client.SetWorkers(target)
+		if err := s.client.SetWorkers(target); err != nil {
+			writeError(w, http.StatusInternalServerError, "persist_failed", err.Error())
+			return
+		}
 	} else {
 		// Relative delta: use BumpMaxWorkers for an atomic read-modify-write.
-		target = s.client.BumpWorkers(body.Delta)
+		var err error
+		target, err = s.client.BumpWorkers(body.Delta)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "persist_failed", err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"workers": target})
 }
@@ -896,8 +1060,6 @@ func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": defs})
 }
 
-// handleListModels returns available models from the WORKFLOW.md config.
-// GET /api/v1/settings/models
 // handleGetReviewer returns the reviewer configuration.
 // GET /api/v1/settings/reviewer
 func (s *Server) handleGetReviewer(w http.ResponseWriter, _ *http.Request) {
@@ -916,8 +1078,11 @@ func (s *Server) handleSetReviewer(w http.ResponseWriter, r *http.Request) {
 		Profile    string `json:"profile"`
 		AutoReview bool   `json:"auto_review"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		// T-50: typed-error parity with the rest of the settings handlers so
+		// SettingsError-aware clients (web/src/auth/SettingsError.ts) receive
+		// {error:{code,message}} instead of a raw text body.
+		writeError(w, http.StatusBadRequest, "invalid_json", "invalid JSON")
 		return
 	}
 	if err := s.client.SetReviewerConfig(body.Profile, body.AutoReview); err != nil {
@@ -929,12 +1094,14 @@ func (s *Server) handleSetReviewer(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_profile", err.Error())
 			return
 		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "persist_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleListModels returns available models from the WORKFLOW.md config.
+// GET /api/v1/settings/models
 func (s *Server) handleListModels(w http.ResponseWriter, _ *http.Request) {
 	models := s.client.AvailableModels()
 	if models == nil {
@@ -957,7 +1124,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 		CreateIssueState string   `json:"createIssueState"`
 		OriginalName     string   `json:"originalName"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Command == "" {
+	if err := decodeJSONBody(w, r, &body); err != nil || body.Command == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "command field required")
 		return
 	}
@@ -965,7 +1132,7 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_allowed_actions", fmt.Sprintf("unknown allowedActions: %s", strings.Join(invalid, ", ")))
 		return
 	}
-	if slicesContains(config.NormalizeAllowedActions(body.AllowedActions), config.AgentActionCreateIssue) &&
+	if slices.Contains(config.NormalizeAllowedActions(body.AllowedActions), config.AgentActionCreateIssue) &&
 		strings.TrimSpace(body.CreateIssueState) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "createIssueState is required when create_issue is enabled")
 		return
@@ -989,15 +1156,6 @@ func (s *Server) handleUpsertProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func slicesContains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
 // handleDeleteProfile removes a named agent profile.
 // DELETE /api/v1/settings/profiles/{name}
 func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
@@ -1013,7 +1171,7 @@ func (s *Server) handleSetAutomations(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Automations []AutomationDef `json:"automations"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -1036,6 +1194,37 @@ func (s *Server) handleSetAutomations(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.client.SetAutomations(body.Automations); err != nil {
 		writeError(w, http.StatusInternalServerError, "set_automations_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// handleTestAutomation dispatches a one-off worker for the named automation
+// rule against the given issue identifier (T-10). The resulting run is tagged
+// TriggerType="test" so the timeline / activity surfaces can distinguish it
+// from production fires while still treating it as automation activity for
+// the "automation runs only" chips. Cron rules can be test-fired outside
+// their normal schedule.
+func (s *Server) handleTestAutomation(w http.ResponseWriter, r *http.Request) {
+	automationID := chi.URLParam(r, "id")
+	if strings.TrimSpace(automationID) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "automation id is required")
+		return
+	}
+	var body struct {
+		Identifier string `json:"identifier"`
+	}
+	if err := decodeJSONBody(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
+		return
+	}
+	identifier := strings.TrimSpace(body.Identifier)
+	if identifier == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "identifier is required")
+		return
+	}
+	if err := s.client.TestAutomation(r.Context(), automationID, identifier); err != nil {
+		writeError(w, http.StatusInternalServerError, "test_automation_failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1065,6 +1254,7 @@ func automationConfigsFromDefs(defs []AutomationDef) []config.AutomationConfig {
 				IdentifierRegex:   def.Filter.IdentifierRegex,
 				Limit:             def.Filter.Limit,
 				InputContextRegex: def.Filter.InputContextRegex,
+				MaxAgeMinutes:     def.Filter.MaxAgeMinutes,
 			},
 			Policy: config.AutomationPolicyConfig{
 				AutoResume: def.Policy.AutoResume,
@@ -1076,46 +1266,30 @@ func automationConfigsFromDefs(defs []AutomationDef) []config.AutomationConfig {
 
 func writeAutomationValidationError(w http.ResponseWriter, err error) {
 	msg := err.Error()
+	// Each branch maps a server-side validation error to its form field name
+	// on the dashboard, so the typed client (SettingsError.field) can pin the
+	// inline error to the correct input rather than render it as a toast (T-34).
+	// Identifier-regex and input-context-regex share a code but split fields.
 	switch {
 	case strings.Contains(msg, "duplicate automation id"):
-		writeError(w, http.StatusBadRequest, "duplicate_automation_id", msg)
+		writeErrorWithField(w, http.StatusBadRequest, "duplicate_automation_id", msg, "id")
 	case strings.Contains(msg, "invalid cron"):
-		writeError(w, http.StatusBadRequest, "invalid_cron", msg)
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_cron", msg, "cron")
 	case strings.Contains(msg, "invalid timezone"):
-		writeError(w, http.StatusBadRequest, "invalid_timezone", msg)
-	case strings.Contains(msg, "invalid identifier_regex"), strings.Contains(msg, "invalid input_context_regex"):
-		writeError(w, http.StatusBadRequest, "invalid_regex", msg)
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_timezone", msg, "timezone")
+	case strings.Contains(msg, "invalid identifier_regex"):
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_regex", msg, "identifierRegex")
+	case strings.Contains(msg, "invalid input_context_regex"):
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_regex", msg, "inputContextRegex")
 	case strings.Contains(msg, "unsupported trigger type"):
-		writeError(w, http.StatusBadRequest, "invalid_trigger_type", msg)
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_trigger_type", msg, "triggerType")
 	case strings.Contains(msg, "filter.match_mode"):
-		writeError(w, http.StatusBadRequest, "invalid_match_mode", msg)
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_match_mode", msg, "matchMode")
 	case strings.Contains(msg, "filter.limit"):
-		writeError(w, http.StatusBadRequest, "invalid_limit", msg)
+		writeErrorWithField(w, http.StatusBadRequest, "invalid_limit", msg, "limit")
 	default:
 		writeError(w, http.StatusBadRequest, "bad_request", msg)
 	}
-}
-
-// handleSetAgentMode sets the agent collaboration mode.
-// POST /api/v1/settings/agent-mode
-// Body: {"mode": "" | "subagents" | "teams"}
-func (s *Server) handleSetAgentMode(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Mode string `json:"mode"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "mode field required")
-		return
-	}
-	if body.Mode != "" && body.Mode != "teams" && body.Mode != "subagents" {
-		writeError(w, http.StatusBadRequest, "invalid_mode", `mode must be "", "subagents", or "teams"`)
-		return
-	}
-	if err := s.client.SetAgentMode(body.Mode); err != nil {
-		writeError(w, http.StatusInternalServerError, "set_failed", err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "agentMode": body.Mode})
 }
 
 // handleClearAllWorkspaces removes all workspace directories under workspace.root.
@@ -1138,7 +1312,7 @@ func (s *Server) handleSetAutoClearWorkspace(w http.ResponseWriter, r *http.Requ
 	var body struct {
 		Enabled *bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -1166,7 +1340,7 @@ func (s *Server) handleUpdateTrackerStates(w http.ResponseWriter, r *http.Reques
 		TerminalStates  []string `json:"terminalStates"`
 		CompletionState string   `json:"completionState"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -1186,7 +1360,7 @@ func (s *Server) handleAddSSHHost(w http.ResponseWriter, r *http.Request) {
 		Host        string `json:"host"`
 		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -1221,7 +1395,7 @@ func (s *Server) handleSetDispatchStrategy(w http.ResponseWriter, r *http.Reques
 	var body struct {
 		Strategy string `json:"strategy"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBody(w, r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid body")
 		return
 	}
@@ -1251,11 +1425,42 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_, _ = w.Write(b)
 }
 
+// writeJSON sets Content-Length BEFORE WriteHeader, which is incompatible
+// with mid-stream use (SSE handlers that have already started writing
+// `text/event-stream` framing must NOT call writeJSON afterward — Go would
+// emit a `superfluous WriteHeader` warning and the response framing would
+// be corrupt). For mid-SSE error reporting use a typed `event: error`
+// frame (see writeSubLogErrorEvent for the pattern). G-05 (gaps_280426_2).
 func writeError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]any{
-		"error": map[string]string{
-			"code":    code,
-			"message": message,
-		},
-	})
+	writeErrorWithField(w, status, code, message, "")
+}
+
+// maxRequestBody is the per-handler upper bound on JSON request body size.
+// 1 MiB is generous for every existing settings/automation payload (the
+// largest in practice is a fully-populated `automations:` block, well under
+// 100 KiB) and bounds memory pressure from pathological / hostile clients
+// streaming arbitrary bytes into json.Decode. G-02 (gaps_280426_2).
+const maxRequestBody = 1 << 20
+
+// decodeJSONBody wraps r.Body in http.MaxBytesReader before decoding so a
+// runaway client cannot OOM the daemon. Callers stay structurally identical
+// to the prior `json.NewDecoder(r.Body).Decode(&body)` form. G-02.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	return json.NewDecoder(r.Body).Decode(dst)
+}
+
+// writeErrorWithField writes the standard {error:{code,message}} body and
+// optionally attaches a `field` discriminator so a typed client (e.g. the
+// SettingsError on the dashboard) can pin the error to a specific form
+// input rather than rendering it as a generic toast (T-34).
+func writeErrorWithField(w http.ResponseWriter, status int, code, message, field string) {
+	body := map[string]string{
+		"code":    code,
+		"message": message,
+	}
+	if field != "" {
+		body["field"] = field
+	}
+	writeJSON(w, status, map[string]any{"error": body})
 }

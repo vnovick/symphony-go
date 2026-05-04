@@ -1,5 +1,5 @@
 import type { SuggestedProfile } from './suggestedProfiles';
-import { backendBadgeClass, backendLabel } from './ProfileEditorFields';
+import { backendBadgeClass, backendLabel } from './profileBadges';
 import { AGENT_ACTION_OPTIONS } from '../profileCommands';
 
 export function SuggestedProfileCard({

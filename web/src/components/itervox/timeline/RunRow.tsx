@@ -9,12 +9,20 @@ import {
   ROW_MIN_HEIGHT,
   LABEL_WIDTH,
   ELAPSED_WIDTH,
+  TOKENS_WIDTH,
   SUBAGENT_LABEL_WIDTH,
   barGradient,
   statusBadgeStyle,
   statusBadgeLabel,
   TICK_MARK_STYLE,
 } from './styles';
+
+function fmtTokens(n: number): string {
+  if (!n || n <= 0) return '—';
+  if (n < 1000) return String(n);
+  if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
+  return `${String(Math.round(n / 1000))}k`;
+}
 
 interface RunRowProps {
   session: NormalisedSession;
@@ -119,6 +127,15 @@ export const RunRow = memo(function RunRow({
           style={{ width: ELAPSED_WIDTH }}
         >
           {fmtMs(session.elapsedMs)}
+        </span>
+
+        {/* Tokens consumed */}
+        <span
+          className="text-theme-muted shrink-0 text-right font-mono text-[11px]"
+          style={{ width: TOKENS_WIDTH }}
+          title={`${String(session.tokens)} tokens`}
+        >
+          {fmtTokens(session.tokens)}
         </span>
 
         {/* Status badge (non-live only) */}

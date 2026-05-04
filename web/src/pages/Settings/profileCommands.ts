@@ -1,7 +1,12 @@
 import type { ProfileDef } from '../../types/schemas';
 
 export type SupportedBackend = 'claude' | 'codex';
-export type AllowedAgentAction = 'comment' | 'create_issue' | 'move_state' | 'provide_input';
+export type AllowedAgentAction =
+  | 'comment'
+  | 'comment_pr'
+  | 'create_issue'
+  | 'move_state'
+  | 'provide_input';
 
 export interface AllowedAgentActionOption {
   id: AllowedAgentAction;
@@ -29,6 +34,12 @@ export const AGENT_ACTION_OPTIONS = [
     id: 'comment',
     label: 'Comment on current issue',
     description: 'Post a tracker comment on the issue this agent is already handling.',
+  },
+  {
+    id: 'comment_pr',
+    label: 'Post structured review',
+    description:
+      'Post a structured review comment with file/line/severity findings on the issue. (v1: comments land on the tracker issue, not the GitHub PR — true PR-API integration is deferred.) Distinct scope from "Comment" so reviewer profiles can be granted only this without freeform-comment access.',
   },
   {
     id: 'create_issue',

@@ -63,4 +63,28 @@ describe('ProfileEditorFields', () => {
 
     expect(screen.getByLabelText('Follow-up issue state')).toHaveValue('Todo');
   });
+
+  // Gap §4.5 — verify the new comment_pr action option renders in the daemon
+  // actions list. Without this assertion, a rename of the option id or a
+  // missing import would silently disappear from the editor UI.
+  it('renders the comment_pr ("Post structured review") option in Daemon Actions', () => {
+    render(
+      <ProfileEditorFields
+        backend="claude"
+        model=""
+        command="claude"
+        prompt=""
+        allowedActions={[]}
+        createIssueState=""
+        trackerStates={['Todo']}
+        onBackendChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onCommandChange={vi.fn()}
+        onPromptChange={vi.fn()}
+        onAllowedActionsChange={vi.fn()}
+        onCreateIssueStateChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Post structured review')).toBeInTheDocument();
+  });
 });

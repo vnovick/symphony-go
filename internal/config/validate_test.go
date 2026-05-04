@@ -269,3 +269,56 @@ automations:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "disabled profile")
 }
+
+// T-42 (06.G-02): the unknown-profile check now fires regardless of the
+// automation's enabled flag. Previously a disabled-but-misconfigured rule
+// passed `ValidateDispatch` at startup and only crashed dispatch the moment
+// a user re-enabled it from the dashboard. The disabled-profile check is
+// scoped to enabled automations only, because the UpsertProfile cascade
+// deliberately leaves a disabled automation pointing at a disabled profile
+// in lock-step.
+func TestValidateDispatchRejectsDisabledAutomationReferencingUnknownProfile(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    qa:
+      command: claude
+      enabled: true
+automations:
+  - id: comment-watch
+    enabled: false
+    profile: ghost-profile
+    trigger:
+      type: tracker_comment_added
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	err = config.ValidateDispatch(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown profile")
+}
+
+// T-42: a disabled automation referencing a disabled profile is allowed —
+// matches the UpsertProfile cascade behavior that disables both sides
+// together. Re-enabling either side without fixing the other still trips
+// the existing enabled-side validation.
+func TestValidateDispatchAllowsDisabledAutomationReferencingDisabledProfile(t *testing.T) {
+	content := minimal(`agent:
+  profiles:
+    qa:
+      command: claude
+      enabled: false
+automations:
+  - id: comment-watch
+    enabled: false
+    profile: qa
+    trigger:
+      type: tracker_comment_added
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+
+	require.NoError(t, config.ValidateDispatch(cfg))
+}

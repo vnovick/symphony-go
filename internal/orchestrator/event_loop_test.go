@@ -412,7 +412,7 @@ func TestStallTimeoutSchedulesRetry(t *testing.T) {
 		WorkerCancel: func() {},
 	}
 
-	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 
 	// Issue should be removed from Running and added to RetryAttempts.
 	_, stillRunning := state.Running["id1"]
@@ -585,7 +585,7 @@ func TestReconcileStallsNoStallWhenRecent(t *testing.T) {
 		WorkerCancel: func() {},
 	}
 
-	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	state = orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 	_, stillRunning := state.Running["id1"]
 	assert.True(t, stillRunning, "recent activity should not trigger stall")
 }
@@ -826,7 +826,7 @@ func TestReconcileStallsEmitsStallEvent(t *testing.T) {
 		WorkerCancel: func() {},
 	}
 
-	orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 
 	select {
 	case ev := <-events:
@@ -1000,7 +1000,7 @@ func TestReconcileTrackerStatesIssueNotFound(t *testing.T) {
 	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
 	events := make(chan orchestrator.OrchestratorEvent, 10)
 
-	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events)
+	state = orchestrator.ReconcileTrackerStates(context.Background(), state, mt, events, nil)
 	_, stillRunning := state.Running["id1"]
 	assert.False(t, stillRunning, "issue not found should stop worker")
 	assert.True(t, cancelled, "worker cancel should be called")
@@ -1091,7 +1091,7 @@ func TestStallLogContainsIdentifier(t *testing.T) {
 		WorkerCancel: func() {},
 	}
 
-	orchestrator.ReconcileStalls(state, cfg, time.Now(), events)
+	orchestrator.ReconcileStalls(state, cfg, time.Now(), events, nil)
 
 	logs := logBuf.String()
 	assert.True(t, strings.Contains(logs, "STALL-1"), "stall log should mention the issue identifier")

@@ -431,53 +431,11 @@ func (o *Orchestrator) loadInputRequiredFromDisk(state State) State {
 	return state
 }
 
-// copyStringMap returns a copy of a map[string]string.
-func copyStringMap(m map[string]string) map[string]string {
-	cp := make(map[string]string, len(m))
-	maps.Copy(cp, m)
-	return cp
-}
-
-// copyPausedSessionsMap returns a shallow copy of the PausedSessions map.
-// Entries are pointers but PausedSessionInfo is immutable after capture, so
-// sharing the entry pointers across goroutines is safe.
-func copyPausedSessionsMap(m map[string]*PausedSessionInfo) map[string]*PausedSessionInfo {
-	cp := make(map[string]*PausedSessionInfo, len(m))
-	for k, v := range m {
-		cp[k] = v
-	}
-	return cp
-}
-
-// copyStructMap returns a copy of a map[string]struct{}.
-func copyStructMap(m map[string]struct{}) map[string]struct{} {
-	cp := make(map[string]struct{}, len(m))
-	for k := range m {
-		cp[k] = struct{}{}
-	}
-	return cp
-}
-
-// copyInputRequiredMap returns a shallow copy of the InputRequiredIssues map.
-// Entries are pointers but are never mutated after creation, so sharing is safe.
-func copyInputRequiredMap(m map[string]*InputRequiredEntry) map[string]*InputRequiredEntry {
-	cp := make(map[string]*InputRequiredEntry, len(m))
-	for k, v := range m {
-		cp[k] = v
-	}
-	return cp
-}
-
-// copyPendingInputResumeMap returns a shallow copy of the PendingInputResumes map.
-// Entries are pointers but are never mutated after creation, so sharing is safe.
-func copyPendingInputResumeMap(m map[string]*PendingInputResumeEntry) map[string]*PendingInputResumeEntry {
-	cp := make(map[string]*PendingInputResumeEntry, len(m))
-	for k, v := range m {
-		cp[k] = v
-	}
-	return cp
-}
-
+// copyInlineInputMap returns a shallow copy of the InlineInputs map.
+// Kept as a helper because maps.Clone returns nil for nil input while this
+// helper must always return a non-nil map (snapshot consumers iterate; nil
+// is fine for range/len, but several test fixtures explicitly assert
+// non-nil in newly-built snapshots).
 func copyInlineInputMap(m map[string]*InlineInputEntry) map[string]*InlineInputEntry {
 	cp := make(map[string]*InlineInputEntry, len(m))
 	for k, v := range m {
@@ -510,6 +468,99 @@ func copyRetryMap(m map[string]*RetryEntry) map[string]*RetryEntry {
 	cp := make(map[string]*RetryEntry, len(m))
 	maps.Copy(cp, m)
 	return cp
+}
+
+// SetAutoSwitchedFile sets the path for persisting auto-switched profile/backend
+// overrides across restarts. Gap §5.3. Must be called before Run.
+func (o *Orchestrator) SetAutoSwitchedFile(path string) {
+	o.autoSwitchedMu.Lock()
+	o.autoSwitchedFile = path
+	o.autoSwitchedMu.Unlock()
+}
+
+// autoSwitchedRecord is the wire shape persisted to autoSwitchedFile.
+// Profile is required (always set when AutoResume fires); Backend is
+// optional (only set when the rule's SwitchToBackend was non-empty).
+type autoSwitchedRecord struct {
+	Profile string `json:"profile"`
+	Backend string `json:"backend,omitempty"`
+}
+
+// loadAutoSwitchedFromDisk reads the auto-switched file and pre-populates
+// state.IssueProfiles, state.IssueBackends, and state.AutoSwitchedIdentifiers.
+// Called once at startup. Errors are logged and swallowed; a missing or
+// malformed file should not block daemon startup.
+func (o *Orchestrator) loadAutoSwitchedFromDisk(state State) State {
+	o.autoSwitchedMu.RLock()
+	path := o.autoSwitchedFile
+	o.autoSwitchedMu.RUnlock()
+	if path == "" {
+		return state
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("orchestrator: failed to load auto-switched file", "path", path, "error", err)
+		}
+		return state
+	}
+	var records map[string]autoSwitchedRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		slog.Warn("orchestrator: failed to parse auto-switched file", "path", path, "error", err)
+		return state
+	}
+	if state.IssueProfiles == nil {
+		state.IssueProfiles = make(map[string]string)
+	}
+	if state.IssueBackends == nil {
+		state.IssueBackends = make(map[string]string)
+	}
+	if state.AutoSwitchedIdentifiers == nil {
+		state.AutoSwitchedIdentifiers = make(map[string]struct{})
+	}
+	for id, rec := range records {
+		state.IssueProfiles[id] = rec.Profile
+		if rec.Backend != "" {
+			state.IssueBackends[id] = rec.Backend
+		}
+		state.AutoSwitchedIdentifiers[id] = struct{}{}
+	}
+	slog.Info("orchestrator: loaded auto-switched overrides", "path", path, "count", len(records))
+	return state
+}
+
+// saveAutoSwitchedToDisk writes the current auto-switched overrides to disk.
+// Must NOT be called with snapMu held. Called from the event loop after
+// any mutation to AutoSwitchedIdentifiers (auto-switch fire OR clear-on-success).
+// The arg maps are clones provided by the caller; we never read live state
+// from this goroutine to avoid races.
+func (o *Orchestrator) saveAutoSwitchedToDisk(
+	autoSwitched map[string]struct{},
+	profiles map[string]string,
+	backends map[string]string,
+) {
+	o.autoSwitchedMu.RLock()
+	path := o.autoSwitchedFile
+	o.autoSwitchedMu.RUnlock()
+	if path == "" {
+		return
+	}
+	records := make(map[string]autoSwitchedRecord, len(autoSwitched))
+	for id := range autoSwitched {
+		rec := autoSwitchedRecord{Profile: profiles[id]}
+		if b, ok := backends[id]; ok {
+			rec.Backend = b
+		}
+		records[id] = rec
+	}
+	data, err := json.Marshal(records)
+	if err != nil {
+		slog.Warn("orchestrator: failed to marshal auto-switched overrides", "error", err)
+		return
+	}
+	if err := writeFileAtomically(path, data, 0o644); err != nil {
+		slog.Warn("orchestrator: failed to write auto-switched file", "path", path, "error", err)
+	}
 }
 
 // savePausedToDisk writes PausedIdentifiers to disk in the new map format
@@ -547,18 +598,18 @@ func (o *Orchestrator) storeSnap(s State) {
 	// the same underlying maps would be a data race; separate copies prevent it.
 	snap := s
 	snap.Running = copyRunningMap(s.Running)
-	snap.Claimed = copyStructMap(s.Claimed)
+	snap.Claimed = maps.Clone(s.Claimed)
 	snap.RetryAttempts = copyRetryMap(s.RetryAttempts)
-	snap.PausedIdentifiers = copyStringMap(s.PausedIdentifiers)
-	snap.PausedSessions = copyPausedSessionsMap(s.PausedSessions)
-	snap.IssueProfiles = copyStringMap(s.IssueProfiles)
-	snap.IssueBackends = copyStringMap(s.IssueBackends)
-	snap.PausedOpenPRs = copyStringMap(s.PausedOpenPRs)
-	snap.ForceReanalyze = copyStructMap(s.ForceReanalyze)
-	snap.PrevActiveIdentifiers = copyStructMap(s.PrevActiveIdentifiers)
-	snap.DiscardingIdentifiers = copyStructMap(s.DiscardingIdentifiers)
-	snap.InputRequiredIssues = copyInputRequiredMap(s.InputRequiredIssues)
-	snap.PendingInputResumes = copyPendingInputResumeMap(s.PendingInputResumes)
+	snap.PausedIdentifiers = maps.Clone(s.PausedIdentifiers)
+	snap.PausedSessions = maps.Clone(s.PausedSessions)
+	snap.IssueProfiles = maps.Clone(s.IssueProfiles)
+	snap.IssueBackends = maps.Clone(s.IssueBackends)
+	snap.PausedOpenPRs = maps.Clone(s.PausedOpenPRs)
+	snap.ForceReanalyze = maps.Clone(s.ForceReanalyze)
+	snap.PrevActiveIdentifiers = maps.Clone(s.PrevActiveIdentifiers)
+	snap.DiscardingIdentifiers = maps.Clone(s.DiscardingIdentifiers)
+	snap.InputRequiredIssues = maps.Clone(s.InputRequiredIssues)
+	snap.PendingInputResumes = maps.Clone(s.PendingInputResumes)
 	snap.InlineInputIssues = copyInlineInputMap(s.InlineInputIssues)
 
 	o.snapMu.Lock()

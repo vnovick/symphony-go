@@ -443,11 +443,14 @@ func TestDispatchUsesDefaultBackendOverride(t *testing.T) {
 	assert.Equal(t, agent.CommandWithBackendHint("run-codex-wrapper", "codex"), wrapped.LastCommand())
 }
 
+// TestTeamsModeUsesResolvedProfileBackendForSubagentContext was authored
+// when the (now-removed) `agent_mode == "teams"` gate controlled subagent
+// roster injection. The roster now always injects when there's more than one
+// profile, so this test exercises the same path without the gate.
 func TestTeamsModeUsesResolvedProfileBackendForSubagentContext(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Polling.IntervalMs = 20
 	cfg.Agent.Command = "claude"
-	cfg.Agent.AgentMode = "teams"
 	cfg.Agent.Profiles = map[string]config.AgentProfile{
 		"codex-fast": {
 			Command: "run-codex-wrapper",
@@ -504,12 +507,6 @@ func TestMaxWorkersClamped(t *testing.T) {
 	assert.Equal(t, 5, o.MaxWorkers())
 }
 
-func TestAgentModeCfgRoundtrip(t *testing.T) {
-	o := newOrch()
-	o.SetAgentModeCfg("codex")
-	assert.Equal(t, "codex", o.AgentModeCfg())
-}
-
 func TestProfilesCfgRoundtrip(t *testing.T) {
 	o := newOrch()
 	profiles := map[string]config.AgentProfile{
@@ -528,6 +525,34 @@ func TestTrackerStatesCfgRoundtrip(t *testing.T) {
 	assert.Equal(t, []string{"Todo"}, active)
 	assert.Equal(t, []string{"Done"}, terminal)
 	assert.Equal(t, "Done", completion)
+}
+
+// CRIT-1 regression guard: SetAutomationsCfg must be visible to AutomationsCfg()
+// immediately, with field-by-field deep copy of slice-valued filter fields.
+func TestAutomationsCfgRoundtrip(t *testing.T) {
+	o := newOrch()
+	assert.Nil(t, o.AutomationsCfg(), "empty orchestrator returns nil automations")
+
+	o.SetAutomationsCfg([]config.AutomationConfig{
+		{
+			ID:      "qa",
+			Enabled: true,
+			Profile: "qa",
+			Trigger: config.AutomationTriggerConfig{Type: "cron", Cron: "0 */2 * * *", Timezone: "UTC"},
+			Filter:  config.AutomationFilterConfig{States: []string{"Ready for QA"}, LabelsAny: []string{"qa"}},
+		},
+	})
+	got := o.AutomationsCfg()
+	assert.Len(t, got, 1)
+	assert.Equal(t, "qa", got[0].ID)
+	assert.Equal(t, []string{"Ready for QA"}, got[0].Filter.States)
+
+	// Mutate the returned copy and confirm the orchestrator's copy is untouched.
+	got[0].Filter.States[0] = "TAMPERED"
+	got[0].Filter.LabelsAny[0] = "TAMPERED"
+	after := o.AutomationsCfg()
+	assert.Equal(t, "Ready for QA", after[0].Filter.States[0])
+	assert.Equal(t, "qa", after[0].Filter.LabelsAny[0])
 }
 
 func TestGetRunningIssueNotFound(t *testing.T) {

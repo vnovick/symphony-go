@@ -28,6 +28,8 @@ export const automationFormSchema = z
       'issue_entered_state',
       'issue_moved_to_backlog',
       'run_failed',
+      'pr_opened',
+      'rate_limited',
     ]),
     triggerState: z.string(),
     cron: z.string(),
@@ -40,7 +42,17 @@ export const automationFormSchema = z
       message: 'Limit must be a non-negative integer.',
     }),
     inputContextRegex: z.string(),
+    maxAgeMinutes: z.string().refine((value) => value.trim() === '' || /^\d+$/.test(value.trim()), {
+      message: 'Max age must be a non-negative integer (in minutes).',
+    }),
     autoResume: z.boolean(),
+    // Gap E — rate_limited rules carry these. Validated only when
+    // triggerType === 'rate_limited'.
+    switchToProfile: z.string(),
+    switchToBackend: z.enum(['', 'claude', 'codex']),
+    cooldownMinutes: z.string().refine((v) => v.trim() === '' || /^\d+$/.test(v.trim()), {
+      message: 'Cooldown must be a non-negative integer (in minutes).',
+    }),
   })
   .superRefine((values, ctx) => {
     if (values.triggerType === 'cron' && values.cron.trim() === '') {
@@ -55,6 +67,13 @@ export const automationFormSchema = z
         code: 'custom',
         path: ['triggerState'],
         message: 'Issue-entered-state automations require a target state.',
+      });
+    }
+    if (values.triggerType === 'rate_limited' && values.switchToProfile.trim() === '') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['switchToProfile'],
+        message: 'Rate-limited automations require a profile to switch to.',
       });
     }
     if (!isValidRegex(values.identifierRegex)) {
@@ -94,7 +113,17 @@ export function automationValuesFromDef(automation: AutomationDef): AutomationFo
         ? String(automation.filter.limit)
         : '',
     inputContextRegex: automation.filter?.inputContextRegex ?? '',
+    maxAgeMinutes:
+      automation.filter?.maxAgeMinutes !== undefined && automation.filter.maxAgeMinutes > 0
+        ? String(automation.filter.maxAgeMinutes)
+        : '',
     autoResume: automation.policy?.autoResume ?? false,
+    switchToProfile: automation.policy?.switchToProfile ?? '',
+    switchToBackend: automation.policy?.switchToBackend ?? '',
+    cooldownMinutes:
+      automation.policy?.cooldownMinutes !== undefined && automation.policy.cooldownMinutes > 0
+        ? String(automation.policy.cooldownMinutes)
+        : '',
   };
 }
 
@@ -109,6 +138,13 @@ export function automationDefFromValues(values: AutomationFormValues): Automatio
   if (values.identifierRegex.trim()) filter.identifierRegex = values.identifierRegex.trim();
   if (!Number.isNaN(parsedLimit) && parsedLimit > 0) filter.limit = parsedLimit;
   if (values.inputContextRegex.trim()) filter.inputContextRegex = values.inputContextRegex.trim();
+  // Gap A — only persist max_age_minutes when set AND on input_required.
+  // Server-side validator rejects it on other trigger types.
+  if (values.triggerType === 'input_required') {
+    const trimmedAge = values.maxAgeMinutes.trim();
+    const parsedAge = trimmedAge === '' ? Number.NaN : Number.parseInt(trimmedAge, 10);
+    if (!Number.isNaN(parsedAge) && parsedAge > 0) filter.maxAgeMinutes = parsedAge;
+  }
 
   return {
     id: values.id.trim(),
@@ -128,8 +164,24 @@ export function automationDefFromValues(values: AutomationFormValues): Automatio
           : undefined,
     },
     filter: Object.keys(filter).length > 0 ? filter : undefined,
-    policy: values.autoResume ? { autoResume: true } : undefined,
+    policy: buildAutomationPolicy(values),
   };
+}
+
+// buildAutomationPolicy assembles AutomationDef.policy, threading the
+// gap-E fields only when triggerType === 'rate_limited' so the server
+// validator never sees switch_to_* on a non-rate_limited rule.
+function buildAutomationPolicy(values: AutomationFormValues): AutomationDef['policy'] {
+  const policy: NonNullable<AutomationDef['policy']> = {};
+  if (values.autoResume) policy.autoResume = true;
+  if (values.triggerType === 'rate_limited') {
+    if (values.switchToProfile.trim()) policy.switchToProfile = values.switchToProfile.trim();
+    if (values.switchToBackend !== '') policy.switchToBackend = values.switchToBackend;
+    const cooldownTrim = values.cooldownMinutes.trim();
+    const parsed = cooldownTrim === '' ? Number.NaN : Number.parseInt(cooldownTrim, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) policy.cooldownMinutes = parsed;
+  }
+  return Object.keys(policy).length > 0 ? policy : undefined;
 }
 
 export function nextAutomationId(automations: readonly AutomationDef[]): string {
@@ -159,7 +211,11 @@ export function emptyAutomationValues(
     identifierRegex: '',
     limit: '',
     inputContextRegex: '',
+    maxAgeMinutes: '',
     autoResume: false,
+    switchToProfile: '',
+    switchToBackend: '',
+    cooldownMinutes: '',
   };
 }
 
@@ -181,6 +237,10 @@ export function automationValuesFromSuggestion(
     identifierRegex: suggestion.identifierRegex ?? '',
     limit: suggestion.limit ? String(suggestion.limit) : '',
     inputContextRegex: suggestion.inputContextRegex ?? '',
+    maxAgeMinutes: '',
     autoResume: suggestion.autoResume ?? false,
+    switchToProfile: '',
+    switchToBackend: '',
+    cooldownMinutes: '',
   };
 }

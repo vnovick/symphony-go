@@ -46,7 +46,11 @@ export function AutomationRow({
   onDelete: () => Promise<void>;
 }) {
   return (
-    <div className="border-theme-line flex items-start justify-between gap-4 border-t px-5 py-4 first:border-t-0">
+    <div
+      data-automation-row={automation.id}
+      tabIndex={-1}
+      className="border-theme-line flex items-start justify-between gap-4 border-t px-5 py-4 first:border-t-0 focus-within:bg-[var(--accent-soft)]/30 focus:bg-[var(--accent-soft)]/30 focus:outline-none"
+    >
       <div className="min-w-0 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-theme-text font-mono text-sm font-semibold">{automation.id}</span>

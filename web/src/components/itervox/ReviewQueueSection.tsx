@@ -4,6 +4,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useIssues, useTriggerAIReview } from '../../queries/issues';
 import { fmtMs } from '../../utils/format';
 import { EMPTY_RUNNING, EMPTY_HISTORY } from '../../utils/constants';
+import { ReviewSourcePill } from './ReviewSourcePill';
+import { classifyReviewSource } from '../../lib/operatorQueue';
 
 /**
  * ReviewQueueSection shows a dashboard section with:
@@ -14,14 +16,16 @@ import { EMPTY_RUNNING, EMPTY_HISTORY } from '../../utils/constants';
  * Only rendered when reviewerProfile is configured.
  */
 export function ReviewQueueSection() {
-  const { reviewerProfile, completionState, running, history } = useItervoxStore(
-    useShallow((s) => ({
-      reviewerProfile: s.snapshot?.reviewerProfile ?? '',
-      completionState: s.snapshot?.completionState ?? '',
-      running: s.snapshot?.running ?? EMPTY_RUNNING,
-      history: s.snapshot?.history ?? EMPTY_HISTORY,
-    })),
-  );
+  const { reviewerProfile, completionState, running, history, currentAppSessionId } =
+    useItervoxStore(
+      useShallow((s) => ({
+        reviewerProfile: s.snapshot?.reviewerProfile ?? '',
+        completionState: s.snapshot?.completionState ?? '',
+        running: s.snapshot?.running ?? EMPTY_RUNNING,
+        history: s.snapshot?.history ?? EMPTY_HISTORY,
+        currentAppSessionId: s.snapshot?.currentAppSessionId ?? '',
+      })),
+    );
 
   const { data: issues = [] } = useIssues();
   const triggerReview = useTriggerAIReview();
@@ -47,6 +51,23 @@ export function ReviewQueueSection() {
     () => history.filter((h) => h.kind === 'reviewer').slice(0, 5),
     [history],
   );
+
+  // Per-identifier review-source classification, delegated to the shared
+  // helper in lib/operatorQueue so this surface and NotificationsView use
+  // identical logic. Gap §10.1.
+  const snapshot = useItervoxStore((s) => s.snapshot);
+  const reviewSourceByIdentifier = useMemo(() => {
+    const map: Record<string, 'session' | 'tracker'> = {};
+    if (!snapshot) return map;
+    for (const issue of awaitingReview) {
+      map[issue.identifier] = classifyReviewSource(snapshot, issue.identifier);
+    }
+    return map;
+  }, [awaitingReview, snapshot]);
+  // currentAppSessionId is now read inside classifyReviewSource via the
+  // snapshot; mark the destructured value as intentionally unused.
+  void currentAppSessionId;
+  void history;
 
   // Don't render if no reviewer profile
   if (!reviewerProfile) return null;
@@ -84,6 +105,7 @@ export function ReviewQueueSection() {
               <span className="text-theme-accent font-mono text-xs font-semibold">
                 {issue.identifier}
               </span>
+              <ReviewSourcePill source={reviewSourceByIdentifier[issue.identifier] ?? 'tracker'} />
               <span className="text-theme-text-secondary flex-1 truncate text-xs">
                 {issue.title}
               </span>

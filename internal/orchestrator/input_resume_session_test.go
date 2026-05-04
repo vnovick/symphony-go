@@ -163,3 +163,56 @@ func TestPendingInputResumeClearsOnSuccess(t *testing.T) {
 	_, ok := state.PendingInputResumes["ENG-1"]
 	assert.False(t, ok, "successful resumed run should clear the pending reply")
 }
+
+func TestPendingInputResumeClearsWhenIssueIsPaused(t *testing.T) {
+	cfg := testConfig()
+	issue := domain.Issue{
+		ID:         "id1",
+		Identifier: "ENG-1",
+		Title:      "Needs input",
+		State:      "In Progress",
+	}
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := New(cfg, mt, &blockedRunner{}, nil)
+
+	state := NewState(cfg)
+	state.PendingInputResumes["ENG-1"] = &PendingInputResumeEntry{
+		IssueID:     "id1",
+		Identifier:  "ENG-1",
+		Context:     "Need approval",
+		UserMessage: "Approved.",
+		QueuedAt:    time.Now(),
+	}
+	state.PausedIdentifiers["ENG-1"] = "id1"
+
+	state = orch.processPendingInputResumes(context.Background(), state, time.Now())
+
+	_, ok := state.PendingInputResumes["ENG-1"]
+	assert.False(t, ok, "paused issues should drop stale pending replies")
+}
+
+func TestPendingInputResumeClearsWhenIssueLeavesActiveState(t *testing.T) {
+	cfg := testConfig()
+	issue := domain.Issue{
+		ID:         "id1",
+		Identifier: "ENG-1",
+		Title:      "Needs input",
+		State:      "Backlog",
+	}
+	mt := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := New(cfg, mt, &blockedRunner{}, nil)
+
+	state := NewState(cfg)
+	state.PendingInputResumes["ENG-1"] = &PendingInputResumeEntry{
+		IssueID:     "id1",
+		Identifier:  "ENG-1",
+		Context:     "Need approval",
+		UserMessage: "Approved.",
+		QueuedAt:    time.Now(),
+	}
+
+	state = orch.processPendingInputResumes(context.Background(), state, time.Now())
+
+	_, ok := state.PendingInputResumes["ENG-1"]
+	assert.False(t, ok, "non-active issues should drop stale pending replies")
+}

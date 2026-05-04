@@ -237,6 +237,68 @@ func TestAgentBackendField(t *testing.T) {
 	assert.Equal(t, "codex", cfg.Agent.Backend)
 }
 
+func TestSSHHostDescriptionsField(t *testing.T) {
+	content := minimal(`agent:
+  ssh_hosts: ["worker-1","worker-2:2222"]
+  ssh_host_descriptions:
+    "worker-1": "fast box"
+    "worker-2:2222": "gpu box"
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"worker-1", "worker-2:2222"}, cfg.Agent.SSHHosts)
+	assert.Equal(
+		t,
+		map[string]string{
+			"worker-1":      "fast box",
+			"worker-2:2222": "gpu box",
+		},
+		cfg.Agent.SSHHostDescriptions,
+	)
+}
+
+func TestSSHHostDescriptionsDefaultEmpty(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.Agent.SSHHostDescriptions)
+}
+
+// TestSSHStrictHostCheckingFields verifies the T-32 follow-up config fields
+// parse correctly: both the global default and per-host overrides round-trip
+// from WORKFLOW.md to cfg.Agent.SSH*.
+func TestSSHStrictHostCheckingFields(t *testing.T) {
+	content := minimal(`agent:
+  ssh_strict_host_checking: "yes"
+  ssh_strict_host_by_host:
+    "sandbox.example.com": "no"
+    "prod.example.com": "yes"
+`)
+	path := workflowWithContent(t, content)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "yes", cfg.Agent.SSHStrictHostChecking)
+	assert.Equal(
+		t,
+		map[string]string{
+			"sandbox.example.com": "no",
+			"prod.example.com":    "yes",
+		},
+		cfg.Agent.SSHStrictHostByHost,
+	)
+}
+
+func TestSSHStrictHostCheckingDefaultsEmpty(t *testing.T) {
+	path := workflowWithContent(t, minimal(""))
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	// Empty string means "use the agent package default (accept-new TOFU)";
+	// startup logic only calls SetSSHStrictHostDefault when this is non-empty.
+	assert.Equal(t, "", cfg.Agent.SSHStrictHostChecking)
+	assert.Empty(t, cfg.Agent.SSHStrictHostByHost)
+}
+
 func TestWorktreeDefaultsFalse(t *testing.T) {
 	path := workflowWithContent(t, minimal(""))
 	cfg, err := config.Load(path)
@@ -344,6 +406,57 @@ func TestAutomationsParsed(t *testing.T) {
 	assert.Equal(t, "input_required", cfg.Automations[5].Trigger.Type)
 	assert.Equal(t, "continue|branch", cfg.Automations[5].Filter.InputContextRegex)
 	assert.True(t, cfg.Automations[5].Policy.AutoResume)
+}
+
+// Gap §5.2 — `auto_switch: true` is the preferred YAML key for rate_limited
+// triggers; the parser must accept it and unify into AutoResume=true. Old
+// configs using `auto_resume: true` still work (back-compat).
+func TestAutomationPolicy_AutoSwitchAlias(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{
+			name: "auto_switch true",
+			yaml: "policy:\n      auto_switch: true",
+			want: true,
+		},
+		{
+			name: "auto_resume true (back-compat)",
+			yaml: "policy:\n      auto_resume: true",
+			want: true,
+		},
+		{
+			name: "both keys true",
+			yaml: "policy:\n      auto_resume: true\n      auto_switch: true",
+			want: true,
+		},
+		{
+			name: "neither key set",
+			yaml: "policy:\n      auto_resume: false",
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := minimal(`automations:
+  - id: rl
+    enabled: true
+    profile: fallback
+    trigger:
+      type: rate_limited
+    ` + tc.yaml + `
+      switch_to_profile: codex-coder
+`)
+			path := workflowWithContent(t, content)
+			cfg, err := config.Load(path)
+			require.NoError(t, err)
+			require.Len(t, cfg.Automations, 1)
+			assert.Equal(t, tc.want, cfg.Automations[0].Policy.AutoResume)
+			assert.Equal(t, "codex-coder", cfg.Automations[0].Policy.SwitchToProfile)
+		})
+	}
 }
 
 func TestLegacySchedulesParsedAsCronAutomations(t *testing.T) {

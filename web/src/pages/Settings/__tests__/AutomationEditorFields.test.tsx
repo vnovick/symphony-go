@@ -53,8 +53,8 @@ describe('AutomationEditorFields', () => {
     expect(screen.getByText(/Match the blocked-agent question text/i)).toBeInTheDocument();
     expect(screen.getByText('{{ trigger.input_context }}')).toBeInTheDocument();
     expect(
-      screen.getAllByText('Match issues that have at least one of these tracker labels.'),
-    ).toHaveLength(2);
+      screen.getByText('Match issues that have at least one of these tracker labels.'),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/Suggestions come from issues currently visible to Itervox/i),
     ).toBeInTheDocument();

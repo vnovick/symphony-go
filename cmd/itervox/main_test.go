@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +23,7 @@ import (
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/templates"
 	"github.com/vnovick/itervox/internal/tracker"
 )
 
@@ -99,6 +104,63 @@ func TestLoadDotEnv_SilentWhenNoFile(t *testing.T) {
 	assert.NotPanics(t, loadDotEnv)
 }
 
+// captureSlogStderr installs a temporary slog default that writes JSON to a
+// strings.Builder for the duration of fn. Returns the captured output.
+func captureSlogStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	var buf strings.Builder
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	fn()
+	return buf.String()
+}
+
+// TestLoadDotEnv_SensitiveKeyEmitsInfo pins the security-visibility contract
+// added by T-08: when a .env file populates a key on the secretEnvKeys list,
+// loadDotEnv emits a single Info line naming the key (NEVER the value).
+func TestLoadDotEnv_SensitiveKeyEmitsInfo(t *testing.T) {
+	dir := t.TempDir()
+	itervoxDir := filepath.Join(dir, ".itervox")
+	require.NoError(t, os.MkdirAll(itervoxDir, 0o755))
+	const tokenValue = "test-secret-do-not-leak"
+	require.NoError(t, os.WriteFile(
+		filepath.Join(itervoxDir, ".env"),
+		[]byte("ITERVOX_API_TOKEN="+tokenValue+"\n"),
+		0o600,
+	))
+
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Unsetenv("ITERVOX_API_TOKEN"))
+
+	out := captureSlogStderr(t, loadDotEnv)
+	assert.Contains(t, out, "bearer auth / API key configured", "expected security-class Info line")
+	assert.Contains(t, out, "ITERVOX_API_TOKEN", "key name must be in the line")
+	assert.NotContains(t, out, tokenValue, "token VALUE must NEVER appear in any log output")
+}
+
+// TestLoadDotEnv_NoSensitiveKeysOnlyDebug ensures the security Info line
+// fires ONLY when a sensitive key was set — a .env that only sets non-secret
+// vars should stay silent at the default verbosity level.
+func TestLoadDotEnv_NoSensitiveKeysOnlyDebug(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, ".env"),
+		[]byte("FOO=bar\n"),
+		0o600,
+	))
+
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Unsetenv("FOO"))
+
+	out := captureSlogStderr(t, loadDotEnv)
+	assert.NotContains(t, out, "bearer auth / API key configured")
+}
+
 func TestConfiguredBackend(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -148,6 +210,42 @@ func TestResolveCommandLineResolvesBinaryPreservingArgs(t *testing.T) {
 	assert.Equal(t, "/usr/local/bin/claude --model sonnet", resolved)
 }
 
+func TestResolveCommandLineResolvesBinaryAfterLeadingEnvAssignments(t *testing.T) {
+	resolved := resolveCommandLine(
+		"ITERVOX_ACTION_TOKEN='abc123' PATH='/tmp/bin:/usr/bin' claude --model sonnet",
+		func(command string) string {
+			if command == "claude" {
+				return "/usr/local/bin/claude"
+			}
+			return command
+		},
+	)
+
+	assert.Equal(
+		t,
+		"ITERVOX_ACTION_TOKEN='abc123' PATH='/tmp/bin:/usr/bin' /usr/local/bin/claude --model sonnet",
+		resolved,
+	)
+}
+
+func TestResolveCommandLineResolvesBinaryAfterBackendHintAndEnvAssignments(t *testing.T) {
+	resolved := resolveCommandLine(
+		"@@itervox-backend=claude ITERVOX_ACTION_TOKEN='abc123' claude --model sonnet",
+		func(command string) string {
+			if command == "claude" {
+				return "/usr/local/bin/claude"
+			}
+			return command
+		},
+	)
+
+	assert.Equal(
+		t,
+		"@@itervox-backend=claude ITERVOX_ACTION_TOKEN='abc123' /usr/local/bin/claude --model sonnet",
+		resolved,
+	)
+}
+
 func TestCommandResolverRunnerSkipsResolutionForSSHWorkers(t *testing.T) {
 	inner := &captureRunner{}
 	runner := commandResolverRunner{
@@ -164,26 +262,27 @@ func TestCommandResolverRunnerSkipsResolutionForSSHWorkers(t *testing.T) {
 	assert.Equal(t, "ssh://host", inner.workerHost)
 }
 
-// ─── buildDemoConfig ──────────────────────────────────────────────────────────
+// ─── quickstart template ─────────────────────────────────────────────────────
+// (Replaces the former buildDemoConfig tests after T-07 removed the --demo
+// flag. The quickstart WORKFLOW.md ships embedded in internal/templates and
+// is the recommended way to evaluate itervox without a real tracker.)
 
-func TestBuildDemoConfig_HasRequiredFields(t *testing.T) {
-	cfg := buildDemoConfig()
-	assert.Equal(t, "memory", cfg.Tracker.Kind)
-	assert.NotEmpty(t, cfg.Tracker.ActiveStates)
-	assert.NotEmpty(t, cfg.Tracker.TerminalStates)
-	assert.Equal(t, "In Progress", cfg.Tracker.WorkingState)
-	assert.Equal(t, "Done", cfg.Tracker.CompletionState)
-	assert.Equal(t, 3, cfg.Agent.MaxConcurrentAgents)
-	assert.NotNil(t, cfg.Server.Port)
-	assert.Equal(t, 8090, *cfg.Server.Port)
-	assert.NotEmpty(t, cfg.PromptTemplate)
-}
+func TestQuickstartTemplate_HasRequiredFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(path, templates.Quickstart, 0o600))
 
-func TestBuildDemoConfig_HasAvailableModels(t *testing.T) {
-	cfg := buildDemoConfig()
-	assert.NotNil(t, cfg.Agent.AvailableModels)
-	assert.True(t, len(cfg.Agent.AvailableModels["claude"]) > 0, "should have claude models")
-	assert.True(t, len(cfg.Agent.AvailableModels["codex"]) > 0, "should have codex models")
+	loaded, err := config.Load(path)
+	require.NoError(t, err, "quickstart template must parse")
+	require.NoError(t, config.ValidateDispatch(loaded), "quickstart template must validate")
+
+	assert.Equal(t, "memory", loaded.Tracker.Kind)
+	assert.NotEmpty(t, loaded.Tracker.ActiveStates)
+	assert.NotEmpty(t, loaded.Tracker.TerminalStates)
+	assert.Equal(t, "In Progress", loaded.Tracker.WorkingState)
+	assert.Equal(t, "Done", loaded.Tracker.CompletionState)
+	assert.Equal(t, 3, loaded.Agent.MaxConcurrentAgents)
+	assert.NotEmpty(t, loaded.PromptTemplate)
 }
 
 // ─── convertAgentModels ───────────────────────────────────────────────────────
@@ -261,44 +360,32 @@ func TestDefaultLogsDir_FallsBackGracefully(t *testing.T) {
 	assert.Contains(t, dir, "logs")
 }
 
-// ─── Demo mode e2e ───────────────────────────────────────────────────────────
+// ─── Quickstart workflow e2e (post-T-07) ─────────────────────────────────────
 
-func TestDemoMode_DaemonStartsAndServesHTTP(t *testing.T) {
+func TestQuickstartWorkflow_DaemonStartsAndServesHTTP(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping e2e test in short mode")
 	}
 
-	cfg := buildDemoConfig()
-	// Use a random port to avoid conflicts
-	port := 0
-	cfg.Server.Port = &port
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(path, templates.Quickstart, 0o600))
+
+	loaded, err := config.Load(path)
+	require.NoError(t, err)
+	require.NoError(t, config.ValidateDispatch(loaded))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	tr := tracker.NewMemoryTracker(
 		tracker.GenerateDemoIssues(5),
-		cfg.Tracker.ActiveStates,
-		cfg.Tracker.TerminalStates,
+		loaded.Tracker.ActiveStates,
+		loaded.Tracker.TerminalStates,
 	)
-
-	// Just verify the config is valid for the orchestrator
-	assert.Equal(t, "memory", cfg.Tracker.Kind)
+	assert.Equal(t, "memory", loaded.Tracker.Kind)
 	assert.NotNil(t, tr)
-	_ = ctx // used for timeout context
-}
-
-func TestDemoMode_SnapshotBuilder(t *testing.T) {
-	cfg := buildDemoConfig()
-	models := convertModelsForSnapshot(cfg.Agent.AvailableModels)
-	assert.NotNil(t, models)
-	assert.True(t, len(models["claude"]) > 0)
-
-	// Verify the models round-trip correctly
-	for _, m := range models["claude"] {
-		assert.NotEmpty(t, m.ID)
-		assert.NotEmpty(t, m.Label)
-	}
+	_ = ctx
 }
 
 func TestOrchestratorAdapterUpdateIssueState_FindsIssueOutsideConfiguredStates(t *testing.T) {
@@ -401,6 +488,303 @@ Prompt.
 	assert.NotContains(t, string(updated), "/Users/")
 }
 
+func TestOrchestratorAdapterUpsertProfile_DisablesDependentAutomationsWhenProfileDisabled(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  reviewer_profile: "input-responder"
+  auto_review: true
+  profiles:
+    input-responder:
+      command: claude --model claude-sonnet-4-6
+      allowed_actions:
+        - provide_input
+    reviewer:
+      command: claude
+automations:
+  - id: input-responder
+    enabled: true
+    profile: input-responder
+    trigger:
+      type: input_required
+  - id: reviewer-nightly
+    enabled: true
+    profile: reviewer
+    trigger:
+      type: cron
+      cron: "0 9 * * 1"
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.UpsertProfile("input-responder", server.ProfileDef{
+		Command:        "claude --model claude-sonnet-4-6",
+		Enabled:        false,
+		AllowedActions: []string{"provide_input"},
+	}, "input-responder")
+
+	require.NoError(t, err)
+
+	profiles := orch.ProfilesCfg()
+	require.Contains(t, profiles, "input-responder")
+	assert.False(t, config.ProfileEnabled(profiles["input-responder"]))
+
+	automations := orch.AutomationsCfg()
+	require.Len(t, automations, 2)
+	assert.Equal(t, "input-responder", automations[0].ID)
+	assert.False(t, automations[0].Enabled)
+	assert.Equal(t, "reviewer-nightly", automations[1].ID)
+	assert.True(t, automations[1].Enabled)
+	reviewerProfile, autoReview := orch.ReviewerCfg()
+	assert.Equal(t, "", reviewerProfile)
+	assert.False(t, autoReview)
+
+	updated, readErr := os.ReadFile(workflowPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(updated), "input-responder:\n      command: claude --model claude-sonnet-4-6\n      enabled: false")
+	assert.Contains(t, string(updated), "- id: input-responder\n    enabled: false\n    profile: input-responder")
+	assert.Contains(t, string(updated), "- id: reviewer-nightly\n    enabled: true\n    profile: reviewer")
+	assert.NotContains(t, string(updated), "reviewer_profile:")
+	assert.NotContains(t, string(updated), "auto_review: true")
+
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	require.NoError(t, config.ValidateDispatch(reloaded))
+}
+
+func TestOrchestratorAdapterUpsertProfile_RenameUpdatesDependentReferences(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  reviewer_profile: "reviewer"
+  auto_review: true
+  profiles:
+    reviewer:
+      command: claude
+automations:
+  - id: reviewer-nightly
+    enabled: true
+    profile: reviewer
+    trigger:
+      type: cron
+      cron: "0 9 * * 1"
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.UpsertProfile("review-bot", server.ProfileDef{Command: "claude", Enabled: true}, "reviewer")
+
+	require.NoError(t, err)
+	profiles := orch.ProfilesCfg()
+	require.NotContains(t, profiles, "reviewer")
+	require.Contains(t, profiles, "review-bot")
+	automations := orch.AutomationsCfg()
+	require.Len(t, automations, 1)
+	assert.Equal(t, "review-bot", automations[0].Profile)
+	reviewerProfile, autoReview := orch.ReviewerCfg()
+	assert.Equal(t, "review-bot", reviewerProfile)
+	assert.True(t, autoReview)
+
+	updated, readErr := os.ReadFile(workflowPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(updated), `reviewer_profile: "review-bot"`)
+	assert.Contains(t, string(updated), "profile: review-bot")
+	assert.NotContains(t, string(updated), "profile: reviewer")
+
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	require.NoError(t, config.ValidateDispatch(reloaded))
+}
+
+// TestOrchestratorAdapterUpsertProfile_RenameAtomicityOnWriteFailure pins the
+// transactional contract added by T-04: when WORKFLOW.md cannot be written,
+// neither the file NOR the orchestrator state is mutated. Without this, a
+// failed cascade could leave the orchestrator referencing a renamed profile
+// while WORKFLOW.md still has the old name (or vice versa).
+func TestOrchestratorAdapterUpsertProfile_RenameAtomicityOnWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  reviewer_profile: "reviewer"
+  auto_review: true
+  profiles:
+    reviewer:
+      command: claude
+automations:
+  - id: reviewer-nightly
+    enabled: true
+    profile: reviewer
+    trigger:
+      type: cron
+      cron: "0 9 * * 1"
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+	originalBytes, _ := os.ReadFile(workflowPath)
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	// Make the parent dir read-only so atomicfs.WriteFile's CreateTemp fails
+	// before any rename happens. This simulates a disk-full / permission /
+	// hardware fault during the cascade write.
+	require.NoError(t, os.Chmod(dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	err = adapter.UpsertProfile("review-bot", server.ProfileDef{Command: "claude", Enabled: true}, "reviewer")
+	require.Error(t, err, "rename cascade should fail when WORKFLOW.md is unwritable")
+
+	// Restore permissions so we can verify the file is byte-identical.
+	require.NoError(t, os.Chmod(dir, 0o700))
+
+	gotBytes, readErr := os.ReadFile(workflowPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, string(originalBytes), string(gotBytes),
+		"WORKFLOW.md must be byte-identical after a failed cascade")
+
+	// And orchestrator state must be unchanged: still has "reviewer", not "review-bot".
+	profiles := orch.ProfilesCfg()
+	assert.Contains(t, profiles, "reviewer")
+	assert.NotContains(t, profiles, "review-bot")
+	reviewerProfile, autoReview := orch.ReviewerCfg()
+	assert.Equal(t, "reviewer", reviewerProfile)
+	assert.True(t, autoReview)
+	automations := orch.AutomationsCfg()
+	require.Len(t, automations, 1)
+	assert.Equal(t, "reviewer", automations[0].Profile)
+}
+
+func TestOrchestratorAdapterDeleteProfile_ClearsDependentReferences(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  reviewer_profile: "reviewer"
+  auto_review: true
+  profiles:
+    reviewer:
+      command: claude
+    qa:
+      command: codex
+automations:
+  - id: reviewer-nightly
+    enabled: true
+    profile: reviewer
+    trigger:
+      type: cron
+      cron: "0 9 * * 1"
+  - id: qa-nightly
+    enabled: true
+    profile: qa
+    trigger:
+      type: cron
+      cron: "0 10 * * 1"
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.DeleteProfile("reviewer")
+
+	require.NoError(t, err)
+	profiles := orch.ProfilesCfg()
+	require.NotContains(t, profiles, "reviewer")
+	require.Contains(t, profiles, "qa")
+	automations := orch.AutomationsCfg()
+	require.Len(t, automations, 1)
+	assert.Equal(t, "qa-nightly", automations[0].ID)
+	assert.Equal(t, "qa", automations[0].Profile)
+	reviewerProfile, autoReview := orch.ReviewerCfg()
+	assert.Equal(t, "", reviewerProfile)
+	assert.False(t, autoReview)
+
+	updated, readErr := os.ReadFile(workflowPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(updated), "reviewer_profile:")
+	assert.NotContains(t, string(updated), "auto_review: true")
+	assert.NotContains(t, string(updated), "- id: reviewer-nightly")
+	assert.Contains(t, string(updated), "- id: qa-nightly")
+
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	require.NoError(t, config.ValidateDispatch(reloaded))
+}
+
 func TestOrchestratorAdapterSetReviewerConfig_PersistsWorkflow(t *testing.T) {
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
@@ -439,6 +823,320 @@ Prompt.
 	require.NoError(t, readErr)
 	assert.Contains(t, string(updated), `reviewer_profile: "reviewer"`)
 	assert.Contains(t, string(updated), "auto_review: true")
+}
+
+func TestReloadPlanForRunExit(t *testing.T) {
+	msg, delay := reloadPlanForRunExit(nil)
+	assert.Equal(t, "WORKFLOW.md changed — reloading config", msg)
+	assert.Equal(t, 200*time.Millisecond, delay)
+
+	msg, delay = reloadPlanForRunExit(errors.New("boom"))
+	assert.Equal(t, "run returned with error — retrying", msg)
+	assert.Equal(t, time.Second, delay)
+}
+
+// TestReloadPlanForRunExit_ContextCanceledIsCleanReload pins the contract that
+// run() returning context.Canceled — which is what the watcher does on every
+// WORKFLOW.md save — is classified as a clean reload, not an error. Without
+// this, every save would log a WARN-level "run returned with error" line.
+func TestReloadPlanForRunExit_ContextCanceledIsCleanReload(t *testing.T) {
+	msg, delay := reloadPlanForRunExit(context.Canceled)
+	assert.Equal(t, "WORKFLOW.md changed — reloading config", msg)
+	assert.Equal(t, 200*time.Millisecond, delay)
+}
+
+// TestReloadPlanForRunExit_WrappedContextCanceled guards against an errors.Is
+// regression: the orchestrator/agent layers may wrap context.Canceled as it
+// propagates up. A naive == check would miss the wrapped form and log the
+// reload as an error.
+func TestReloadPlanForRunExit_WrappedContextCanceled(t *testing.T) {
+	wrapped := fmt.Errorf("orchestrator drained: %w", context.Canceled)
+	msg, delay := reloadPlanForRunExit(wrapped)
+	assert.Equal(t, "WORKFLOW.md changed — reloading config", msg)
+	assert.Equal(t, 200*time.Millisecond, delay)
+}
+
+func TestOrchestratorAdapterAddSSHHost_PersistsWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.AddSSHHost("worker-1", "fast box")
+
+	require.NoError(t, err)
+	hosts, descs := orch.SSHHostsCfg()
+	assert.Equal(t, []string{"worker-1"}, hosts)
+	assert.Equal(t, map[string]string{"worker-1": "fast box"}, descs)
+
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, []string{"worker-1"}, reloaded.Agent.SSHHosts)
+	assert.Equal(t, map[string]string{"worker-1": "fast box"}, reloaded.Agent.SSHHostDescriptions)
+}
+
+func TestOrchestratorAdapterRemoveSSHHost_PersistsWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+  ssh_hosts: ["worker-1"]
+  ssh_host_descriptions:
+    "worker-1": "fast box"
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.RemoveSSHHost("worker-1")
+
+	require.NoError(t, err)
+	hosts, descs := orch.SSHHostsCfg()
+	assert.Empty(t, hosts)
+	assert.Empty(t, descs)
+
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	assert.Empty(t, reloaded.Agent.SSHHosts)
+	assert.Empty(t, reloaded.Agent.SSHHostDescriptions)
+}
+
+func TestOrchestratorAdapterSetDispatchStrategy_PersistsWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.SetDispatchStrategy("least-loaded")
+
+	require.NoError(t, err)
+	assert.Equal(t, "least-loaded", orch.DispatchStrategyCfg())
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, "least-loaded", reloaded.Agent.DispatchStrategy)
+}
+
+func TestOrchestratorAdapterSetInlineInput_PersistsWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	content := `---
+tracker:
+  kind: linear
+  api_key: key
+  project_slug: proj
+agent:
+  command: claude
+---
+
+Prompt.
+`
+	require.NoError(t, os.WriteFile(workflowPath, []byte(content), 0o644))
+
+	cfg, err := config.Load(workflowPath)
+	require.NoError(t, err)
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: workflowPath,
+		notify:       func() {},
+	}
+
+	err = adapter.SetInlineInput(true)
+
+	require.NoError(t, err)
+	assert.True(t, orch.InlineInputCfg())
+	reloaded, loadErr := config.Load(workflowPath)
+	require.NoError(t, loadErr)
+	assert.True(t, reloaded.Agent.InlineInput)
+}
+
+func TestOrchestratorAdapterSetReviewerConfig_DoesNotMutateRuntimeWhenPersistFails(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:   []string{"Todo"},
+			TerminalStates: []string{"Done"},
+		},
+		Agent: config.AgentConfig{
+			Command: "claude",
+			Profiles: map[string]config.AgentProfile{
+				"reviewer": {Command: "claude"},
+			},
+		},
+	}
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: filepath.Join(t.TempDir(), "missing", "WORKFLOW.md"),
+		notify:       func() {},
+	}
+
+	err := adapter.SetReviewerConfig("reviewer", true)
+
+	require.Error(t, err)
+	profile, autoReview := orch.ReviewerCfg()
+	assert.Equal(t, "", profile)
+	assert.False(t, autoReview)
+}
+
+func TestOrchestratorAdapterSetAutomations_DoesNotMutateRuntimeWhenPersistFails(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:   []string{"Todo"},
+			TerminalStates: []string{"Done"},
+		},
+		Agent: config.AgentConfig{
+			Command: "claude",
+			Profiles: map[string]config.AgentProfile{
+				"reviewer": {Command: "claude"},
+			},
+		},
+	}
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: filepath.Join(t.TempDir(), "missing", "WORKFLOW.md"),
+		notify:       func() {},
+	}
+
+	err := adapter.SetAutomations([]server.AutomationDef{{
+		ID:      "nightly",
+		Enabled: true,
+		Profile: "reviewer",
+		Trigger: server.AutomationTriggerDef{Type: "cron", Cron: "0 9 * * 1"},
+	}})
+
+	require.Error(t, err)
+	assert.Nil(t, orch.AutomationsCfg())
+}
+
+func TestOrchestratorAdapterSetAutoClearWorkspace_DoesNotMutateRuntimeWhenPersistFails(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:   []string{"Todo"},
+			TerminalStates: []string{"Done"},
+		},
+		Agent: config.AgentConfig{
+			Command: "claude",
+		},
+		Workspace: config.WorkspaceConfig{
+			AutoClearWorkspace: false,
+		},
+	}
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: filepath.Join(t.TempDir(), "missing", "WORKFLOW.md"),
+		notify:       func() {},
+	}
+
+	err := adapter.SetAutoClearWorkspace(true)
+
+	require.Error(t, err)
+	assert.False(t, orch.AutoClearWorkspaceCfg())
+}
+
+func TestOrchestratorAdapterUpdateTrackerStates_DoesNotMutateRuntimeWhenPersistFails(t *testing.T) {
+	cfg := &config.Config{
+		Tracker: config.TrackerConfig{
+			ActiveStates:    []string{"Todo"},
+			TerminalStates:  []string{"Done"},
+			CompletionState: "In Review",
+		},
+		Agent: config.AgentConfig{
+			Command: "claude",
+		},
+	}
+	mt := tracker.NewMemoryTracker(nil, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	orch := orchestrator.New(cfg, mt, &agenttest.FakeRunner{}, nil)
+	adapter := &orchestratorAdapter{
+		orch:         orch,
+		cfg:          cfg,
+		tr:           mt,
+		workflowPath: filepath.Join(t.TempDir(), "missing", "WORKFLOW.md"),
+		notify:       func() {},
+	}
+
+	err := adapter.UpdateTrackerStates([]string{"Ready"}, []string{"Closed"}, "Done")
+
+	require.Error(t, err)
+	active, terminal, completion := orch.TrackerStatesCfg()
+	assert.Equal(t, []string{"Todo"}, active)
+	assert.Equal(t, []string{"Done"}, terminal)
+	assert.Equal(t, "In Review", completion)
 }
 
 // ─── server.ModelOption conversion ────────────────────────────────────────────
@@ -489,6 +1187,8 @@ func TestSortedInputRequiredRows(t *testing.T) {
 		map[string]*orchestrator.PendingInputResumeEntry{
 			"ENG-10": {Identifier: "ENG-10", Context: "c10", UserMessage: "approved", QueuedAt: now},
 		},
+		0, // staleAfter=0 → no stale flag in this fixture
+		now,
 	)
 
 	require.Len(t, got, 3)
@@ -502,6 +1202,39 @@ func TestSortedInputRequiredRows(t *testing.T) {
 		got[1].State,
 		got[2].State,
 	})
+	for _, row := range got {
+		assert.False(t, row.Stale, "no stale flag when staleAfter=0")
+	}
+}
+
+// TestSortedInputRequiredRows_StalenessAndAge pins the gap A surface: the
+// row carries Stale=true once age > staleAfter and AgeMinutes always
+// reflects wall-clock age. Both fields are surfaced via the snapshot so the
+// dashboard can render a "Stale" badge + tooltip without re-parsing
+// QueuedAt on each render.
+func TestSortedInputRequiredRows_StalenessAndAge(t *testing.T) {
+	now := time.Now().UTC()
+	old := now.Add(-3 * time.Hour)
+	fresh := now.Add(-15 * time.Minute)
+
+	got := sortedInputRequiredRows(
+		map[string]*orchestrator.InputRequiredEntry{
+			"ENG-OLD":   {Identifier: "ENG-OLD", Context: "c", QueuedAt: old},
+			"ENG-FRESH": {Identifier: "ENG-FRESH", Context: "c", QueuedAt: fresh},
+		},
+		nil,
+		time.Hour, // stale threshold = 1h
+		now,
+	)
+	require.Len(t, got, 2)
+	byID := map[string]server.InputRequiredRow{}
+	for _, r := range got {
+		byID[r.Identifier] = r
+	}
+	assert.True(t, byID["ENG-OLD"].Stale, "3h old entry must be flagged stale when threshold is 1h")
+	assert.False(t, byID["ENG-FRESH"].Stale, "15m old entry must remain fresh when threshold is 1h")
+	assert.GreaterOrEqual(t, byID["ENG-OLD"].AgeMinutes, 179, "AgeMinutes should be ~180 for a 3h-old entry")
+	assert.LessOrEqual(t, byID["ENG-OLD"].AgeMinutes, 181)
 }
 
 // ─── API endpoint smoke test ──────────────────────────────────────────────────

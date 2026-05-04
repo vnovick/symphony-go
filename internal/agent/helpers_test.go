@@ -256,3 +256,42 @@ func TestSSHFetchClaudeViaInMemoryTar(t *testing.T) {
 	assert.Equal(t, "sess-001", entries[0].SessionID)
 	assert.Equal(t, "sess-002", entries[1].SessionID)
 }
+
+// TestSafePromptArg guards against the argv hazard that surfaced in
+// production: a rendered prompt beginning with '-' (markdown list, YAML, or
+// accidental paste) was interpreted by Claude's CLI parser as an unknown
+// flag. The fix prepends a single space so the parser sees a non-flag value
+// token. Claude trims leading prompt whitespace, so the agent behavior is
+// unchanged.
+func TestSafePromptArg(t *testing.T) {
+	t.Run("prompts starting with '-' get a leading space", func(t *testing.T) {
+		assert.Equal(t, " - Step 1\n- Step 2", safePromptArg("- Step 1\n- Step 2"))
+		assert.Equal(t, " -help", safePromptArg("-help"))
+		assert.Equal(t, " --foo", safePromptArg("--foo"))
+		assert.Equal(t, " - id: input-responder\n  enabled: true",
+			safePromptArg("- id: input-responder\n  enabled: true"))
+	})
+	t.Run("prompts not starting with '-' are returned verbatim", func(t *testing.T) {
+		assert.Equal(t, "Continue the work.", safePromptArg("Continue the work."))
+		assert.Equal(t, "", safePromptArg(""))
+		assert.Equal(t, "  - leading whitespace is fine", safePromptArg("  - leading whitespace is fine"))
+		assert.Equal(t, "## Heading then - dash", safePromptArg("## Heading then - dash"))
+	})
+}
+
+// TestBuildDirectArgs_SafeForLeadingDashPrompt verifies the integration
+// between buildDirectArgs and safePromptArg — the slice passed to
+// exec.CommandContext must never contain a raw token starting with '-' as
+// the value slot after '-p'.
+func TestBuildDirectArgs_SafeForLeadingDashPrompt(t *testing.T) {
+	sid := "sess-123"
+	args := buildDirectArgs(&sid, "- id: x")
+	// Expect: [...sharedFlags, "--resume", "sess-123", "-p", " - id: x"]
+	require := func(cond bool, msg string) {
+		if !cond {
+			t.Fatalf("%s: args=%v", msg, args)
+		}
+	}
+	require(len(args) >= 2 && args[len(args)-2] == "-p", "expected -p flag before prompt")
+	require(args[len(args)-1] == " - id: x", "expected prompt to be prefixed with a space to neutralise leading dash")
+}

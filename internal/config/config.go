@@ -135,6 +135,22 @@ type AgentConfig struct {
 	// When set, agent turns are executed on these hosts via SSH in order,
 	// falling back to the next host on failure. Empty = run locally.
 	SSHHosts []string
+	// SSHHostDescriptions maps SSH host address -> optional human-readable label.
+	// Keys must match entries in SSHHosts. The dashboard shows these descriptions
+	// alongside the host list, and runtime edits persist them back to WORKFLOW.md.
+	SSHHostDescriptions map[string]string
+	// SSHStrictHostChecking is the default StrictHostKeyChecking mode applied
+	// to every SSH-hosted runner command, unless overridden per-host via
+	// SSHStrictHostByHost. Defaults to "accept-new" (TOFU — pin on first
+	// contact, reject on mismatch). Other valid values: "yes", "no", "ask",
+	// "off". Read at startup and applied via agent.SetSSHStrictHostDefault.
+	// T-32.
+	SSHStrictHostChecking string
+	// SSHStrictHostByHost maps SSH host address -> StrictHostKeyChecking mode
+	// (overrides SSHStrictHostChecking for the specific host). Useful for
+	// per-host hardening (e.g. "yes" on production, "no" on a sandbox VM).
+	// Applied via agent.SetSSHStrictHostOverrides. T-32.
+	SSHStrictHostByHost map[string]string
 	// DispatchStrategy controls how issues are routed to SSH hosts when
 	// multiple are configured. Valid values: "round-robin" (default),
 	// "least-loaded". Ignored when SSHHosts is empty.
@@ -156,12 +172,6 @@ type AgentConfig struct {
 	// override the default agent Command. Profiles can be selected per-issue
 	// from the web UI.
 	Profiles map[string]AgentProfile
-	// AgentMode controls the agent collaboration model.
-	// "" (solo):      agent runs alone with no profile context injected.
-	// "subagents":    agent may use its native helper/subagent tool.
-	// "teams":        profile role context injected into the prompt so the agent
-	//                 knows which specialised sub-agents it can call.
-	AgentMode string
 	// InlineInput controls whether agent input-required signals are posted as
 	// tracker comments (true) or queued in the dashboard UI (false).
 	// When true, the issue moves to the completion state with a question comment;
@@ -170,6 +180,28 @@ type AgentConfig struct {
 	// response as a tracker comment before resuming the agent.
 	// Default: false.
 	InlineInput bool
+	// MaxSwitchesPerIssuePerWindow caps how many times a `rate_limited`
+	// automation can swap an issue to a different profile / backend within
+	// SwitchWindowHours. Default 2. 0 means "unlimited" (not recommended).
+	// Gap E.
+	MaxSwitchesPerIssuePerWindow int
+	// SwitchWindowHours is the rolling window over which
+	// MaxSwitchesPerIssuePerWindow is counted. Default 6. Gap E.
+	SwitchWindowHours int
+	// SwitchRevertHours, when > 0, triggers a periodic check that reverts
+	// rate_limited auto-switched profile/backend overrides whose age has
+	// exceeded the TTL. 0 (default) keeps the prior behaviour: overrides
+	// only clear on the next successful worker exit. Gap §6.2.
+	SwitchRevertHours int
+	// RateLimitErrorPatterns are case-insensitive substrings the
+	// orchestrator's terminal-failure classifier matches against the
+	// worker's last-error text to decide if a failure was rate-limit
+	// driven (and so should fire `rate_limited` automations rather than
+	// just `run_failed`). Empty → uses the built-in default list
+	// (rate_limit_exceeded / rate limit / 429 / quota / too many requests).
+	// Operators can extend or override the list when a vendor surfaces
+	// new throttle wording. Gap §5.1.
+	RateLimitErrorPatterns []string
 	// MaxRetries is the maximum number of retry attempts before an issue is
 	// moved to the failed state. 0 means unlimited retries (legacy behavior).
 	// Default: 5.
@@ -235,6 +267,18 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Reject removed fields loudly so operators see a clear migration error
+	// instead of silently-changed behavior. (`agent_mode` + `enable_agent_teams`
+	// were removed in favor of always-on profile prompt + subagent roster
+	// injection — see CHANGELOG.)
+	if agent := nestedMap(wf.Config, "agent"); agent != nil {
+		if _, has := agent["agent_mode"]; has {
+			return nil, fmt.Errorf("config: agent.agent_mode has been removed; delete this field from WORKFLOW.md (see CHANGELOG)")
+		}
+		if _, has := agent["enable_agent_teams"]; has {
+			return nil, fmt.Errorf("config: agent.enable_agent_teams has been removed; delete this field from WORKFLOW.md (see CHANGELOG)")
+		}
+	}
 	return fromWorkflow(wf), nil
 }
 
@@ -295,21 +339,28 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)
 	cfg.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(mapField(agent, "max_concurrent_agents_by_state"))
 	cfg.Agent.SSHHosts = strSliceField(agent, "ssh_hosts", nil)
+	cfg.Agent.SSHHostDescriptions = stringMapField(agent, "ssh_host_descriptions", nil)
+	// T-32: optional StrictHostKeyChecking config. Default "accept-new" (TOFU)
+	// is enforced at the agent package level even if the field is omitted from
+	// WORKFLOW.md, so this just lets users override the default.
+	cfg.Agent.SSHStrictHostChecking = strField(agent, "ssh_strict_host_checking", "")
+	cfg.Agent.SSHStrictHostByHost = stringMapField(agent, "ssh_strict_host_by_host", nil)
 	cfg.Agent.DispatchStrategy = strField(agent, "dispatch_strategy", "round-robin")
 	cfg.Agent.ReviewerPrompt = strField(agent, "reviewer_prompt", DefaultReviewerPrompt)
 	cfg.Agent.ReviewerProfile = strField(agent, "reviewer_profile", "")
 	cfg.Agent.AutoReview = boolField(agent, "auto_review", false)
 	cfg.Agent.InlineInput = boolField(agent, "inline_input", false)
 	cfg.Agent.MaxRetries = intField(agent, "max_retries", 5)
+	// Gap E — per-issue switch cap defaults: 2 switches per 6h window.
+	cfg.Agent.MaxSwitchesPerIssuePerWindow = intField(agent, "max_switches_per_issue_per_window", 2)
+	// Gap §6.2 — operator-configurable TTL for auto-switched overrides.
+	cfg.Agent.SwitchRevertHours = intField(agent, "switch_revert_hours", 0)
+	// Gap §5.1 — operator-configurable rate-limit error-message patterns.
+	cfg.Agent.RateLimitErrorPatterns = strSliceField(agent, "rate_limit_error_patterns", nil)
+	cfg.Agent.SwitchWindowHours = intField(agent, "switch_window_hours", 6)
 	cfg.Agent.BaseBranch = strField(agent, "base_branch", "")
 	cfg.Agent.Profiles = parseAgentProfiles(mapField(agent, "profiles"))
 	cfg.Agent.AvailableModels = parseAvailableModels(mapField(agent, "available_models"))
-	agentMode := strField(agent, "agent_mode", "")
-	if agentMode == "" && boolField(agent, "enable_agent_teams", false) {
-		// Backward compat: enable_agent_teams: true → "teams"
-		agentMode = "teams"
-	}
-	cfg.Agent.AgentMode = agentMode
 
 	// Hooks
 	hooks := nestedMap(raw, "hooks")
@@ -334,7 +385,11 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Server.AllowUnauthenticatedLAN = boolField(srv, "allow_unauthenticated_lan", false)
 	cfg.Automations = parseAutomations(raw["automations"])
 	if len(cfg.Automations) == 0 {
-		cfg.Automations = legacySchedulesToAutomations(parseSchedules(raw["schedules"]))
+		legacy := legacySchedulesToAutomations(parseSchedules(raw["schedules"]))
+		if len(legacy) > 0 {
+			slog.Warn("config: schedules: is deprecated; migrate to automations:", "count", len(legacy))
+		}
+		cfg.Automations = legacy
 	}
 
 	return cfg
@@ -513,6 +568,29 @@ func nestedMap(m map[string]any, key string) map[string]any {
 
 func mapField(m map[string]any, key string) map[string]any {
 	return nestedMap(m, key)
+}
+
+func stringMapField(m map[string]any, key string, defaultVal map[string]string) map[string]string {
+	if m == nil {
+		return defaultVal
+	}
+	raw := mapField(m, key)
+	if len(raw) == 0 {
+		return defaultVal
+	}
+	out := make(map[string]string, len(raw))
+	for mapKey, value := range raw {
+		if value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			out[mapKey] = typed
+		default:
+			out[mapKey] = fmt.Sprintf("%v", typed)
+		}
+	}
+	return out
 }
 
 func strField(m map[string]any, key, defaultVal string) string {

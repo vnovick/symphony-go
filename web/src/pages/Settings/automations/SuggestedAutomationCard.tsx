@@ -1,7 +1,18 @@
 import type { SuggestedAutomation } from './suggestedAutomations';
 
-function triggerLabel(triggerType: SuggestedAutomation['triggerType']) {
-  return triggerType === 'input_required' ? 'Input Required' : 'Cron';
+// Exhaustive map over SuggestedAutomation['triggerType']. TypeScript enforces
+// completeness — adding a new trigger type to the union requires a label here.
+const TRIGGER_LABELS: Record<SuggestedAutomation['triggerType'], string> = {
+  cron: 'Cron',
+  input_required: 'Input Required',
+  tracker_comment_added: 'Tracker Comment',
+  issue_entered_state: 'Issue Entered State',
+  issue_moved_to_backlog: 'Issue Moved to Backlog',
+  run_failed: 'Run Failed',
+};
+
+function triggerLabel(triggerType: SuggestedAutomation['triggerType']): string {
+  return TRIGGER_LABELS[triggerType];
 }
 
 export function SuggestedAutomationCard({

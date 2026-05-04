@@ -11,16 +11,32 @@ import {
 } from '../../utils/constants';
 
 export function useSettingsPageData() {
-  const { activeStates, terminalStates, completionState, backlogStates, autoClearWorkspace } =
-    useItervoxStore(
-      useShallow((s) => ({
-        activeStates: s.snapshot?.activeStates ?? EMPTY_STATES,
-        terminalStates: s.snapshot?.terminalStates ?? EMPTY_STATES,
-        completionState: s.snapshot?.completionState ?? '',
-        backlogStates: s.snapshot?.backlogStates ?? EMPTY_STATES,
-        autoClearWorkspace: s.snapshot?.autoClearWorkspace ?? false,
-      })),
-    );
+  const {
+    activeStates,
+    terminalStates,
+    completionState,
+    backlogStates,
+    autoClearWorkspace,
+    inlineInput,
+    maxRetries,
+    failedState,
+    maxSwitchesPerIssuePerWindow,
+    switchWindowHours,
+  } = useItervoxStore(
+    useShallow((s) => ({
+      activeStates: s.snapshot?.activeStates ?? EMPTY_STATES,
+      terminalStates: s.snapshot?.terminalStates ?? EMPTY_STATES,
+      completionState: s.snapshot?.completionState ?? '',
+      backlogStates: s.snapshot?.backlogStates ?? EMPTY_STATES,
+      autoClearWorkspace: s.snapshot?.autoClearWorkspace ?? false,
+      inlineInput: s.snapshot?.inlineInput ?? false,
+      // G: server-side default is 5 (matches Go cfg.Agent.MaxRetries default).
+      maxRetries: s.snapshot?.maxRetries ?? 5,
+      failedState: s.snapshot?.failedState ?? '',
+      maxSwitchesPerIssuePerWindow: s.snapshot?.maxSwitchesPerIssuePerWindow ?? 2,
+      switchWindowHours: s.snapshot?.switchWindowHours ?? 6,
+    })),
+  );
   const profileDefs = useItervoxStore((s) => s.snapshot?.profileDefs ?? EMPTY_PROFILE_DEFS);
   const availableModels = useItervoxStore((s) => s.snapshot?.availableModels);
   const availableProfiles = useItervoxStore((s) => s.snapshot?.availableProfiles ?? EMPTY_PROFILES);
@@ -82,6 +98,11 @@ export function useSettingsPageData() {
     completionState,
     backlogStates,
     autoClearWorkspace,
+    inlineInput,
+    maxRetries,
+    failedState,
+    maxSwitchesPerIssuePerWindow,
+    switchWindowHours,
     profileDefs,
     availableModels,
     availableProfiles,

@@ -9,7 +9,13 @@ import (
 )
 
 // IneligibleReason returns a short string explaining why an issue cannot be
-// dispatched, or "" if it is eligible. Useful for diagnostic logging.
+// dispatched by the normal reconcile loop, or "" if it is eligible. Useful for
+// diagnostic logging.
+//
+// Normal dispatch requires the issue to be in one of the configured active
+// states; automation dispatch deliberately targets non-active states too (e.g.
+// issue_moved_to_backlog) — callers in that path must use
+// ineligibleReasonForAutomation instead.
 func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) string {
 	if issue.ID == "" || issue.Identifier == "" || issue.Title == "" || issue.State == "" {
 		return "missing_fields"
@@ -17,6 +23,38 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if !isActiveState(issue.State, state) {
 		return "not_active_state"
 	}
+	return ineligibleReasonShared(issue, state, cfg, false)
+}
+
+// IneligibleReasonForAutomation applies the same dispatch guards as
+// IneligibleReason EXCEPT the isActiveState gate. This is the correct check
+// for EventDispatchAutomation, whose trigger types include issue_moved_to_backlog
+// and arbitrary issue_entered_state targets that may be outside ActiveStates.
+// isTerminalState is still enforced — a terminal issue should never be the
+// target of an automation worker.
+//
+// This is the canonical automation-dispatch eligibility check. Both the
+// automation watcher pre-filter (cmd/itervox/automations.go) and the event
+// loop's TOCTOU re-check (event_loop.go) call this so they cannot drift.
+// Adding a new dispatch guard? Add it once here.
+func IneligibleReasonForAutomation(issue domain.Issue, state State, cfg *config.Config) string {
+	if issue.ID == "" || issue.Identifier == "" || issue.Title == "" || issue.State == "" {
+		return "missing_fields"
+	}
+	return ineligibleReasonShared(issue, state, cfg, true)
+}
+
+// ineligibleReasonForAutomation is the lowercase alias preserved for any
+// internal-package callers that haven't migrated to the exported name yet.
+// Deprecated: use IneligibleReasonForAutomation.
+func ineligibleReasonForAutomation(issue domain.Issue, state State, cfg *config.Config) string {
+	return IneligibleReasonForAutomation(issue, state, cfg)
+}
+
+// ineligibleReasonShared holds every guard common to reconcile dispatch and
+// automation dispatch. Callers layer their own pre-conditions (active-state or
+// not) on top.
+func ineligibleReasonShared(issue domain.Issue, state State, cfg *config.Config, allowInputRequired bool) string {
 	if isTerminalState(issue.State, state) {
 		return "terminal_state"
 	}
@@ -26,7 +64,7 @@ func IneligibleReason(issue domain.Issue, state State, cfg *config.Config) strin
 	if _, discarding := state.DiscardingIdentifiers[issue.Identifier]; discarding {
 		return "discarding"
 	}
-	if _, inputReq := state.InputRequiredIssues[issue.Identifier]; inputReq {
+	if _, inputReq := state.InputRequiredIssues[issue.Identifier]; inputReq && !allowInputRequired {
 		return "input_required"
 	}
 	if _, pendingResume := state.PendingInputResumes[issue.Identifier]; pendingResume {

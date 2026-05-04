@@ -34,8 +34,18 @@ type RunningRow struct {
 	SessionID     string    `json:"sessionId,omitempty"`
 	WorkerHost    string    `json:"workerHost,omitempty"`
 	Backend       string    `json:"backend,omitempty"`
-	Kind          string    `json:"kind,omitempty"` // "worker" (default) | "reviewer"
+	Kind          string    `json:"kind,omitempty"` // "worker" (default) | "reviewer" | "automation"
 	SubagentCount int       `json:"subagentCount,omitempty"`
+	// AutomationID is set when the run was dispatched by a configured
+	// automation rule (cron, input_required, run_failed, …). Empty for
+	// manually dispatched runs.
+	AutomationID string `json:"automationId,omitempty"`
+	// TriggerType identifies how the automation fired ("cron",
+	// "input_required", "run_failed", "test"). Empty for manual runs.
+	TriggerType string `json:"triggerType,omitempty"`
+	// CommentCount counts review/comment actions taken during this run
+	// (T-6 surface). Zero for runs that have not commented.
+	CommentCount int `json:"commentCount,omitempty"`
 }
 
 // HistoryRow is one completed agent session in the run-history list.
@@ -54,7 +64,14 @@ type HistoryRow struct {
 	Backend      string    `json:"backend,omitempty"`
 	SessionID    string    `json:"sessionId,omitempty"`
 	AppSessionID string    `json:"appSessionId,omitempty"`
-	Kind         string    `json:"kind,omitempty"` // "worker" (default) | "reviewer"
+	Kind         string    `json:"kind,omitempty"` // "worker" (default) | "reviewer" | "automation"
+	// AutomationID / TriggerType propagate the automation context onto
+	// completed runs so that the Activity tab and Timeline filter chip can
+	// scope history per-automation. Empty for manual runs.
+	AutomationID string `json:"automationId,omitempty"`
+	TriggerType  string `json:"triggerType,omitempty"`
+	// CommentCount: comments posted during this run (T-6 surface).
+	CommentCount int `json:"commentCount,omitempty"`
 }
 
 // RateLimitInfo holds the last observed API rate limit snapshot.
@@ -115,8 +132,27 @@ type OrchestratorClient interface {
 	CommentOnIssue(ctx context.Context, identifier, body string) error
 	CreateIssue(ctx context.Context, identifier, title, body, stateName string) (*domain.Issue, error)
 	UpdateIssueState(ctx context.Context, identifier, stateName string) error
-	SetWorkers(n int)
-	BumpWorkers(delta int) int
+	SetWorkers(n int) error
+	BumpWorkers(delta int) (int, error)
+	// SetMaxRetries updates the per-issue retry budget. 0 means "unlimited".
+	// Negative values are clamped to 0 by the implementation.
+	SetMaxRetries(n int) error
+	// MaxRetries returns the current retry budget (0 = unlimited).
+	MaxRetries() int
+	// SetFailedState updates the tracker state issues are moved to when retries
+	// exhaust. Empty string means "pause instead of move". The handler is
+	// responsible for validating the state name against the known state set.
+	SetFailedState(stateName string) error
+	// FailedState returns the current failed-state name (empty = pause).
+	FailedState() string
+	// SetMaxSwitchesPerIssuePerWindow updates the per-issue rate_limited
+	// switch cap. 0 = unlimited. Gap E.
+	SetMaxSwitchesPerIssuePerWindow(n int) error
+	MaxSwitchesPerIssuePerWindow() int
+	// SetSwitchWindowHours updates the rolling-window duration over which
+	// switches are counted. <= 0 normalises to 6h. Gap E.
+	SetSwitchWindowHours(h int) error
+	SwitchWindowHours() int
 	SetIssueProfile(identifier, profile string)
 	SetIssueBackend(identifier, backend string)
 	ProfileDefs() map[string]ProfileDef
@@ -126,7 +162,6 @@ type OrchestratorClient interface {
 	UpsertProfile(name string, def ProfileDef, originalName string) error
 	DeleteProfile(name string) error
 	SetAutomations(automations []AutomationDef) error
-	SetAgentMode(mode string) error
 	SetAutoClearWorkspace(enabled bool) error
 	ClearAllWorkspaces() error
 	FetchLogIdentifiers() []string
@@ -137,6 +172,18 @@ type OrchestratorClient interface {
 	ProvideInput(identifier, message string) bool
 	DismissInput(identifier string) bool
 	SetInlineInput(enabled bool) error
+	// BumpCommentCount is invoked after a successful agent-comment action so
+	// the snapshot row's CommentCount field can surface review activity on
+	// the dashboard (T-6). The implementation must be safe to call from an
+	// HTTP handler goroutine.
+	BumpCommentCount(identifier string)
+	// TestAutomation dispatches a one-off automation worker for the given
+	// rule against the given issue (T-10). The resulting run is tagged with
+	// TriggerType="test" so timeline / activity surfaces can distinguish it
+	// from production fires while keeping it under the same "automation runs
+	// only" filter. Errors out when the rule is not found, the referenced
+	// profile is missing, or the issue cannot be located.
+	TestAutomation(ctx context.Context, automationID, identifier string) error
 }
 
 // noopClient implements OrchestratorClient with harmless defaults.
@@ -160,8 +207,16 @@ func (noopClient) CreateIssue(context.Context, string, string, string, string) (
 	return nil, errNotConfigured
 }
 func (noopClient) UpdateIssueState(context.Context, string, string) error { return errNotConfigured }
-func (noopClient) SetWorkers(int)                                         {}
-func (noopClient) BumpWorkers(int) int                                    { return 0 }
+func (noopClient) SetWorkers(int) error                                   { return nil }
+func (noopClient) BumpWorkers(int) (int, error)                           { return 0, nil }
+func (noopClient) SetMaxRetries(int) error                                { return nil }
+func (noopClient) MaxRetries() int                                        { return 0 }
+func (noopClient) SetFailedState(string) error                            { return nil }
+func (noopClient) FailedState() string                                    { return "" }
+func (noopClient) SetMaxSwitchesPerIssuePerWindow(int) error              { return nil }
+func (noopClient) MaxSwitchesPerIssuePerWindow() int                      { return 0 }
+func (noopClient) SetSwitchWindowHours(int) error                         { return nil }
+func (noopClient) SwitchWindowHours() int                                 { return 0 }
 func (noopClient) SetIssueProfile(string, string)                         {}
 func (noopClient) SetIssueBackend(string, string)                         {}
 func (noopClient) ProfileDefs() map[string]ProfileDef                     { return nil }
@@ -171,7 +226,6 @@ func (noopClient) SetReviewerConfig(string, bool) error                   { retu
 func (noopClient) UpsertProfile(string, ProfileDef, string) error         { return errNotConfigured }
 func (noopClient) DeleteProfile(string) error                             { return errNotConfigured }
 func (noopClient) SetAutomations([]AutomationDef) error                   { return errNotConfigured }
-func (noopClient) SetAgentMode(string) error                              { return errNotConfigured }
 func (noopClient) SetAutoClearWorkspace(bool) error                       { return errNotConfigured }
 func (noopClient) ClearAllWorkspaces() error                              { return errNotConfigured }
 func (noopClient) FetchLogIdentifiers() []string                          { return nil }
@@ -182,46 +236,58 @@ func (noopClient) SetDispatchStrategy(string) error                       { retu
 func (noopClient) ProvideInput(string, string) bool                       { return false }
 func (noopClient) DismissInput(string) bool                               { return false }
 func (noopClient) SetInlineInput(bool) error                              { return errNotConfigured }
+func (noopClient) BumpCommentCount(string)                                {}
+func (noopClient) TestAutomation(context.Context, string, string) error   { return errNotConfigured }
 
 // FuncClient builds an OrchestratorClient from individual function fields.
 // Any nil field falls back to the noopClient default. Intended for tests.
 type FuncClient struct {
-	FetchIssuesFn           func(context.Context) ([]TrackerIssue, error)
-	CancelIssueFn           func(string) bool
-	ResumeIssueFn           func(string) bool
-	TerminateIssueFn        func(string) bool
-	ReanalyzeIssueFn        func(string) bool
-	FetchLogsFn             func(string) []string
-	ClearLogsFn             func(string) error
-	ClearAllLogsFn          func() error
-	ClearIssueSubLogsFn     func(string) error
-	ClearSessionSublogFn    func(string, string) error
-	DispatchReviewerFn      func(string) error
-	CommentOnIssueFn        func(context.Context, string, string) error
-	CreateIssueFn           func(context.Context, string, string, string, string) (*domain.Issue, error)
-	UpdateIssueStateFn      func(context.Context, string, string) error
-	SetWorkersFn            func(int)
-	BumpWorkersFn           func(int) int
-	SetIssueProfileFn       func(string, string)
-	SetIssueBackendFn       func(string, string)
-	ProfileDefsFn           func() map[string]ProfileDef
-	AvailableModelsFn       func() map[string][]ModelOption
-	ReviewerConfigFn        func() (string, bool)
-	SetReviewerConfigFn     func(string, bool) error
-	UpsertProfileFn         func(string, ProfileDef, string) error
-	DeleteProfileFn         func(string) error
-	SetAutomationsFn        func([]AutomationDef) error
-	SetAgentModeFn          func(string) error
-	SetAutoClearWorkspaceFn func(bool) error
-	ClearAllWorkspacesFn    func() error
-	FetchLogIdentifiersFn   func() []string
-	UpdateTrackerStatesFn   func([]string, []string, string) error
-	FetchSubLogsFn          func(string) ([]domain.IssueLogEntry, error)
-	AddSSHHostFn            func(string, string) error
-	RemoveSSHHostFn         func(string) error
-	SetDispatchStrategyFn   func(string) error
-	ProvideInputFn          func(string, string) bool
-	DismissInputFn          func(string) bool
+	FetchIssuesFn                     func(context.Context) ([]TrackerIssue, error)
+	CancelIssueFn                     func(string) bool
+	ResumeIssueFn                     func(string) bool
+	TerminateIssueFn                  func(string) bool
+	ReanalyzeIssueFn                  func(string) bool
+	FetchLogsFn                       func(string) []string
+	ClearLogsFn                       func(string) error
+	ClearAllLogsFn                    func() error
+	ClearIssueSubLogsFn               func(string) error
+	ClearSessionSublogFn              func(string, string) error
+	DispatchReviewerFn                func(string) error
+	CommentOnIssueFn                  func(context.Context, string, string) error
+	CreateIssueFn                     func(context.Context, string, string, string, string) (*domain.Issue, error)
+	UpdateIssueStateFn                func(context.Context, string, string) error
+	SetWorkersFn                      func(int) error
+	BumpWorkersFn                     func(int) (int, error)
+	SetMaxRetriesFn                   func(int) error
+	MaxRetriesFn                      func() int
+	SetFailedStateFn                  func(string) error
+	FailedStateFn                     func() string
+	SetMaxSwitchesPerIssuePerWindowFn func(int) error
+	MaxSwitchesPerIssuePerWindowFn    func() int
+	SetSwitchWindowHoursFn            func(int) error
+	SwitchWindowHoursFn               func() int
+	SetIssueProfileFn                 func(string, string)
+	SetIssueBackendFn                 func(string, string)
+	ProfileDefsFn                     func() map[string]ProfileDef
+	AvailableModelsFn                 func() map[string][]ModelOption
+	ReviewerConfigFn                  func() (string, bool)
+	SetReviewerConfigFn               func(string, bool) error
+	UpsertProfileFn                   func(string, ProfileDef, string) error
+	DeleteProfileFn                   func(string) error
+	SetAutomationsFn                  func([]AutomationDef) error
+	SetAutoClearWorkspaceFn           func(bool) error
+	ClearAllWorkspacesFn              func() error
+	FetchLogIdentifiersFn             func() []string
+	UpdateTrackerStatesFn             func([]string, []string, string) error
+	FetchSubLogsFn                    func(string) ([]domain.IssueLogEntry, error)
+	AddSSHHostFn                      func(string, string) error
+	RemoveSSHHostFn                   func(string) error
+	SetDispatchStrategyFn             func(string) error
+	SetInlineInputFn                  func(bool) error
+	ProvideInputFn                    func(string, string) bool
+	DismissInputFn                    func(string) bool
+	BumpCommentCountFn                func(string)
+	TestAutomationFn                  func(context.Context, string, string) error
 }
 
 func (c *FuncClient) FetchIssues(ctx context.Context) ([]TrackerIssue, error) {
@@ -314,14 +380,63 @@ func (c *FuncClient) UpdateIssueState(ctx context.Context, id, state string) err
 	}
 	return errNotConfigured
 }
-func (c *FuncClient) SetWorkers(n int) {
+func (c *FuncClient) SetWorkers(n int) error {
 	if c.SetWorkersFn != nil {
-		c.SetWorkersFn(n)
+		return c.SetWorkersFn(n)
 	}
+	return nil
 }
-func (c *FuncClient) BumpWorkers(delta int) int {
+func (c *FuncClient) BumpWorkers(delta int) (int, error) {
 	if c.BumpWorkersFn != nil {
 		return c.BumpWorkersFn(delta)
+	}
+	return 0, nil
+}
+func (c *FuncClient) SetMaxRetries(n int) error {
+	if c.SetMaxRetriesFn != nil {
+		return c.SetMaxRetriesFn(n)
+	}
+	return nil
+}
+func (c *FuncClient) MaxRetries() int {
+	if c.MaxRetriesFn != nil {
+		return c.MaxRetriesFn()
+	}
+	return 0
+}
+func (c *FuncClient) SetFailedState(s string) error {
+	if c.SetFailedStateFn != nil {
+		return c.SetFailedStateFn(s)
+	}
+	return nil
+}
+func (c *FuncClient) FailedState() string {
+	if c.FailedStateFn != nil {
+		return c.FailedStateFn()
+	}
+	return ""
+}
+func (c *FuncClient) SetMaxSwitchesPerIssuePerWindow(n int) error {
+	if c.SetMaxSwitchesPerIssuePerWindowFn != nil {
+		return c.SetMaxSwitchesPerIssuePerWindowFn(n)
+	}
+	return nil
+}
+func (c *FuncClient) MaxSwitchesPerIssuePerWindow() int {
+	if c.MaxSwitchesPerIssuePerWindowFn != nil {
+		return c.MaxSwitchesPerIssuePerWindowFn()
+	}
+	return 0
+}
+func (c *FuncClient) SetSwitchWindowHours(h int) error {
+	if c.SetSwitchWindowHoursFn != nil {
+		return c.SetSwitchWindowHoursFn(h)
+	}
+	return nil
+}
+func (c *FuncClient) SwitchWindowHours() int {
+	if c.SwitchWindowHoursFn != nil {
+		return c.SwitchWindowHoursFn()
 	}
 	return 0
 }
@@ -374,12 +489,6 @@ func (c *FuncClient) DeleteProfile(name string) error {
 func (c *FuncClient) SetAutomations(automations []AutomationDef) error {
 	if c.SetAutomationsFn != nil {
 		return c.SetAutomationsFn(automations)
-	}
-	return errNotConfigured
-}
-func (c *FuncClient) SetAgentMode(mode string) error {
-	if c.SetAgentModeFn != nil {
-		return c.SetAgentModeFn(mode)
 	}
 	return errNotConfigured
 }
@@ -437,21 +546,55 @@ func (c *FuncClient) DismissInput(identifier string) bool {
 	}
 	return false
 }
-func (c *FuncClient) SetInlineInput(bool) error { return errNotConfigured }
+func (c *FuncClient) SetInlineInput(enabled bool) error {
+	if c.SetInlineInputFn != nil {
+		return c.SetInlineInputFn(enabled)
+	}
+	return errNotConfigured
+}
+func (c *FuncClient) BumpCommentCount(identifier string) {
+	if c.BumpCommentCountFn != nil {
+		c.BumpCommentCountFn(identifier)
+	}
+}
+func (c *FuncClient) TestAutomation(ctx context.Context, automationID, identifier string) error {
+	if c.TestAutomationFn != nil {
+		return c.TestAutomationFn(ctx, automationID, identifier)
+	}
+	return errNotConfigured
+}
 
 // StateSnapshot is the payload returned by GET /api/v1/state.
 type StateSnapshot struct {
-	GeneratedAt         time.Time      `json:"generatedAt"`
-	Counts              Counts         `json:"counts"`
-	Running             []RunningRow   `json:"running"`
-	History             []HistoryRow   `json:"history,omitempty"`
-	Retrying            []RetryRow     `json:"retrying"`
-	Paused              []string       `json:"paused"`
-	MaxConcurrentAgents int            `json:"maxConcurrentAgents"`
-	RateLimits          *RateLimitInfo `json:"rateLimits"`
+	GeneratedAt         time.Time    `json:"generatedAt"`
+	Counts              Counts       `json:"counts"`
+	Running             []RunningRow `json:"running"`
+	History             []HistoryRow `json:"history,omitempty"`
+	Retrying            []RetryRow   `json:"retrying"`
+	Paused              []string     `json:"paused"`
+	MaxConcurrentAgents int          `json:"maxConcurrentAgents"`
+	// MaxRetries is the per-issue retry budget. 0 means "unlimited".
+	// Surfaced so the dashboard can show e.g. "↻ retry 2/5" pills.
+	MaxRetries int `json:"maxRetries"`
+	// FailedState is the tracker state issues are moved to when retries
+	// exhaust. Empty string means "pause instead of move" (the issue is
+	// added to PausedIdentifiers and persisted to disk).
+	FailedState string `json:"failedState,omitempty"`
+	// MaxSwitchesPerIssuePerWindow + SwitchWindowHours cap how many times a
+	// `rate_limited` automation can switch an issue's profile within the
+	// rolling window. Gap E. 0 = unlimited.
+	MaxSwitchesPerIssuePerWindow int            `json:"maxSwitchesPerIssuePerWindow"`
+	SwitchWindowHours            int            `json:"switchWindowHours"`
+	RateLimits                   *RateLimitInfo `json:"rateLimits"`
 	// TrackerKind is "linear" or "github" — lets the web UI decide whether to
 	// show the project picker.
 	TrackerKind string `json:"trackerKind,omitempty"`
+	// ProjectName is a human-readable label for the project this daemon is
+	// serving. Populated from the tracker project slug when available, else
+	// the directory basename of the WORKFLOW.md file. Rendered in the web
+	// UI header so multi-daemon / multi-repo users can tell which instance
+	// they are looking at.
+	ProjectName string `json:"projectName,omitempty"`
 	// ActiveProjectFilter is the current runtime project filter slugs.
 	// nil/absent means "using WORKFLOW.md default"; empty array means "all issues".
 	ActiveProjectFilter []string `json:"activeProjectFilter,omitempty"`
@@ -463,11 +606,6 @@ type StateSnapshot struct {
 	AvailableModels map[string][]ModelOption `json:"availableModels,omitempty"`
 	ReviewerProfile string                   `json:"reviewerProfile,omitempty"`
 	AutoReview      bool                     `json:"autoReview,omitempty"`
-	// AgentMode is the active agent collaboration mode.
-	// "" (off/solo): agent runs alone.
-	// "subagents":   agent may spawn helpers via its native delegation tool.
-	// "teams":       delegation tool + profile role context injected into the prompt.
-	AgentMode string `json:"agentMode,omitempty"`
 	// ActiveStates is the list of tracker states the orchestrator will pick up.
 	ActiveStates []string `json:"activeStates,omitempty"`
 	// TerminalStates is the list of tracker states treated as done/closed.
@@ -505,6 +643,26 @@ type StateSnapshot struct {
 	// InputRequired lists issues whose agent is either waiting for human input
 	// or has already received a reply that is pending resume.
 	InputRequired []InputRequiredRow `json:"inputRequired,omitempty"`
+	// ConfigInvalid surfaces an in-flight WORKFLOW.md validation failure to
+	// the dashboard / TUI banner. nil/absent means the daemon is reading a
+	// valid config; non-nil means the most recent reload tick failed and the
+	// daemon is running on the previously-valid config while exponentially
+	// backing off retries (T-26).
+	ConfigInvalid *ConfigInvalidStatus `json:"configInvalid,omitempty"`
+}
+
+// ConfigInvalidStatus is the wire shape for a current WORKFLOW.md validation
+// failure. The daemon keeps running on the last-valid config; the dashboard
+// surfaces this banner so the operator knows their last edit didn't take.
+//
+// Path/Error are diagnostic and may be empty in older snapshots. RetryAttempt
+// is 1-indexed (matches the value the operator sees in slog "retry_attempt"
+// field). RetryAt is the absolute time of the next attempt (RFC3339).
+type ConfigInvalidStatus struct {
+	Path         string `json:"path,omitempty"`
+	Error        string `json:"error"`
+	RetryAttempt int    `json:"retryAttempt"`
+	RetryAt      string `json:"retryAt,omitempty"`
 }
 
 // InputRequiredRow is one input-related issue in the snapshot.
@@ -516,6 +674,14 @@ type InputRequiredRow struct {
 	Backend    string `json:"backend,omitempty"`
 	Profile    string `json:"profile,omitempty"`
 	QueuedAt   string `json:"queuedAt"`
+	// Stale is true when the entry's age exceeds the longest MaxAgeMinutes
+	// across all enabled input_required automations (gap A). Surfaced on the
+	// dashboard's input-required panel as a badge so an operator sees what
+	// has been abandoned. Omitted when false to keep the wire payload tight.
+	Stale bool `json:"stale,omitempty"`
+	// AgeMinutes is the wall-clock age of the entry in whole minutes — handy
+	// for the dashboard tooltip without re-parsing QueuedAt on every render.
+	AgeMinutes int `json:"ageMinutes,omitempty"`
 }
 
 // SSHHostInfo is one entry in the configured SSH host pool.
@@ -548,6 +714,10 @@ type AutomationFilterDef struct {
 	IdentifierRegex   string   `json:"identifierRegex,omitempty"`
 	Limit             int      `json:"limit,omitempty"`
 	InputContextRegex string   `json:"inputContextRegex,omitempty"`
+	// MaxAgeMinutes — gap A. Skip stale input_required entries (queued
+	// longer than this many minutes ago). Only meaningful on input_required
+	// triggers; the validator rejects it on other trigger types.
+	MaxAgeMinutes int `json:"maxAgeMinutes,omitempty"`
 }
 
 type AutomationPolicyDef struct {
@@ -651,6 +821,37 @@ func (b *broadcaster) notify() {
 	}
 }
 
+// close wakes up every subscribed SSE handler so they can exit promptly on
+// graceful shutdown. Each subscriber's channel is removed from the clients
+// map so a duplicate notify() doesn't double-send. Safe to call multiple
+// times. G-03 (gaps_280426_2).
+func (b *broadcaster) close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for ch := range b.clients {
+		// Send before delete so any already-blocked receiver wakes; the
+		// `default` branch covers handlers that have already drained.
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+		delete(b.clients, ch)
+	}
+}
+
+// Shutdown wakes up SSE subscribers so they can exit on graceful daemon
+// shutdown. Pair with the http.Server's own Shutdown call — chi cancels
+// per-request contexts which is the primary exit signal; this helper is
+// belt-and-suspenders ordering documentation: orchestrator stop should
+// precede server stop, and server stop should call Shutdown to release
+// any subscriber holding a stale snapshot pointer. G-03.
+func (s *Server) Shutdown() {
+	if s == nil || s.bc == nil {
+		return
+	}
+	s.bc.close()
+}
+
 // Config holds all constructor parameters for a Server.
 // Required fields: Snapshot, RefreshChan.
 // Client provides orchestrator operations; nil → noopClient.
@@ -676,6 +877,8 @@ type Config struct {
 	APIToken string
 	// ActionTokenStore validates short-lived per-run grants for agent action routes.
 	ActionTokenStore *agentactions.Store
+	// SkillsClient exposes the skills-inventory surface (T-87). Nil → noop.
+	SkillsClient SkillsClient
 }
 
 // Server is an HTTP server exposing orchestrator state.
@@ -690,6 +893,7 @@ type Server struct {
 	bc             *broadcaster
 	apiToken       string
 	actionTokens   *agentactions.Store
+	skills         SkillsClient
 }
 
 // New constructs a Server from a Config. Snapshot and RefreshChan must be non-nil.
@@ -697,6 +901,10 @@ func New(cfg Config) *Server {
 	client := cfg.Client
 	if client == nil {
 		client = noopClient{}
+	}
+	skillsClient := cfg.SkillsClient
+	if skillsClient == nil {
+		skillsClient = noopSkillsClient{}
 	}
 	s := &Server{
 		router:         chi.NewRouter(),
@@ -709,6 +917,7 @@ func New(cfg Config) *Server {
 		bc:             newBroadcaster(),
 		apiToken:       cfg.APIToken,
 		actionTokens:   cfg.ActionTokenStore,
+		skills:         skillsClient,
 	}
 	s.routes()
 	return s
@@ -771,6 +980,7 @@ func (s *Server) routes() {
 		// Health check is unauthenticated so load balancers can reach it.
 		r.Get("/health", s.handleHealth)
 		r.Post("/agent-actions/{identifier}/comment", s.handleAgentComment)
+		r.Post("/agent-actions/{identifier}/comment_pr", s.handleAgentCommentPR)
 		r.Post("/agent-actions/{identifier}/create-issue", s.handleAgentCreateIssue)
 		r.Post("/agent-actions/{identifier}/move-state", s.handleAgentMoveState)
 		r.Post("/agent-actions/{identifier}/provide-input", s.handleAgentProvideInput)
@@ -790,6 +1000,7 @@ func (s *Server) routes() {
 			r.Get("/issues/{identifier}/logs", s.handleIssueLogs)
 			r.Get("/issues/{identifier}/log-stream", s.handleIssueLogStream)
 			r.Get("/issues/{identifier}/sublogs", s.handleSubLogs)
+			r.Get("/issues/{identifier}/sublog-stream", s.handleSubLogStream)
 			r.Delete("/issues/{identifier}/logs", s.handleClearIssueLogs)
 			r.Delete("/issues/{identifier}/sublogs", s.handleClearIssueSubLogs)
 			r.Delete("/issues/{identifier}/sublogs/{sessionId}", s.handleClearSessionSublog)
@@ -813,7 +1024,6 @@ func (s *Server) routes() {
 			r.Get("/projects/filter", s.handleGetProjectFilter)
 			r.Put("/projects/filter", s.handleSetProjectFilter)
 			r.Post("/settings/workers", s.handleSetWorkers)
-			r.Post("/settings/agent-mode", s.handleSetAgentMode)
 			r.Delete("/workspaces", s.handleClearAllWorkspaces)
 			r.Post("/settings/workspace/auto-clear", s.handleSetAutoClearWorkspace)
 			r.Get("/settings/models", s.handleListModels)
@@ -823,10 +1033,23 @@ func (s *Server) routes() {
 			r.Put("/settings/profiles/{name}", s.handleUpsertProfile)
 			r.Delete("/settings/profiles/{name}", s.handleDeleteProfile)
 			r.Put("/settings/automations", s.handleSetAutomations)
+			r.Post("/automations/{id}/test", s.handleTestAutomation)
 			r.Put("/settings/tracker/states", s.handleUpdateTrackerStates)
+			r.Put("/settings/tracker/failed-state", s.handleSetFailedState)
+			r.Put("/settings/agent/max-retries", s.handleSetMaxRetries)
+			r.Put("/settings/agent/max-switches-per-issue-per-window", s.handleSetMaxSwitches)
+			r.Put("/settings/agent/switch-window-hours", s.handleSetSwitchWindowHours)
 			r.Post("/settings/ssh-hosts", s.handleAddSSHHost)
 			r.Delete("/settings/ssh-hosts/{host}", s.handleRemoveSSHHost)
 			r.Put("/settings/dispatch-strategy", s.handleSetDispatchStrategy)
+
+			// Skills inventory + analytics (T-87, T-95/T-96, T-102).
+			r.Get("/skills/inventory", s.handleSkillsInventory)
+			r.Post("/skills/scan", s.handleSkillsScan)
+			r.Get("/skills/issues", s.handleSkillsIssues)
+			r.Post("/skills/fix", s.handleSkillsFix)
+			r.Get("/skills/analytics", s.handleSkillsAnalytics)
+			r.Get("/skills/analytics/recommendations", s.handleSkillsAnalyticsRecommendations)
 
 			r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")

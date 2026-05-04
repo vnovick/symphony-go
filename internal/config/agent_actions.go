@@ -7,6 +7,7 @@ import (
 
 const (
 	AgentActionComment      = "comment"
+	AgentActionCommentPR    = "comment_pr"
 	AgentActionCreateIssue  = "create_issue"
 	AgentActionMoveState    = "move_state"
 	AgentActionProvideInput = "provide_input"
@@ -14,6 +15,7 @@ const (
 
 var supportedAgentActions = []string{
 	AgentActionComment,
+	AgentActionCommentPR,
 	AgentActionCreateIssue,
 	AgentActionMoveState,
 	AgentActionProvideInput,
@@ -21,6 +23,7 @@ var supportedAgentActions = []string{
 
 var supportedAgentActionSet = map[string]struct{}{
 	AgentActionComment:      {},
+	AgentActionCommentPR:    {},
 	AgentActionCreateIssue:  {},
 	AgentActionMoveState:    {},
 	AgentActionProvideInput: {},

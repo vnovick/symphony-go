@@ -41,6 +41,7 @@ vi.mock('../../../components/ui/Terminal/Terminal', () => ({
 import { useItervoxStore } from '../../../store/itervoxStore';
 import { useIssues } from '../../../queries/issues';
 import { useIssueLogs, useLogIdentifiers } from '../../../queries/logs';
+import { useUIStore } from '../../../store/uiStore';
 
 const mockuseItervoxStore = vi.mocked(useItervoxStore);
 const mockUseIssues = vi.mocked(useIssues);
@@ -103,6 +104,9 @@ beforeEach(() => {
     typeof useIssueLogs
   >);
   mockUseLogIdentifiers.mockReturnValue([]);
+  // Reset the per-issue uiStore chip state so tests don't bleed into each
+  // other (T-4 chip is Zustand-backed for persistence across navigation).
+  useUIStore.setState({ logsAutomationOnly: false });
 });
 
 describe('Logs page', () => {
@@ -269,5 +273,56 @@ describe('Logs page', () => {
     expect(screen.getByText('feature/abc-1')).toBeInTheDocument();
     expect(screen.getByText('reviewer')).toBeInTheDocument();
     expect(screen.getByText('ssh-1')).toBeInTheDocument();
+  });
+
+  describe('T-4: automation events filter chip', () => {
+    it('renders an automation chip alongside the existing chips', () => {
+      setupStoreMock('ABC-1');
+      mockUseLogIdentifiers.mockReturnValue(['ABC-1']);
+      render(<Logs />, { wrapper });
+      expect(screen.getByTestId('chip-automation')).toBeInTheDocument();
+    });
+
+    it('toggles to show only AUTOMATION FIRED entries when active', async () => {
+      setupStoreMock('ABC-1');
+      const user = userEvent.setup();
+      const entries: IssueLogEntry[] = [
+        makeEntry('text', 'normal log line'),
+        makeEntry('text', 'AUTOMATION FIRED · pr-on-input\n  trigger: input_required'),
+        makeEntry('action', 'tool call'),
+      ];
+      mockUseLogIdentifiers.mockReturnValue(['ABC-1']);
+      mockUseIssueLogs.mockReturnValue({ data: entries, isLoading: false } as ReturnType<
+        typeof useIssueLogs
+      >);
+      render(<Logs />, { wrapper });
+      // Default: all 3 visible.
+      await waitFor(() => {
+        expect(screen.getAllByTestId('terminal-entry')).toHaveLength(3);
+      });
+      await user.click(screen.getByTestId('chip-automation'));
+      // After toggling: only the AUTOMATION FIRED entry remains.
+      await waitFor(() => {
+        const visible = screen.getAllByTestId('terminal-entry');
+        expect(visible).toHaveLength(1);
+        expect(visible[0].textContent).toContain('AUTOMATION FIRED');
+      });
+      // Toggle off restores everything.
+      await user.click(screen.getByTestId('chip-automation'));
+      await waitFor(() => {
+        expect(screen.getAllByTestId('terminal-entry')).toHaveLength(3);
+      });
+    });
+
+    it('exposes aria-pressed reflecting the toggled state', async () => {
+      setupStoreMock('ABC-1');
+      const user = userEvent.setup();
+      mockUseLogIdentifiers.mockReturnValue(['ABC-1']);
+      render(<Logs />, { wrapper });
+      const chip = screen.getByTestId('chip-automation');
+      expect(chip).toHaveAttribute('aria-pressed', 'false');
+      await user.click(chip);
+      expect(chip).toHaveAttribute('aria-pressed', 'true');
+    });
   });
 });

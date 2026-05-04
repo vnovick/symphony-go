@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -121,6 +123,50 @@ func TestPatchIntFieldPreservesComments(t *testing.T) {
 	data, err := os.ReadFile(f)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "max_concurrent_agents: 10 # set at runtime")
+}
+
+// TestPatchIntFieldConcurrent verifies T-46 (gaps_280426 06.G-01): concurrent
+// PatchIntField calls on the same path serialize via editMu, so the final
+// file always contains exactly one of the requested values rather than a
+// torn / partially-overwritten line. Pre-fix, this test would race the
+// read-modify-write on a busy filesystem and could produce an unexpected
+// final value or a corrupt file.
+func TestPatchIntFieldConcurrent(t *testing.T) {
+	content := "---\nagent:\n  max_concurrent_agents: 0\n---\n"
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+
+	const concurrency = 10
+	values := make([]int, concurrency)
+	for i := range values {
+		values[i] = i + 1
+	}
+
+	var wg sync.WaitGroup
+	for _, v := range values {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			require.NoError(t, workflow.PatchIntField(f, "max_concurrent_agents", n))
+		}(v)
+	}
+	wg.Wait()
+
+	// Final file content must contain exactly one of the written values
+	// (whichever goroutine ran last under the lock) — not a malformed line.
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	matched := false
+	for _, v := range values {
+		expected := fmt.Sprintf("max_concurrent_agents: %d", v)
+		if strings.Contains(got, expected) {
+			matched = true
+			break
+		}
+	}
+	assert.True(t, matched, "expected file to contain one of the written values, got:\n%s", got)
 }
 
 func TestPatchProfilesBlock_Create(t *testing.T) {
@@ -315,58 +361,6 @@ func TestPatchAutomationsBlock_Create(t *testing.T) {
 	assert.Contains(t, got, "Prompt body.")
 }
 
-func TestPatchStringSliceField_Replace(t *testing.T) {
-	content := "---\ntracker:\n  active_states: [\"a\", \"b\"]\n  terminal_states: [\"Done\"]\n---\n\nBody.\n"
-	tmp := t.TempDir()
-	f := filepath.Join(tmp, "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
-
-	require.NoError(t, workflow.PatchStringSliceField(f, "active_states", []string{"x", "y", "z"}))
-
-	data, err := os.ReadFile(f)
-	require.NoError(t, err)
-	got := string(data)
-	assert.Contains(t, got, `active_states: ["x","y","z"]`)
-	assert.Contains(t, got, `terminal_states: ["Done"]`) // unchanged
-	assert.Contains(t, got, "Body.")                     // body preserved
-}
-
-func TestPatchStringSliceField_KeyNotFound(t *testing.T) {
-	content := "---\ntracker:\n  active_states: [\"Todo\"]\n---\n"
-	tmp := t.TempDir()
-	f := filepath.Join(tmp, "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
-
-	err := workflow.PatchStringSliceField(f, "nonexistent_key", []string{"a"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
-}
-
-func TestPatchStringField_Replace(t *testing.T) {
-	content := "---\ntracker:\n  completion_state: \"In Review\"\n---\n\nBody.\n"
-	tmp := t.TempDir()
-	f := filepath.Join(tmp, "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
-
-	require.NoError(t, workflow.PatchStringField(f, "completion_state", "Done"))
-
-	data, err := os.ReadFile(f)
-	require.NoError(t, err)
-	assert.Contains(t, string(data), `completion_state: "Done"`)
-	assert.Contains(t, string(data), "Body.")
-}
-
-func TestPatchStringField_KeyNotFound(t *testing.T) {
-	content := "---\ntracker:\n  kind: linear\n---\n"
-	tmp := t.TempDir()
-	f := filepath.Join(tmp, "WORKFLOW.md")
-	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
-
-	err := workflow.PatchStringField(f, "nonexistent_key", "value")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
-}
-
 func TestPatchProfilesBlock_PreservesOtherKeys(t *testing.T) {
 	// Other agent keys and comments are unchanged.
 	content := "---\n# Top comment\ntracker:\n  kind: linear\nagent:\n  # agent comment\n  max_concurrent_agents: 3\n  max_turns: 60\n  profiles:\n    old:\n      command: claude\nserver:\n  port: 8090\n---\n\nPrompt.\n"
@@ -510,4 +504,107 @@ func TestPatchAgentStringFieldNoFrontMatterErrors(t *testing.T) {
 func TestPatchAgentStringFieldMissingFileErrors(t *testing.T) {
 	err := workflow.PatchAgentStringField("/no/such/file.md", "backend", "codex")
 	require.Error(t, err)
+}
+
+func TestPatchAgentStringSliceFieldInsertWhenMissing(t *testing.T) {
+	f := writeTmp(t, "---\nagent:\n  command: claude\n---\n\nBody.\n")
+	require.NoError(t, workflow.PatchAgentStringSliceField(f, "ssh_hosts", []string{"worker-1", "worker-2"}))
+
+	data, _ := os.ReadFile(f)
+	assert.Contains(t, string(data), `ssh_hosts: ["worker-1","worker-2"]`)
+}
+
+func TestPatchAgentStringMapFieldSetAndRemove(t *testing.T) {
+	f := writeTmp(t, "---\nagent:\n  command: claude\n---\n\nBody.\n")
+	require.NoError(t, workflow.PatchAgentStringMapField(f, "ssh_host_descriptions", map[string]string{
+		"worker-1":      "fast box",
+		"worker-2:2222": "gpu box",
+	}))
+
+	data, _ := os.ReadFile(f)
+	assert.Contains(t, string(data), `ssh_host_descriptions:`)
+	assert.Contains(t, string(data), `"worker-1": "fast box"`)
+	assert.Contains(t, string(data), `"worker-2:2222": "gpu box"`)
+
+	require.NoError(t, workflow.PatchAgentStringMapField(f, "ssh_host_descriptions", nil))
+	data, _ = os.ReadFile(f)
+	assert.NotContains(t, string(data), "ssh_host_descriptions:")
+}
+
+func TestPatchReviewerConfig_SetAndClear(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte("---\ntracker:\n  kind: linear\nagent:\n  command: claude\n---\n\nBody.\n"), 0o644))
+
+	require.NoError(t, workflow.PatchReviewerConfig(f, "reviewer", true))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, `reviewer_profile: "reviewer"`)
+	assert.Contains(t, got, `auto_review: true`)
+
+	require.NoError(t, workflow.PatchReviewerConfig(f, "", false))
+
+	data, err = os.ReadFile(f)
+	require.NoError(t, err)
+	got = string(data)
+	assert.NotContains(t, got, "reviewer_profile:")
+	assert.NotContains(t, got, "auto_review:")
+	assert.Contains(t, got, "  command: claude")
+}
+
+func TestPatchTrackerStates_InsertsMissingKeysInsideTrackerBlock(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte("---\ntracker:\n  kind: linear\nagent:\n  command: claude\n---\n\nBody.\n"), 0o644))
+
+	require.NoError(t, workflow.PatchTrackerStates(f, []string{"Todo"}, []string{"Done"}, "In Review"))
+
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	got := string(data)
+	assert.Contains(t, got, "tracker:\n  kind: linear\n  active_states: [\"Todo\"]\n  terminal_states: [\"Done\"]\n  completion_state: \"In Review\"")
+	assert.Contains(t, got, "agent:\n  command: claude")
+}
+
+func TestPatchAgentMaxRetries_ReplaceAndInsert(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Existing key — replace in place.
+	f1 := filepath.Join(tmp, "with.md")
+	require.NoError(t, os.WriteFile(f1, []byte("---\nagent:\n  command: claude\n  max_retries: 3\n---\nBody.\n"), 0o644))
+	require.NoError(t, workflow.PatchAgentMaxRetries(f1, 7))
+	data, err := os.ReadFile(f1)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "max_retries: 7")
+	assert.NotContains(t, string(data), "max_retries: 3")
+
+	// Missing key — insert inside agent block. Operator might not have set
+	// it before; the UI should still be able to write a value.
+	f2 := filepath.Join(tmp, "without.md")
+	require.NoError(t, os.WriteFile(f2, []byte("---\nagent:\n  command: claude\n---\nBody.\n"), 0o644))
+	require.NoError(t, workflow.PatchAgentMaxRetries(f2, 5))
+	data, err = os.ReadFile(f2)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "max_retries: 5")
+}
+
+func TestPatchTrackerFailedState_SetAndClear(t *testing.T) {
+	tmp := t.TempDir()
+	f := filepath.Join(tmp, "WORKFLOW.md")
+	require.NoError(t, os.WriteFile(f, []byte("---\ntracker:\n  kind: linear\nagent:\n  command: claude\n---\nBody.\n"), 0o644))
+
+	require.NoError(t, workflow.PatchTrackerFailedState(f, "Backlog"))
+	data, err := os.ReadFile(f)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `failed_state: "Backlog"`)
+
+	// Empty string — operator picked "Pause (do not move)" — must remove
+	// the key entirely so config.Load() reads back empty default.
+	require.NoError(t, workflow.PatchTrackerFailedState(f, ""))
+	data, err = os.ReadFile(f)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "failed_state:")
+	assert.Contains(t, string(data), "  kind: linear") // sibling preserved
 }

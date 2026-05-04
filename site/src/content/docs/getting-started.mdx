@@ -21,8 +21,6 @@ Or download the latest release from [GitHub Releases](https://github.com/vnovick
 - **An AI agent CLI** — one of:
   - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
   - [Codex](https://github.com/openai/codex) (`codex`)
-  - [OpenCode](https://github.com/opencode-ai/opencode) (`opencode`)
-  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
 - **A project tracker** — Linear or GitHub Issues
 
 ## Quick Setup
@@ -60,17 +58,17 @@ Reference them in WORKFLOW.md as `$LINEAR_API_KEY` or `$GITHUB_TOKEN`.
 ### 3. Run
 
 ```bash
-itervox -workflow WORKFLOW.md
+itervox
 ```
 
-Itervox starts polling your tracker, spawning agents for active issues, and streaming logs to the terminal.
+Itervox starts polling your tracker, spawning agents for active issues, and streaming logs to the terminal. By default it loads `WORKFLOW.md` from the current directory; pass `-workflow <path>` only if it lives elsewhere.
 
 Open the dashboard at `http://localhost:8090` to see the Kanban board.
 
 ### 4. (Optional) Verbose mode
 
 ```bash
-itervox -workflow WORKFLOW.md -verbose
+itervox -verbose
 ```
 
 Enables DEBUG-level logging including agent output.
@@ -88,7 +86,10 @@ All of this is visible in real time via the web dashboard or terminal UI.
 
 ## Next steps
 
+- [What's New in v0.2.0](/guides/whats-new-v020/) — Automations, daemon actions, skills inventory, and more
 - [Configuration Reference](/configuration/) — Full WORKFLOW.md format
 - [CLI Reference](/cli/) — All flags and commands
+- [Agent Profiles](/guides/agent-profiles/) — Profiles, teams mode, daemon actions, and SSH
+- [Automations](/guides/automations/) — Triggers, filters, cron, and event-driven dispatch
 - [Linear Setup Guide](/guides/linear-setup/) — Detailed Linear integration
 - [GitHub Issues Guide](/guides/github-issues/) — GitHub-specific setup

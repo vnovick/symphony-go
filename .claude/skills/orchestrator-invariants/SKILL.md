@@ -35,7 +35,7 @@ All OTHER `cfg.*` fields are read-only after startup. Do NOT add locks defensive
 
 If you make a `cfg.*` field mutable at runtime, you MUST do all three:
 
-1. Add it to the cfgMu guard list in `/Users/vladimirnovick/dev/oss/itervox/CLAUDE.md`.
+1. Add it to the cfgMu guard list in `CLAUDE.md`.
 2. Ensure the HTTP handler that mutates it acquires `o.cfgMu.Lock()`.
 3. Ensure every read of it acquires `o.cfgMu.RLock()`.
 

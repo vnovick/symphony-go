@@ -364,14 +364,30 @@ export function useClearIssueLogs() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (identifier: string) => {
-      const res = await authedFetch(`/api/v1/issues/${encodeURIComponent(identifier)}/logs`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error(`clearIssueLogs failed: ${String(res.status)}`);
+      // "Clear logs" is a user-visible meta-action that must reset everything
+      // the user sees on the Logs page for this issue:
+      //   - the main Logs pane (backed by the in-memory logbuffer, wiped by
+      //     DELETE /issues/{id}/logs)
+      //   - the Timeline sub-agent panel (backed by per-session JSONL files,
+      //     wiped by DELETE /issues/{id}/sublogs)
+      // Until this change, only the first endpoint was hit — so the
+      // Timeline kept showing the same data even after a successful clear.
+      const encoded = encodeURIComponent(identifier);
+      const [logsRes, subRes] = await Promise.all([
+        authedFetch(`/api/v1/issues/${encoded}/logs`, { method: 'DELETE' }),
+        authedFetch(`/api/v1/issues/${encoded}/sublogs`, { method: 'DELETE' }),
+      ]);
+      if (!logsRes.ok) throw new Error(`clearIssueLogs failed: ${String(logsRes.status)}`);
+      if (!subRes.ok) throw new Error(`clearIssueSubLogs failed: ${String(subRes.status)}`);
     },
     onSuccess: (_data, identifier) => {
       void queryClient.invalidateQueries({ queryKey: logsKey(identifier) });
+      void queryClient.invalidateQueries({ queryKey: sublogsKey(identifier) });
       void queryClient.invalidateQueries({ queryKey: logIdentifiersKey() });
+      // refreshSnapshot pulls fresh history/running data that drives the
+      // Timeline's run rows — without this, a cleared issue's run entries
+      // linger in Timeline even though their underlying logs are gone.
+      void useItervoxStore.getState().refreshSnapshot();
     },
     onError: (err: unknown) => {
       toastApiError(err, 'Clear logs failed — please try again.');

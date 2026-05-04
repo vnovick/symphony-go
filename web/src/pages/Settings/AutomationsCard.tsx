@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { AutomationDef } from '../../types/schemas';
+import type { SettingsError } from '../../auth/SettingsError';
 import { Card } from '../../components/ui/Card/Card';
 import { AutomationFormModal } from './automations/AutomationFormModal';
 import { AutomationRow } from './automations/AutomationRow';
@@ -15,6 +16,11 @@ import {
   emptyAutomationValues,
   type AutomationFormValues,
 } from './automations/automationForm';
+import {
+  MSG_AUTOMATIONS_DUPLICATE_ID,
+  MSG_AUTOMATIONS_SAVE_SUCCESS,
+  MSG_AUTOMATIONS_TEMPLATE_REQUIRES_PROFILE,
+} from './automationMessages';
 
 type AutomationModalState = {
   title: string;
@@ -35,12 +41,27 @@ export function AutomationsCard({
   availableStates,
   availableLabels,
   onSave,
+  onSaveTyped,
+  focusAutomationId,
 }: {
   automations: AutomationDef[];
   availableProfiles: string[];
   availableStates: string[];
   availableLabels: string[];
   onSave: (automations: AutomationDef[]) => Promise<boolean>;
+  // Optional typed-error save. When provided, AutomationFormModal uses it
+  // to surface field-level server validation errors as inline RHF errors
+  // instead of toast (T-34). Backwards-compatible: omitting falls back
+  // entirely to the boolean onSave path.
+  onSaveTyped?: (
+    automations: AutomationDef[],
+  ) => Promise<{ ok: true } | { ok: false; error: SettingsError | null }>;
+  /**
+   * T-9: when set, the card scrolls to the matching automation row and
+   * opens its edit modal on first render. Used to deep-link from the
+   * issue detail slide's "🤖 Triggered by automation X" badge.
+   */
+  focusAutomationId?: string;
 }) {
   const [modalState, setModalState] = useState<AutomationModalState | null>(null);
   const [status, setStatus] = useState<AutomationStatus | null>(null);
@@ -77,11 +98,34 @@ export function AutomationsCard({
     });
   };
 
+  // T-9: open the editor for the focused id once per id change. State is
+  // adjusted during render (vs in a useEffect) — React's recommended pattern
+  // for "derive state from a prop":
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  // We only mark the id as handled once findIndex succeeds, so a deep-link
+  // that arrives before the automations list loads still opens the modal
+  // when the data eventually populates.
+  const [lastHandledFocusId, setLastHandledFocusId] = useState<string | undefined>(undefined);
+  if (focusAutomationId && focusAutomationId !== lastHandledFocusId) {
+    const idx = automationList.findIndex((a) => a.id === focusAutomationId);
+    if (idx !== -1) {
+      setLastHandledFocusId(focusAutomationId);
+      const automation = automationList[idx];
+      setModalState({
+        title: `Edit "${automation.id}"`,
+        subtitle: 'Update the trigger, selected profile, and automation-specific instructions.',
+        submitLabel: 'Save Changes',
+        index: idx,
+        initialValues: automationValuesFromDef(automation),
+      });
+    }
+  }
+
   const openTemplateModal = (suggestion: SuggestedAutomation) => {
     if (!availableProfiles.includes(suggestion.profile)) {
       setStatus({
         kind: 'error',
-        message: `Template "${suggestion.label}" requires the "${suggestion.profile}" profile.`,
+        message: MSG_AUTOMATIONS_TEMPLATE_REQUIRES_PROFILE(suggestion.label, suggestion.profile),
       });
       return;
     }
@@ -99,7 +143,7 @@ export function AutomationsCard({
     for (const automation of nextAutomations) {
       const key = automation.id.trim().toLowerCase();
       if (seen.has(key)) {
-        setStatus({ kind: 'error', message: 'Automation IDs must be unique.' });
+        setStatus({ kind: 'error', message: MSG_AUTOMATIONS_DUPLICATE_ID });
         return false;
       }
       seen.add(key);
@@ -107,10 +151,7 @@ export function AutomationsCard({
     setStatus(null);
     const ok = await onSave(nextAutomations);
     if (ok) {
-      setStatus({
-        kind: 'success',
-        message: 'Saved to WORKFLOW.md. The daemon will reload automations shortly.',
-      });
+      setStatus({ kind: 'success', message: MSG_AUTOMATIONS_SAVE_SUCCESS });
     }
     return ok;
   };
@@ -216,6 +257,45 @@ export function AutomationsCard({
                 : automationList.map((automation, index) =>
                     index === modalState.index ? nextAutomation : automation,
                   );
+            // Local duplicate-id pre-check still runs against the in-memory
+            // list; that always returns false (boolean) since it's a client
+            // bug, not a server-typed error.
+            const seen = new Set<string>();
+            for (const automation of nextAutomations) {
+              const key = automation.id.trim().toLowerCase();
+              if (seen.has(key)) {
+                setStatus({ kind: 'error', message: MSG_AUTOMATIONS_DUPLICATE_ID });
+                return { ok: false, fieldErrors: { id: 'Duplicate automation id' } };
+              }
+              seen.add(key);
+            }
+            setStatus(null);
+
+            // Prefer the typed save when supplied — lets the form pin
+            // server validation errors to specific inputs (T-34).
+            if (onSaveTyped) {
+              const result = await onSaveTyped(nextAutomations);
+              if (result.ok) {
+                setStatus({ kind: 'success', message: MSG_AUTOMATIONS_SAVE_SUCCESS });
+                return true;
+              }
+              if (result.error?.field) {
+                return {
+                  ok: false,
+                  fieldErrors: {
+                    [result.error.field]: result.error.message,
+                  } as Partial<Record<keyof AutomationFormValues, string>>,
+                };
+              }
+              // No field discriminator — caller's settingsFetchTyped fired
+              // no toast (it's the typed variant); surface as a form-level
+              // status so the user still sees the message.
+              if (result.error) {
+                setStatus({ kind: 'error', message: result.error.message });
+              }
+              return false;
+            }
+
             return saveAutomations(nextAutomations);
           }}
         />

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sync"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
+	"github.com/vnovick/itervox/internal/tracker"
 )
 
 func TestCompileAutomations_SplitsCronAndInputRequired(t *testing.T) {
@@ -143,7 +146,7 @@ func TestCronAutomationFetchStates_IncludesExplicitStatesInAnyMode(t *testing.T)
 		},
 	}
 
-	states := cronAutomationFetchStates(cfg, entry)
+	states := cronAutomationFetchStates(cfg, entry, cfg.Tracker.ActiveStates)
 
 	assert.ElementsMatch(t, []string{"Backlog", "Todo", "In Progress", "Needs Clarification", "Ready for QA"}, states)
 }
@@ -184,14 +187,14 @@ func TestAutomationPollStates_IncludesFilterStates(t *testing.T) {
 		},
 	}
 
-	states := automationPollStates(cfg, entries)
+	states := automationPollStates(cfg, entries, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState)
 
 	assert.ElementsMatch(t, []string{"Backlog", "Todo", "In Progress", "Done", "Needs Clarification", "Ready for QA"}, states)
 }
 
 func TestAutomationManagedCommentMarkers(t *testing.T) {
 	body := "QA failed. Moving back to Todo."
-	marked := markAutomationComment(body)
+	marked := tracker.MarkManagedComment(body)
 
 	assert.Contains(t, marked, body)
 	assert.True(t, isAutomationManagedComment(domain.Comment{Body: marked}))
@@ -364,8 +367,8 @@ func TestPollAutomationEvents_TrackerCommentRequiresNewEligibleComment(t *testin
 	time.Sleep(20 * time.Millisecond)
 
 	state := automationPollState{issues: make(map[string]observedAutomationIssue)}
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, time.Now())
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, time.Now().Add(time.Minute))
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now())
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(time.Minute))
 
 	select {
 	case <-runner.done:
@@ -373,12 +376,12 @@ func TestPollAutomationEvents_TrackerCommentRequiresNewEligibleComment(t *testin
 	default:
 	}
 
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, time.Now().Add(2*time.Minute))
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(2*time.Minute))
 	require.Eventually(t, func() bool {
 		return len(orch.RunHistory()) == 1
 	}, 3*time.Second, 25*time.Millisecond, "expected new comment id to dispatch automation")
 
-	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, time.Now().Add(3*time.Minute))
+	pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(3*time.Minute))
 	time.Sleep(250 * time.Millisecond)
 	assert.Len(t, orch.RunHistory(), 1, "editing the latest comment body with the same id should not dispatch again")
 }
@@ -447,9 +450,203 @@ func TestPollAutomationEvents_DropsIssueSnapshotsWhenIssueIsAbsent(t *testing.T)
 	time.Sleep(20 * time.Millisecond)
 
 	state := automationPollState{issues: make(map[string]observedAutomationIssue)}
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, time.Now())
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now())
 	require.Contains(t, state.issues, "id-1")
 
-	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, time.Now().Add(time.Minute))
+	state = pollAutomationEvents(ctx, cfg, tr, orch, entries, state, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState, time.Now().Add(time.Minute))
 	assert.Empty(t, state.issues, "issues absent from the current poll should not keep stale snapshots")
+}
+
+func TestReplayInputRequiredAutomations_DispatchesPersistedBlockedIssueOncePerAutomation(t *testing.T) {
+	cfg := &config.Config{
+		Polling: config.PollingConfig{IntervalMs: 20},
+		Tracker: config.TrackerConfig{
+			ActiveStates:    []string{"Todo"},
+			TerminalStates:  []string{"Done"},
+			CompletionState: "Done",
+		},
+		Agent: config.AgentConfig{
+			Command:             "claude",
+			MaxConcurrentAgents: 2,
+			Profiles: map[string]config.AgentProfile{
+				"responder": {Command: "claude"},
+			},
+			TurnTimeoutMs: 60000,
+			ReadTimeoutMs: 30000,
+		},
+	}
+
+	issue := domain.Issue{
+		ID:         "id-1",
+		Identifier: "ENG-1",
+		Title:      "Needs answer",
+		State:      "Todo",
+		Labels:     []string{"triage"},
+	}
+	tr := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+
+	runner := &countingDoneRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}, 4),
+	}
+	orch := orchestrator.New(cfg, tr, runner, nil)
+
+	irFile := filepath.Join(t.TempDir(), "input_required.json")
+	require.NoError(t, os.WriteFile(irFile, []byte(`{
+  "awaiting": {
+    "ENG-1": {
+      "issue_id": "id-1",
+      "identifier": "ENG-1",
+      "context": "Continue with the existing branch",
+      "question_comment_id": "q-1",
+      "queued_at": "2026-04-20T16:47:06+03:00"
+    }
+  }
+}`), 0o644))
+	orch.SetInputRequiredFile(irFile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+	require.Eventually(t, func() bool {
+		_, ok := orch.Snapshot().InputRequiredIssues["ENG-1"]
+		return ok
+	}, 2*time.Second, 20*time.Millisecond)
+
+	automations := []orchestrator.InputRequiredAutomation{
+		{
+			ID:                "input-responder-a",
+			ProfileName:       "responder",
+			States:            []string{"Todo"},
+			LabelsAny:         []string{"triage"},
+			InputContextRegex: regexp.MustCompile(`continue|branch`),
+		},
+	}
+
+	replayState := replayInputRequiredAutomations(ctx, tr, orch, automations, inputRequiredReplayState{}, time.Now())
+	require.Eventually(t, func() bool {
+		return len(orch.RunHistory()) == 1
+	}, 3*time.Second, 25*time.Millisecond)
+
+	replayState = replayInputRequiredAutomations(ctx, tr, orch, automations, replayState, time.Now().Add(time.Minute))
+	time.Sleep(200 * time.Millisecond)
+	assert.Len(t, orch.RunHistory(), 1, "same automation must not replay twice for the same blocked question")
+
+	automations = append(automations, orchestrator.InputRequiredAutomation{
+		ID:                "input-responder-b",
+		ProfileName:       "responder",
+		States:            []string{"Todo"},
+		LabelsAny:         []string{"triage"},
+		InputContextRegex: regexp.MustCompile(`continue|branch`),
+	})
+	_ = replayInputRequiredAutomations(ctx, tr, orch, automations, replayState, time.Now().Add(2*time.Minute))
+	require.Eventually(t, func() bool {
+		return len(orch.RunHistory()) == 2
+	}, 3*time.Second, 25*time.Millisecond)
+}
+
+func TestStartAutomations_ReplaysPersistedInputRequiredIssueOnStartup(t *testing.T) {
+	cfg := &config.Config{
+		Polling: config.PollingConfig{IntervalMs: 20},
+		Tracker: config.TrackerConfig{
+			ActiveStates:    []string{"Todo"},
+			TerminalStates:  []string{"Done"},
+			CompletionState: "Done",
+		},
+		Agent: config.AgentConfig{
+			Command:             "claude",
+			MaxConcurrentAgents: 2,
+			Profiles: map[string]config.AgentProfile{
+				"responder": {Command: "claude"},
+			},
+			TurnTimeoutMs: 60000,
+			ReadTimeoutMs: 30000,
+		},
+		Automations: []config.AutomationConfig{
+			{
+				ID:      "input-responder",
+				Enabled: true,
+				Profile: "responder",
+				Trigger: config.AutomationTriggerConfig{
+					Type: config.AutomationTriggerInputRequired,
+				},
+				Filter: config.AutomationFilterConfig{
+					States:            []string{"Todo"},
+					LabelsAny:         []string{"triage"},
+					InputContextRegex: `continue|branch`,
+				},
+			},
+		},
+	}
+
+	issue := domain.Issue{
+		ID:         "id-1",
+		Identifier: "ENG-1",
+		Title:      "Needs answer",
+		State:      "Todo",
+		Labels:     []string{"triage"},
+	}
+	tr := tracker.NewMemoryTracker([]domain.Issue{issue}, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+
+	runner := &countingDoneRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}, 4),
+	}
+	orch := orchestrator.New(cfg, tr, runner, nil)
+
+	irFile := filepath.Join(t.TempDir(), "input_required.json")
+	require.NoError(t, os.WriteFile(irFile, []byte(`{
+  "awaiting": {
+    "ENG-1": {
+      "issue_id": "id-1",
+      "identifier": "ENG-1",
+      "context": "Continue with the existing branch",
+      "question_comment_id": "q-1",
+      "queued_at": "2026-04-20T16:47:06+03:00"
+    }
+  }
+}`), 0o644))
+	orch.SetInputRequiredFile(irFile)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	startAutomations(ctx, cfg, tr, orch)
+	go orch.Run(ctx) //nolint:errcheck
+
+	require.Eventually(t, func() bool {
+		return len(orch.RunHistory()) == 1
+	}, 3*time.Second, 25*time.Millisecond)
+}
+
+type countingDoneRunner struct {
+	agent.Runner
+	mu        sync.Mutex
+	done      chan struct{}
+	callCount int
+}
+
+func (r *countingDoneRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+	r.mu.Lock()
+	r.callCount++
+	r.mu.Unlock()
+	res, err := r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	select {
+	case r.done <- struct{}{}:
+	default:
+	}
+	return res, err
+}
+
+func (r *countingDoneRunner) CallCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.callCount
 }

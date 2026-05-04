@@ -22,21 +22,23 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	charmlog "github.com/charmbracelet/log"
+	"github.com/charmbracelet/x/term"
 	"github.com/joho/godotenv"
 	"github.com/vnovick/itervox/internal/agent"
-	"github.com/vnovick/itervox/internal/agent/agenttest"
 	"github.com/vnovick/itervox/internal/agentactions"
 	"github.com/vnovick/itervox/internal/app"
+	"github.com/vnovick/itervox/internal/atomicfs"
 	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/logbuffer"
 	"github.com/vnovick/itervox/internal/logging"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/server"
+	"github.com/vnovick/itervox/internal/skills"
 	"github.com/vnovick/itervox/internal/statusui"
-	"github.com/vnovick/itervox/internal/templates"
 	"github.com/vnovick/itervox/internal/tracker"
 	"github.com/vnovick/itervox/internal/tracker/github"
 	"github.com/vnovick/itervox/internal/tracker/linear"
@@ -72,6 +74,16 @@ Commands:
   clear   Remove workspace directories created by itervox
              --workflow path to WORKFLOW.md (default: WORKFLOW.md)
              [identifier ...]  specific issues to clear; omit for all
+
+  stop    Stop all daemons serving the current project (uses PID file +
+          process scan as fallback, so pre-upgrade daemons are caught)
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --grace    SIGTERM → SIGKILL grace period (default: 30s)
+             --force    skip the grace period and SIGKILL immediately
+
+  status  List running itervox daemons for the current project
+             --workflow path to WORKFLOW.md (default: WORKFLOW.md)
+             --all      also list daemons from other projects
 
   --version  Print version information
 
@@ -118,45 +130,6 @@ func convertModelsForSnapshot(models map[string][]config.ModelOption) map[string
 		result[backend] = converted
 	}
 	return result
-}
-
-// buildDemoConfig creates a config for demo mode — no WORKFLOW.md needed.
-func buildDemoConfig() *config.Config {
-	port := 8090
-	return &config.Config{
-		Tracker: config.TrackerConfig{
-			Kind:            "memory",
-			ActiveStates:    []string{"Todo", "In Progress"},
-			TerminalStates:  []string{"Done", "Cancelled"},
-			BacklogStates:   []string{"Backlog"},
-			WorkingState:    "In Progress",
-			CompletionState: "Done",
-		},
-		Polling: config.PollingConfig{
-			IntervalMs: 10000,
-		},
-		Agent: config.AgentConfig{
-			Command:             "demo-agent",
-			MaxConcurrentAgents: 3,
-			MaxTurns:            5,
-			MaxRetries:          2,
-			TurnTimeoutMs:       60000,
-			ReadTimeoutMs:       30000,
-			StallTimeoutMs:      30000,
-			AvailableModels: map[string][]config.ModelOption{
-				"claude": convertAgentModels(agent.DefaultClaudeModels),
-				"codex":  convertAgentModels(agent.DefaultCodexModels),
-			},
-		},
-		Workspace: config.WorkspaceConfig{
-			Root: filepath.Join(os.TempDir(), "itervox-demo"),
-		},
-		Server: config.ServerConfig{
-			Host: "127.0.0.1",
-			Port: &port,
-		},
-		PromptTemplate: "You are a demo AI agent working on {{ issue.identifier }}: {{ issue.title }}.\n\n{{ issue.description }}\n\nThis is a demo — no real changes will be made.",
-	}
 }
 
 func configuredBackend(command, explicit string) string {
@@ -247,6 +220,19 @@ func generateAPIToken() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// secretEnvKeys names environment variables whose presence is interesting
+// from a security/auth posture standpoint. When loadDotEnv populates one of
+// these, an additional INFO line is emitted naming the keys (NEVER values)
+// so an operator skimming stderr can confirm bearer-auth or tracker auth
+// was wired up by the dotenv. The routine "dotenv: loaded" line stays at
+// DEBUG to avoid log spam at the default verbosity level.
+var secretEnvKeys = []string{
+	"ITERVOX_API_TOKEN",
+	"LINEAR_API_KEY",
+	"GITHUB_TOKEN",
+	"ANTHROPIC_API_KEY",
+}
+
 // loadDotEnv silently loads .itervox/.env then .env from the current working
 // directory, injecting missing variables into the process environment.
 // Existing environment variables are never overwritten.
@@ -256,18 +242,55 @@ func loadDotEnv() {
 		".env",
 	}
 	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			if err := godotenv.Load(p); err != nil {
-				slog.Warn("dotenv: failed to load", "path", p, "err", err)
-			} else {
-				slog.Debug("dotenv: loaded", "path", p)
-			}
-			return // stop at first file found
+		if _, err := os.Stat(p); err != nil {
+			continue
 		}
+		// Snapshot which sensitive keys are absent BEFORE the load so we can
+		// diff after and report only newly-set keys. godotenv.Load doesn't
+		// overwrite existing vars, so a key already present in the env was
+		// not contributed by this file and we shouldn't credit it.
+		absentBefore := make(map[string]struct{}, len(secretEnvKeys))
+		for _, k := range secretEnvKeys {
+			if _, present := os.LookupEnv(k); !present {
+				absentBefore[k] = struct{}{}
+			}
+		}
+
+		if err := godotenv.Load(p); err != nil {
+			slog.Warn("dotenv: failed to load", "path", p, "err", err)
+			return
+		}
+		slog.Debug("dotenv: loaded", "path", p)
+
+		var setKeys []string
+		for k := range absentBefore {
+			if _, present := os.LookupEnv(k); present {
+				setKeys = append(setKeys, k)
+			}
+		}
+		if len(setKeys) > 0 {
+			slog.Info("env: bearer auth / API key configured from dotenv",
+				"path", p, "keys", setKeys)
+		}
+		return // stop at first file found
 	}
 }
 
 func main() {
+	// TTY recovery safety net (T-12). All current panic sources fire BEFORE
+	// `go statusui.Run` (which puts the terminal into the alt-screen / raw
+	// mode), so this defer is a guard against a future regression where a
+	// post-statusui-Run goroutine panics. See internal/statusui/statusui.go
+	// for the cooked-mode restoration the TUI does on its own clean exit.
+	defer func() {
+		if r := recover(); r != nil {
+			if term.IsTerminal(os.Stdin.Fd()) {
+				_ = exec.Command("stty", "sane").Run()
+			}
+			panic(r) // re-raise so the stack trace surfaces.
+		}
+	}()
+
 	loadDotEnv() // must run before config.LoadConfig / os.Getenv calls
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -279,6 +302,12 @@ func main() {
 			return
 		case "action":
 			runAction(os.Args[2:])
+			return
+		case "stop":
+			runStop(os.Args[2:])
+			return
+		case "status":
+			runStatus(os.Args[2:])
 			return
 		case "--version", "-version":
 			fmt.Printf("itervox %s (commit: %s, built: %s)\n", version, commit, date)
@@ -293,7 +322,6 @@ func main() {
 	workflowPath := flag.String("workflow", "WORKFLOW.md", "path to WORKFLOW.md")
 	logsDir := flag.String("logs-dir", "", "directory for rotating log files (default: ~/.itervox/logs/<kind>/<project>)")
 	verbose := flag.Bool("verbose", false, "enable DEBUG-level logging (includes Claude output)")
-	demo := flag.Bool("demo", false, "run in demo mode with synthetic issues and no real agent (no API key or CLI needed)")
 	shutdownGrace := flag.Duration("shutdown-grace", 30*time.Second, "grace period for active workers on SIGINT/SIGTERM before force exit")
 	flag.Parse()
 
@@ -315,7 +343,7 @@ func main() {
 	// Tee logs to stderr and a rotating file under <logs-dir>/itervox.log.
 	if err := os.MkdirAll(resolvedLogsDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create logs dir %s: %v\n", resolvedLogsDir, err)
-		os.Exit(1)
+		fatalExit(1)
 	}
 	rotatingFile := &lumberjack.Logger{
 		Filename:   filepath.Join(resolvedLogsDir, "itervox.log"),
@@ -337,7 +365,20 @@ func main() {
 	fileHandler := slog.NewTextHandler(rotatingFile, &slog.HandlerOptions{
 		Level: logLevel,
 	})
-	slog.SetDefault(slog.New(logging.NewFanoutHandler(stderrHandler, fileHandler)))
+	// Wrap the fanout in a RedactingHandler so any string attr or msg that
+	// matches a known secret pattern (Bearer tokens, lin_api_*, ghp_*, etc.)
+	// is rewritten to "***" before reaching either sink. Pairs with the
+	// logging.Secret LogValuer for the structured-attr path; this layer
+	// catches secrets that slip through as plain strings (stderr dumps,
+	// panic stacks, third-party library output). T-29 / F-NEW-A.
+	slog.SetDefault(slog.New(logging.NewRedactingHandler(logging.NewFanoutHandler(stderrHandler, fileHandler))))
+	// stderrOnly bypasses the rotating-file sink. Use it for any record that
+	// must NEVER hit disk — e.g. the dashboard URL that intentionally carries
+	// the bearer token for copy/paste once at startup. NOT wrapped in
+	// RedactingHandler because that one emit is the explicit secret-display
+	// path; redacting it would defeat the purpose of showing the URL to the
+	// operator. Every other slog default goes through the redacting wrapper.
+	stderrOnly := slog.New(stderrHandler)
 	slog.Info("itervox starting", "version", version, "commit", commit, "date", date)
 	slog.Info("logging to file", "path", rotatingFile.Filename)
 
@@ -348,24 +389,55 @@ func main() {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
+	// Write a per-project PID file so `itervox stop` can find and terminate
+	// this daemon. Cleaned up on graceful shutdown (see defer below). A
+	// previous PID file from an unclean shutdown is silently overwritten;
+	// `itervox stop` validates liveness before signalling so a stale file
+	// cannot cause harm.
+	if path, err := writePIDFile(*workflowPath); err != nil {
+		slog.Warn("itervox: failed to write PID file — `itervox stop` will not find this daemon", "error", err)
+	} else {
+		slog.Info("itervox: wrote PID file", "path", path, "pid", os.Getpid())
+		defer removePIDFile(*workflowPath)
+	}
+
 	// Outer loop: restart when WORKFLOW.md changes.
+	// firstIter gates the os.Exit on config-load/validation failure: a typo at
+	// boot is fatal (the user has no good config to fall back on), but a typo
+	// during a live edit must NOT kill the daemon — the watcher will fire
+	// again when the user fixes the file, and we'll retry on the next tick.
+	// reloadAttempt feeds reloadBackoff for exponential retry timing (T-26):
+	// resets to 0 on every successful load so transient errors don't compound.
+	firstIter := true
+	reloadAttempt := 0
 	for {
-		var cfg *config.Config
-		if *demo {
-			cfg = buildDemoConfig()
-			slog.Info("itervox: demo mode — using synthetic issues and fake agent runner")
-		} else {
-			var err error
-			cfg, err = config.Load(*workflowPath)
-			if err != nil {
-				slog.Error("failed to load config", "path", *workflowPath, "error", err)
-				os.Exit(1)
-			}
-			if err := config.ValidateDispatch(cfg); err != nil {
-				slog.Error("config validation failed", "path", *workflowPath, "error", err)
-				os.Exit(1)
-			}
+		loaded, err := config.Load(*workflowPath)
+		if err == nil {
+			err = config.ValidateDispatch(loaded)
 		}
+		if err != nil {
+			if firstIter {
+				slog.Error("startup: config invalid", "path", *workflowPath, "error", err)
+				fatalExit(1)
+			}
+			wait := reloadBackoff(reloadAttempt)
+			retryAt := time.Now().Add(wait)
+			publishConfigInvalid(&server.ConfigInvalidStatus{
+				Path:         *workflowPath,
+				Error:        err.Error(),
+				RetryAttempt: reloadAttempt + 1,
+				RetryAt:      retryAt.Format(time.RFC3339),
+			})
+			slog.Warn("reload: config invalid, keeping daemon alive — fix WORKFLOW.md to resume",
+				"path", *workflowPath, "error", err, "retry_attempt", reloadAttempt+1, "retry_in", wait.String())
+			time.Sleep(wait)
+			reloadAttempt++
+			continue
+		}
+		cfg := loaded
+		firstIter = false
+		reloadAttempt = 0         // reset on every successful load
+		publishConfigInvalid(nil) // clear the banner
 
 		// Auto-discover models at startup when WORKFLOW.md doesn't have available_models.
 		// This ensures the dashboard model dropdown is populated even for pre-existing configs.
@@ -388,20 +460,18 @@ func main() {
 		runCtx, runCancel := context.WithCancel(ctx)
 
 		// Watch WORKFLOW.md; cancel runCtx to trigger reload on change.
-		// Skip in demo mode (no WORKFLOW.md to watch).
-		if !*demo {
-			go func() {
-				if err := workflow.Watch(runCtx, *workflowPath, runCancel); err != nil && runCtx.Err() == nil {
-					slog.Warn("workflow watcher stopped", "error", err)
-				}
-			}()
-		}
+		go func() {
+			if err := workflow.Watch(runCtx, *workflowPath, runCancel); err != nil && runCtx.Err() == nil {
+				slog.Warn("workflow watcher stopped", "error", err)
+			}
+		}()
 
 		runDone := make(chan error, 1)
 		go func() {
-			runDone <- run(runCtx, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel, *demo)
+			runDone <- run(runCtx, cancel, cfg, *workflowPath, rotatingFile.Filename, rotatingFile, logLevel, stderrOnly)
 		}()
 
+		var runErr error
 		// Wait for run to finish or a signal to arrive.
 		select {
 		case err := <-runDone:
@@ -409,9 +479,7 @@ func main() {
 			if ctx.Err() != nil {
 				return // top-level shutdown already in progress
 			}
-			if err != nil {
-				slog.Warn("run returned, restarting", "error", err)
-			}
+			runErr = err
 		case sig := <-sigCh:
 			slog.Info("shutting down gracefully, waiting for active workers...", "signal", sig, "grace", shutdownGrace.String())
 			cancel()    // cancel top-level ctx → stops dispatching new work
@@ -435,8 +503,16 @@ func main() {
 			return // top-level shutdown
 		}
 
-		slog.Info("WORKFLOW.md changed — reloading config")
-		time.Sleep(200 * time.Millisecond)
+		reloadMsg, reloadDelay := reloadPlanForRunExit(runErr)
+		// Real run errors WARN; a clean reload (nil or wrapped context.Canceled)
+		// is Debug-level — matches internal/workflow/watcher.go's "file changed"
+		// signal. Promoting it to Info would spam stderr on every save.
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+			slog.Warn(reloadMsg, "error", runErr, "delay", reloadDelay.String())
+		} else {
+			slog.Debug(reloadMsg)
+		}
+		time.Sleep(reloadDelay)
 	}
 }
 
@@ -444,45 +520,51 @@ func main() {
 // runCtx is cancelled. logFile is passed to the HTTP server for the /api/v1/logs endpoint.
 // fileWriter is the rotating log file writer; logLevel is the configured log level.
 // Both are used to redirect slog away from stderr once the TUI takes the terminal.
-func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile string, fileWriter io.Writer, logLevel slog.Level, demoMode bool) error {
+func run(ctx context.Context, quitApp func(), cfg *config.Config, workflowPath string, logFile string, fileWriter io.Writer, logLevel slog.Level, stderrOnly *slog.Logger) error {
 	tr, err := buildTracker(cfg)
 	if err != nil {
 		return fmt.Errorf("build tracker: %w", err)
 	}
 
-	var runner agent.Runner
-	if demoMode {
-		runner = agenttest.NewDemoRunner(5 * time.Second)
-	} else {
-		runner = agent.NewMultiRunner(
-			agent.NewClaudeRunner(),
-			map[string]agent.Runner{
-				"codex": agent.NewCodexRunner(),
-			},
-		)
-		runner = commandResolverRunner{inner: runner}
+	var runner agent.Runner = agent.NewMultiRunner(
+		agent.NewClaudeRunner(),
+		map[string]agent.Runner{
+			"codex": agent.NewCodexRunner(),
+		},
+	)
+	runner = commandResolverRunner{inner: runner}
+
+	// T-32: apply SSH StrictHostKeyChecking config. The agent package keeps a
+	// safe TOFU default ("accept-new") at startup; only override when the
+	// user has set a value in WORKFLOW.md. Per-host overrides are applied
+	// alongside (nil clears any prior overrides on reload).
+	if cfg.Agent.SSHStrictHostChecking != "" {
+		agent.SetSSHStrictHostDefault(cfg.Agent.SSHStrictHostChecking)
 	}
+	agent.SetSSHStrictHostOverrides(cfg.Agent.SSHStrictHostByHost)
 
 	// Validate CLI availability for the default agent command and all profiles.
 	// A missing default binary is a hard error — fail before entering the
 	// dispatch loop so the user sees it immediately rather than at dispatch time.
-	if !demoMode {
-		validatedBackends := make(map[string]struct{})
-		if err := validateBackend(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend), "", validatedBackends, cfg); err != nil {
-			return fmt.Errorf("agent startup: %w", err)
-		}
-		for name, profile := range cfg.Agent.Profiles {
-			if err := validateBackend(configuredBackend(profile.Command, profile.Backend), name, validatedBackends, cfg); err != nil {
-				slog.Warn("agent startup: profile validation failed", "profile", name, "error", err)
-			}
+	validatedBackends := make(map[string]struct{})
+	if err := validateBackend(configuredBackend(cfg.Agent.Command, cfg.Agent.Backend), "", validatedBackends, cfg); err != nil {
+		return fmt.Errorf("agent startup: %w", err)
+	}
+	for name, profile := range cfg.Agent.Profiles {
+		if err := validateBackend(configuredBackend(profile.Command, profile.Backend), name, validatedBackends, cfg); err != nil {
+			slog.Warn("agent startup: profile validation failed", "profile", name, "error", err)
 		}
 	}
 	wm := workspace.NewManager(cfg)
 
 	// Remove workspaces for issues that were terminal when we last shut down.
-	orchestrator.StartupTerminalCleanup(ctx, tr, cfg.Tracker.TerminalStates, func(id string) error {
+	// T-49: capture the wait closure so shutdown can ensure cleanup finished
+	// before the daemon exits (otherwise an in-flight tracker.FetchIssuesByStates
+	// could be aborted mid-call when ctx is cancelled).
+	cleanupWait := orchestrator.StartupTerminalCleanup(ctx, tr, cfg.Tracker.TerminalStates, func(id string) error {
 		return wm.RemoveWorkspace(ctx, id, "")
 	})
+	defer cleanupWait()
 
 	refreshChan := make(chan struct{}, 1)
 	logBuf := logbuffer.New()
@@ -502,6 +584,10 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		orch.SetHistoryFile(filepath.Join(logDir, "history.json"))
 		orch.SetPausedFile(filepath.Join(logDir, "paused.json"))
 		orch.SetInputRequiredFile(filepath.Join(logDir, "input_required.json"))
+		// Gap §5.3 — persist rate_limited auto-switch overrides so a daemon
+		// crash mid-flight doesn't lose them and re-dispatch under the
+		// original (rate-limited) profile.
+		orch.SetAutoSwitchedFile(filepath.Join(logDir, "auto_switched.json"))
 		orch.SetAgentLogDir(filepath.Join(logDir, "sessions"))
 	}
 	if cfg.Tracker.Kind != "" && cfg.Tracker.ProjectSlug != "" {
@@ -511,7 +597,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	appSessionID := newAppSessionID()
 	orch.SetAppSessionID(appSessionID)
 
-	snap := buildSnapFunc(orch, tr, cfg, appSessionID, logBuf)
+	snap := buildSnapFunc(orch, tr, cfg, appSessionID, logBuf, workflowPath)
 
 	// HTTP server — bind listener early so we know the actual port before
 	// starting the TUI (the TUI needs the correct dashboard URL for 'w' key).
@@ -555,7 +641,11 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 		// from the URL via history.replaceState. All subsequent requests attach
 		// it as an Authorization: Bearer header.
 		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
-			slog.Info("dashboard URL (carries token — copy/paste once)",
+			// Token must NEVER hit the rotating log file. Use the stderr-only
+			// logger built in main(), bypassing the slog default (which fans
+			// out to disk). A future PR moving back to plain slog.Info(...)
+			// would silently start writing the bearer token to ~/.itervox/logs/.
+			stderrOnly.Info("dashboard URL (carries token — copy/paste once)",
 				"url", fmt.Sprintf("http://%s/?token=%s", actualAddr, tok))
 		}
 	}
@@ -568,8 +658,10 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 	// Redirect slog to file-only before the TUI takes the alt-screen.
 	// Without this, concurrent slog writes to stderr corrupt the bubbletea display.
 	// The TUI log pane reads directly from logBuf instead of stderr.
-	slog.SetDefault(slog.New(slog.NewTextHandler(fileWriter, &slog.HandlerOptions{Level: logLevel})))
-	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath)
+	// Wrapped in RedactingHandler so secrets-in-msg/attrs are scrubbed before
+	// hitting ~/.itervox/logs/ even after the TUI takes over (T-29 / F-NEW-A).
+	slog.SetDefault(slog.New(logging.NewRedactingHandler(slog.NewTextHandler(fileWriter, &slog.HandlerOptions{Level: logLevel}))))
+	tuiCfg, tuiCancel := buildTUIConfig(orch, tr, cfg, workflowPath, quitApp)
 	if actualAddr != "" {
 		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
 			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/?token=%s", actualAddr, tok)
@@ -577,7 +669,11 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			tuiCfg.DashboardURL = fmt.Sprintf("http://%s/", actualAddr)
 		}
 	}
-	go statusui.Run(ctx, snap, logBuf, tuiCfg, tuiCancel)
+	tuiDone := statusui.Run(ctx, snap, logBuf, tuiCfg, tuiCancel)
+	// Wait for the TUI to fully restore the terminal (stty sane) before run()
+	// returns. Without this, the process can exit while the terminal is still
+	// in raw mode, leaving the user's shell broken (no Ctrl-C, no echo).
+	defer func() { <-tuiDone }()
 
 	// Start serving on the already-bound listener.
 	if srvListener != nil {
@@ -605,6 +701,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			tr:           tr,
 			workflowPath: workflowPath,
 		}
+		adapter.initSkillsCache()
 		srv := server.New(server.Config{
 			Snapshot:         snap,
 			RefreshChan:      refreshChan,
@@ -614,6 +711,7 @@ func run(ctx context.Context, cfg *config.Config, workflowPath string, logFile s
 			ProjectManager:   pm,
 			APIToken:         os.Getenv("ITERVOX_API_TOKEN"),
 			ActionTokenStore: actionTokenStore,
+			SkillsClient:     adapter,
 		})
 		adapter.notify = srv.Notify
 		if err := srv.Validate(); err != nil {
@@ -687,41 +785,30 @@ func sortedPausedIdentifiers(paused map[string]string) []string {
 	return identifiers
 }
 
-func sortedInputRequiredRows(entries map[string]*orchestrator.InputRequiredEntry, pending map[string]*orchestrator.PendingInputResumeEntry) []server.InputRequiredRow {
-	rows := make([]server.InputRequiredRow, 0, len(entries)+len(pending))
-	for _, entry := range entries {
-		rows = append(rows, server.InputRequiredRow{
-			Identifier: entry.Identifier,
-			SessionID:  entry.SessionID,
-			State:      "input_required",
-			Context:    entry.Context,
-			Backend:    entry.Backend,
-			Profile:    entry.ProfileName,
-			QueuedAt:   entry.QueuedAt.Format(time.RFC3339),
-		})
+// resolveProjectName returns a short, human-readable label for the project
+// this daemon is serving. Preference order:
+//  1. `tracker.project_slug` from WORKFLOW.md (when the user has declared
+//     one — most Linear/GitHub setups do).
+//  2. The basename of the WORKFLOW.md directory (e.g. `/Users/me/acme/WORKFLOW.md`
+//     → "acme"), which works for unslugged local scaffolds.
+//  3. "itervox" as a last-resort fallback so the header never renders empty.
+func resolveProjectName(cfg *config.Config, workflowPath string) string {
+	if cfg != nil && strings.TrimSpace(cfg.Tracker.ProjectSlug) != "" {
+		return cfg.Tracker.ProjectSlug
 	}
-	for _, entry := range pending {
-		context := "Reply received, waiting to resume."
-		if entry.Context != "" {
-			context = context + "\n\nOriginal request:\n" + entry.Context
+	if abs, err := filepath.Abs(workflowPath); err == nil {
+		if base := filepath.Base(filepath.Dir(abs)); base != "." && base != "/" && base != "" {
+			return base
 		}
-		rows = append(rows, server.InputRequiredRow{
-			Identifier: entry.Identifier,
-			SessionID:  entry.SessionID,
-			State:      "pending_input_resume",
-			Context:    context,
-			Backend:    entry.Backend,
-			Profile:    entry.ProfileName,
-			QueuedAt:   entry.QueuedAt.Format(time.RFC3339),
-		})
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		return rows[i].Identifier < rows[j].Identifier
-	})
-	return rows
+	return "itervox"
 }
 
-func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *config.Config, appSessionID string, logBuf *logbuffer.Buffer) func() server.StateSnapshot {
+func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *config.Config, appSessionID string, logBuf *logbuffer.Buffer, workflowPath string) func() server.StateSnapshot {
+	// projectName is computed once at construction time (not per snapshot) —
+	// neither the tracker slug nor the workflow path change within a daemon
+	// run (config reload restarts the process, so this closure is recreated).
+	projectName := resolveProjectName(cfg, workflowPath)
 	return func() server.StateSnapshot {
 		s := orch.Snapshot()
 		now := time.Now()
@@ -745,6 +832,14 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 					}
 				}
 			}
+			// T-6: prefer the live counter (incremented from the HTTP handler
+			// goroutine) over RunEntry.CommentCount because the latter is only
+			// updated when the run terminates. If both are zero we omit the
+			// field via omitempty.
+			liveComments := r.CommentCount
+			if c := orch.CommentCountFor(r.Issue.Identifier); c > liveComments {
+				liveComments = c
+			}
 			running = append(running, server.RunningRow{
 				Identifier:    r.Issue.Identifier,
 				State:         r.Issue.State,
@@ -758,6 +853,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				WorkerHost:    r.WorkerHost,
 				Backend:       r.Backend,
 				Kind:          r.Kind,
+				AutomationID:  r.AutomationID,
+				TriggerType:   r.TriggerType,
+				CommentCount:  liveComments,
 				ElapsedMs:     now.Sub(r.StartedAt).Milliseconds(),
 				StartedAt:     r.StartedAt,
 				SubagentCount: subCount,
@@ -792,7 +890,6 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 			activeProjectFilter = []string{cfg.Tracker.ProjectSlug}
 		}
 		profiles := orch.ProfilesCfg()
-		agentMode := orch.AgentModeCfg()
 		autoClearWorkspace := orch.AutoClearWorkspaceCfg()
 		activeStates, terminalStates, completionState := orch.TrackerStatesCfg()
 
@@ -838,6 +935,9 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 				Kind:         r.Kind,
 				SessionID:    r.SessionID,
 				AppSessionID: r.AppSessionID,
+				AutomationID: r.AutomationID,
+				TriggerType:  r.TriggerType,
+				CommentCount: r.CommentCount,
 			})
 		}
 
@@ -852,37 +952,48 @@ func buildSnapFunc(orch *orchestrator.Orchestrator, tr tracker.Tracker, cfg *con
 
 		pausedWithPR := orch.GetPausedOpenPRs()
 		snap := server.StateSnapshot{
-			GeneratedAt:         now,
-			Counts:              server.Counts{Running: len(running), Retrying: len(retrying), Paused: len(paused)},
-			Running:             running,
-			History:             history,
-			Retrying:            retrying,
-			Paused:              paused,
-			PausedWithPR:        pausedWithPR,
-			MaxConcurrentAgents: orch.MaxWorkers(),
-			RateLimits:          rateLimits,
-			TrackerKind:         cfg.Tracker.Kind,
-			ActiveProjectFilter: activeProjectFilter,
-			AvailableProfiles:   availableProfiles,
-			ProfileDefs:         profileDefs,
-			AgentMode:           agentMode,
-			ActiveStates:        activeStates,
-			TerminalStates:      terminalStates,
-			CompletionState:     completionState,
-			BacklogStates:       cfg.Tracker.BacklogStates,
-			PollIntervalMs:      cfg.Polling.IntervalMs,
-			AutoClearWorkspace:  autoClearWorkspace,
-			CurrentAppSessionID: appSessionID,
-			SSHHosts:            sshHostInfos,
-			DispatchStrategy:    orch.DispatchStrategyCfg(),
-			DefaultBackend:      configuredBackend(cfg.Agent.Command, cfg.Agent.Backend),
-			InlineInput:         orch.InlineInputCfg(),
-			Automations:         automationDefsFromConfig(cfg.Automations),
-			AvailableModels:     convertModelsForSnapshot(cfg.Agent.AvailableModels),
-			ReviewerProfile:     func() string { p, _ := orch.ReviewerCfg(); return p }(),
-			AutoReview:          func() bool { _, a := orch.ReviewerCfg(); return a }(),
+			GeneratedAt:                  now,
+			Counts:                       server.Counts{Running: len(running), Retrying: len(retrying), Paused: len(paused)},
+			Running:                      running,
+			History:                      history,
+			Retrying:                     retrying,
+			Paused:                       paused,
+			PausedWithPR:                 pausedWithPR,
+			MaxConcurrentAgents:          orch.MaxWorkers(),
+			MaxRetries:                   orch.MaxRetriesCfg(),
+			FailedState:                  orch.FailedStateCfg(),
+			MaxSwitchesPerIssuePerWindow: orch.MaxSwitchesPerIssuePerWindowCfg(),
+			SwitchWindowHours:            orch.SwitchWindowHoursCfg(),
+			RateLimits:                   rateLimits,
+			TrackerKind:                  cfg.Tracker.Kind,
+			ProjectName:                  projectName,
+			ActiveProjectFilter:          activeProjectFilter,
+			AvailableProfiles:            availableProfiles,
+			ProfileDefs:                  profileDefs,
+			ActiveStates:                 activeStates,
+			TerminalStates:               terminalStates,
+			CompletionState:              completionState,
+			BacklogStates:                cfg.Tracker.BacklogStates,
+			PollIntervalMs:               cfg.Polling.IntervalMs,
+			AutoClearWorkspace:           autoClearWorkspace,
+			CurrentAppSessionID:          appSessionID,
+			SSHHosts:                     sshHostInfos,
+			DispatchStrategy:             orch.DispatchStrategyCfg(),
+			DefaultBackend:               configuredBackend(cfg.Agent.Command, cfg.Agent.Backend),
+			InlineInput:                  orch.InlineInputCfg(),
+			Automations:                  automationDefsFromConfig(orch.AutomationsCfg()),
+			AvailableModels:              convertModelsForSnapshot(cfg.Agent.AvailableModels),
+			ReviewerProfile:              func() string { p, _ := orch.ReviewerCfg(); return p }(),
+			AutoReview:                   func() bool { _, a := orch.ReviewerCfg(); return a }(),
 		}
-		snap.InputRequired = sortedInputRequiredRows(s.InputRequiredIssues, s.PendingInputResumes)
+		// Stale threshold for the dashboard badge: pick the longest
+		// MaxAgeMinutes across all enabled input_required automations. If no
+		// rule configures one, fall back to 24h so abandoned entries still
+		// surface visually even when no automation guards against them.
+		staleAfter := longestInputRequiredMaxAge(orch.AutomationsCfg(), 24*time.Hour)
+		snap.InputRequired = sortedInputRequiredRows(s.InputRequiredIssues, s.PendingInputResumes, staleAfter, now)
+		// Surface in-flight WORKFLOW.md reload failures (T-26). nil when valid.
+		snap.ConfigInvalid = loadConfigInvalid()
 		return snap
 	}
 }
@@ -894,11 +1005,13 @@ func buildTUIConfig(
 	tr tracker.Tracker,
 	cfg *config.Config,
 	workflowPath string,
+	quitApp func(),
 ) (statusui.Config, func(string) bool) {
 	tuiCfg := statusui.Config{
 		MaxAgents:     cfg.Agent.MaxConcurrentAgents,
 		TodoStates:    cfg.Tracker.ActiveStates,
 		BacklogStates: cfg.Tracker.BacklogStates,
+		QuitApp:       quitApp,
 	}
 	if cfg.Server.Port != nil {
 		if tok := os.Getenv("ITERVOX_API_TOKEN"); tok != "" {
@@ -923,7 +1036,9 @@ func buildTUIConfig(
 		}
 		tuiCfg.SetProjectFilter = func(slugs []string) {
 			tpm.SetProjectFilter(slugs)
-			updateWorkflowProjectSlug(workflowPath, slugs)
+			if err := updateWorkflowProjectSlug(workflowPath, slugs); err != nil {
+				slog.Warn("tui: project_slug persist failed; runtime filter applied but next reload will see the old value", "error", err)
+			}
 		}
 	}
 	tuiCfg.AdjustWorkers = func(delta int) {
@@ -1050,44 +1165,24 @@ func buildTUIConfig(
 	return tuiCfg, tuiCancel
 }
 
-// profilesToEntries converts config.AgentProfile map to workflow.ProfileEntry map
-// for persistence to WORKFLOW.md.
-func profilesToEntries(profiles map[string]config.AgentProfile) map[string]workflow.ProfileEntry {
-	entries := make(map[string]workflow.ProfileEntry, len(profiles))
-	for name, p := range profiles {
-		entries[name] = workflow.ProfileEntry{
-			Command: p.Command,
-			Prompt:  p.Prompt,
-			Backend: p.Backend,
-			Enabled: func() *bool {
-				enabled := config.ProfileEnabled(p)
-				if enabled {
-					return nil
-				}
-				return &enabled
-			}(),
-			AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
-			CreateIssueState: p.CreateIssueState,
-		}
-	}
-	return entries
-}
-
-func automationsToEntries(automations []server.AutomationDef) []workflow.AutomationEntry {
-	entries := make([]workflow.AutomationEntry, 0, len(automations))
+// automationConfigsFromDefs converts the API-layer AutomationDef slice back
+// into the internal config.AutomationConfig slice consumed by compileAutomations
+// and the runtime automations goroutine.
+func automationConfigsFromDefs(automations []server.AutomationDef) []config.AutomationConfig {
+	cfgs := make([]config.AutomationConfig, 0, len(automations))
 	for _, automation := range automations {
-		entries = append(entries, workflow.AutomationEntry{
+		cfgs = append(cfgs, config.AutomationConfig{
 			ID:           automation.ID,
 			Enabled:      automation.Enabled,
 			Profile:      automation.Profile,
 			Instructions: automation.Instructions,
-			Trigger: workflow.AutomationTriggerEntry{
+			Trigger: config.AutomationTriggerConfig{
 				Type:     automation.Trigger.Type,
 				Cron:     automation.Trigger.Cron,
 				Timezone: automation.Trigger.Timezone,
 				State:    automation.Trigger.State,
 			},
-			Filter: workflow.AutomationFilterEntry{
+			Filter: config.AutomationFilterConfig{
 				MatchMode:         automation.Filter.MatchMode,
 				States:            automation.Filter.States,
 				LabelsAny:         automation.Filter.LabelsAny,
@@ -1095,12 +1190,12 @@ func automationsToEntries(automations []server.AutomationDef) []workflow.Automat
 				Limit:             automation.Filter.Limit,
 				InputContextRegex: automation.Filter.InputContextRegex,
 			},
-			Policy: workflow.AutomationPolicyEntry{
+			Policy: config.AutomationPolicyConfig{
 				AutoResume: automation.Policy.AutoResume,
 			},
 		})
 	}
-	return entries
+	return cfgs
 }
 
 func automationDefsFromConfig(automations []config.AutomationConfig) []server.AutomationDef {
@@ -1124,6 +1219,7 @@ func automationDefsFromConfig(automations []config.AutomationConfig) []server.Au
 				IdentifierRegex:   automation.Filter.IdentifierRegex,
 				Limit:             automation.Filter.Limit,
 				InputContextRegex: automation.Filter.InputContextRegex,
+				MaxAgeMinutes:     automation.Filter.MaxAgeMinutes,
 			},
 			Policy: server.AutomationPolicyDef{
 				AutoResume: automation.Policy.AutoResume,
@@ -1143,6 +1239,7 @@ type orchestratorAdapter struct {
 	tr           tracker.Tracker
 	workflowPath string
 	notify       func()
+	skillsCache  *skills.Cache
 }
 
 func (a *orchestratorAdapter) FetchIssues(ctx context.Context) ([]server.TrackerIssue, error) {
@@ -1337,210 +1434,6 @@ func deduplicateStates(backlog, active, terminal []string, completion string) []
 	return out
 }
 
-func (a *orchestratorAdapter) SetWorkers(n int) {
-	a.orch.SetMaxWorkers(n)
-	if err := workflow.PatchIntField(a.workflowPath, "max_concurrent_agents", n); err != nil {
-		slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md", "error", err)
-	}
-}
-
-func (a *orchestratorAdapter) BumpWorkers(delta int) int {
-	next := a.orch.BumpMaxWorkers(delta)
-	if err := workflow.PatchIntField(a.workflowPath, "max_concurrent_agents", next); err != nil {
-		slog.Warn("failed to persist max_concurrent_agents to WORKFLOW.md", "error", err)
-	}
-	return next
-}
-
-func (a *orchestratorAdapter) SetIssueProfile(identifier, profile string) {
-	a.orch.SetIssueProfile(identifier, profile)
-}
-
-func (a *orchestratorAdapter) SetIssueBackend(identifier, backend string) {
-	a.orch.SetIssueBackend(identifier, backend)
-}
-
-func (a *orchestratorAdapter) ProfileDefs() map[string]server.ProfileDef {
-	profiles := a.orch.ProfilesCfg()
-	defs := make(map[string]server.ProfileDef, len(profiles))
-	for name, p := range profiles {
-		defs[name] = server.ProfileDef{
-			Command:          p.Command,
-			Prompt:           p.Prompt,
-			Backend:          p.Backend,
-			Enabled:          config.ProfileEnabled(p),
-			AllowedActions:   config.NormalizeAllowedActions(p.AllowedActions),
-			CreateIssueState: p.CreateIssueState,
-		}
-	}
-	return defs
-}
-
-func (a *orchestratorAdapter) ReviewerConfig() (string, bool) {
-	return a.orch.ReviewerCfg()
-}
-
-func (a *orchestratorAdapter) SetReviewerConfig(profile string, autoReview bool) error {
-	if err := a.orch.SetReviewerCfg(profile, autoReview); err != nil {
-		return err
-	}
-	if err := workflow.PatchAgentStringField(a.workflowPath, "reviewer_profile", profile); err != nil {
-		return err
-	}
-	if err := workflow.PatchAgentBoolField(a.workflowPath, "auto_review", autoReview); err != nil {
-		return err
-	}
-	a.notify()
-	return nil
-}
-
-func (a *orchestratorAdapter) AvailableModels() map[string][]server.ModelOption {
-	models := a.orch.AvailableModelsCfg()
-	result := make(map[string][]server.ModelOption, len(models))
-	for backend, opts := range models {
-		converted := make([]server.ModelOption, len(opts))
-		for i, m := range opts {
-			converted[i] = server.ModelOption{ID: m.ID, Label: m.Label}
-		}
-		result[backend] = converted
-	}
-	return result
-}
-
-func (a *orchestratorAdapter) UpsertProfile(name string, def server.ProfileDef, originalName string) error {
-	profiles := a.orch.ProfilesCfg()
-	if profiles == nil {
-		profiles = make(map[string]config.AgentProfile)
-	}
-	if originalName != "" && originalName != name {
-		if _, exists := profiles[name]; exists {
-			return fmt.Errorf("profile %q already exists", name)
-		}
-		delete(profiles, originalName)
-	} else if _, exists := profiles[name]; exists && originalName == "" {
-		return fmt.Errorf("profile %q already exists", name)
-	}
-	profiles[name] = config.AgentProfile{
-		Command:          strings.TrimSpace(def.Command),
-		Prompt:           def.Prompt,
-		Backend:          def.Backend,
-		Enabled:          func() *bool { enabled := def.Enabled; return &enabled }(),
-		AllowedActions:   config.NormalizeAllowedActions(def.AllowedActions),
-		CreateIssueState: strings.TrimSpace(def.CreateIssueState),
-	}
-	a.orch.SetProfilesCfg(profiles)
-	if err := workflow.PatchProfilesBlock(a.workflowPath, profilesToEntries(profiles)); err != nil {
-		return err
-	}
-	a.notify()
-	return nil
-}
-
-func (a *orchestratorAdapter) DeleteProfile(name string) error {
-	profiles := a.orch.ProfilesCfg()
-	delete(profiles, name)
-	a.orch.SetProfilesCfg(profiles)
-	if err := workflow.PatchProfilesBlock(a.workflowPath, profilesToEntries(profiles)); err != nil {
-		return err
-	}
-	a.notify()
-	return nil
-}
-
-func (a *orchestratorAdapter) SetAutomations(automations []server.AutomationDef) error {
-	if err := workflow.PatchAutomationsBlock(a.workflowPath, automationsToEntries(automations)); err != nil {
-		return err
-	}
-	a.notify()
-	return nil
-}
-
-func (a *orchestratorAdapter) SetAgentMode(mode string) error {
-	a.orch.SetAgentModeCfg(mode)
-	if err := workflow.PatchAgentStringField(a.workflowPath, "agent_mode", mode); err != nil {
-		slog.Warn("failed to persist agent_mode to WORKFLOW.md", "error", err)
-	}
-	a.notify()
-	return nil
-}
-
-func (a *orchestratorAdapter) ClearAllWorkspaces() error {
-	// Clear run history (in-memory + disk) so Timeline resets.
-	a.orch.ClearHistory()
-
-	root := a.cfg.Workspace.Root
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("clear workspaces: read dir %s: %w", root, err)
-	}
-	var firstErr error
-	for _, e := range entries {
-		path := filepath.Join(root, e.Name())
-		if err := os.RemoveAll(path); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-func (a *orchestratorAdapter) SetAutoClearWorkspace(enabled bool) error {
-	if err := a.orch.SetAutoClearWorkspaceCfg(enabled); err != nil {
-		return err
-	}
-	if err := workflow.PatchWorkspaceBoolField(a.workflowPath, "auto_clear", enabled); err != nil {
-		slog.Warn("failed to persist auto_clear to WORKFLOW.md", "error", err)
-	}
-	a.notify()
-	return nil
-}
-
-func (a *orchestratorAdapter) UpdateTrackerStates(active, terminal []string, completion string) error {
-	a.orch.SetTrackerStatesCfg(active, terminal, completion)
-	if err := workflow.PatchStringSliceField(a.workflowPath, "active_states", active); err != nil {
-		slog.Warn("could not patch active_states in WORKFLOW.md", "error", err)
-	}
-	if err := workflow.PatchStringSliceField(a.workflowPath, "terminal_states", terminal); err != nil {
-		slog.Warn("could not patch terminal_states in WORKFLOW.md", "error", err)
-	}
-	if err := workflow.PatchStringField(a.workflowPath, "completion_state", completion); err != nil {
-		slog.Warn("could not patch completion_state in WORKFLOW.md", "error", err)
-	}
-	a.notify()
-	return nil
-}
-
-func (a *orchestratorAdapter) AddSSHHost(host, description string) error {
-	a.orch.AddSSHHostCfg(host, description)
-	return nil
-}
-
-func (a *orchestratorAdapter) RemoveSSHHost(host string) error {
-	a.orch.RemoveSSHHostCfg(host)
-	return nil
-}
-
-func (a *orchestratorAdapter) SetDispatchStrategy(strategy string) error {
-	a.orch.SetDispatchStrategyCfg(strategy)
-	return nil
-}
-
-func (a *orchestratorAdapter) ProvideInput(identifier, message string) bool {
-	return a.orch.ProvideInput(identifier, message)
-}
-
-func (a *orchestratorAdapter) DismissInput(identifier string) bool {
-	return a.orch.DismissInput(identifier)
-}
-
-func (a *orchestratorAdapter) SetInlineInput(enabled bool) error {
-	a.orch.SetInlineInputCfg(enabled)
-	a.notify()
-	return nil
-}
-
 type commandResolverRunner struct {
 	inner   agent.Runner
 	resolve func(string) string
@@ -1569,15 +1462,100 @@ func resolveCommandLine(command string, resolver func(string) string) string {
 	if command == "" {
 		return ""
 	}
-	parts := strings.SplitN(command, " ", 2)
-	resolved := resolver(parts[0])
-	if resolved == parts[0] {
+	tokenStart, tokenEnd, ok := resolveCommandTokenSpan(command)
+	if !ok {
 		return command
 	}
-	if len(parts) == 1 {
-		return resolved
+	token := command[tokenStart:tokenEnd]
+	resolved := resolver(token)
+	if resolved == token {
+		return command
 	}
-	return resolved + " " + parts[1]
+	return command[:tokenStart] + resolved + command[tokenEnd:]
+}
+
+func resolveCommandTokenSpan(command string) (int, int, bool) {
+	searchFrom := 0
+	firstToken := true
+	for {
+		start, end, ok := nextShellTokenSpan(command, searchFrom)
+		if !ok {
+			return 0, 0, false
+		}
+		token := command[start:end]
+		if firstToken && strings.HasPrefix(token, "@@itervox-backend=") {
+			firstToken = false
+			searchFrom = end
+			continue
+		}
+		firstToken = false
+		if isShellEnvAssignmentToken(token) {
+			searchFrom = end
+			continue
+		}
+		return start, end, true
+	}
+}
+
+func nextShellTokenSpan(command string, searchFrom int) (int, int, bool) {
+	start := searchFrom
+	for start < len(command) {
+		if !unicode.IsSpace(rune(command[start])) {
+			break
+		}
+		start++
+	}
+	if start >= len(command) {
+		return 0, 0, false
+	}
+
+	end := start
+	var quote byte
+	for end < len(command) {
+		ch := command[end]
+		switch {
+		case quote != 0:
+			if ch == quote {
+				quote = 0
+				end++
+				continue
+			}
+			if ch == '\\' && quote == '"' && end+1 < len(command) {
+				end += 2
+				continue
+			}
+			end++
+		case ch == '\'' || ch == '"':
+			quote = ch
+			end++
+		case ch == '\\' && end+1 < len(command):
+			end += 2
+		case unicode.IsSpace(rune(ch)):
+			return start, end, true
+		default:
+			end++
+		}
+	}
+	return start, end, true
+}
+
+func isShellEnvAssignmentToken(token string) bool {
+	key, _, ok := strings.Cut(token, "=")
+	if !ok || key == "" {
+		return false
+	}
+	for i, ch := range key {
+		if i == 0 {
+			if ch != '_' && !unicode.IsLetter(ch) {
+				return false
+			}
+			continue
+		}
+		if ch != '_' && !unicode.IsLetter(ch) && !unicode.IsDigit(ch) {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveAgentCommand(command string) string {
@@ -1653,10 +1631,13 @@ func (m *linearProjectManager) FetchProjects(ctx context.Context) ([]server.Proj
 }
 
 // SetProjectFilter implements server.ProjectManager and persists the filter to WORKFLOW.md.
+// T-55: persist failures slog.Warn; rollback isn't modeled by ProjectManager.
 func (m *linearProjectManager) SetProjectFilter(slugs []string) {
 	m.pm.SetProjectFilter(slugs)
 	if m.workflowPath != "" {
-		updateWorkflowProjectSlug(m.workflowPath, slugs)
+		if err := updateWorkflowProjectSlug(m.workflowPath, slugs); err != nil {
+			slog.Warn("project_slug persist failed; runtime filter applied but next reload will see the old value", "error", err, "path", m.workflowPath)
+		}
 	}
 }
 
@@ -1709,10 +1690,21 @@ func runClear(args []string) {
 	cfg, err := config.Load(*workflowPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "itervox clear: load config %s: %v\n", *workflowPath, err)
-		os.Exit(1)
+		fatalExit(1)
 	}
 
 	root := cfg.Workspace.Root
+
+	// T-43 (05.G-12): refuse to delete from a workspace.root that resolves to
+	// a system or user-home directory. A misconfigured WORKFLOW.md (e.g.
+	// `workspace.root: /` or `workspace.root: ~`) would otherwise let
+	// `itervox clear` recursively remove everything in the user's home dir.
+	// Belt-and-suspenders: the WORKFLOW.md schema doesn't currently validate
+	// this either.
+	if reason := unsafeWorkspaceRoot(root); reason != "" {
+		fmt.Fprintf(os.Stderr, "itervox clear: refusing to clear %q (%s) — set workspace.root to a project-specific path\n", root, reason)
+		fatalExit(1)
+	}
 
 	if len(identifiers) == 0 {
 		// Remove all entries under workspace.root.
@@ -1723,7 +1715,7 @@ func runClear(args []string) {
 				return
 			}
 			fmt.Fprintf(os.Stderr, "itervox clear: read dir %s: %v\n", root, err)
-			os.Exit(1)
+			fatalExit(1)
 		}
 		removed := 0
 		for _, e := range entries {
@@ -1758,7 +1750,7 @@ func runClear(args []string) {
 func runAction(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "itervox action: expected subcommand: comment | create-issue | move-state | provide-input")
-		os.Exit(1)
+		fatalExit(1)
 	}
 
 	daemonURL := strings.TrimRight(os.Getenv("ITERVOX_DAEMON_URL"), "/")
@@ -1766,7 +1758,7 @@ func runAction(args []string) {
 	identifier := os.Getenv("ITERVOX_ISSUE_IDENTIFIER")
 	if daemonURL == "" || token == "" || identifier == "" {
 		fmt.Fprintln(os.Stderr, "itervox action: missing worker action environment; this command only works inside an active itervox worker")
-		os.Exit(2)
+		fatalExit(2)
 	}
 
 	var endpoint string
@@ -1779,7 +1771,7 @@ func runAction(args []string) {
 		_ = fs.Parse(args[1:])
 		if strings.TrimSpace(*commentBody) == "" {
 			fmt.Fprintln(os.Stderr, "itervox action comment: --body is required")
-			os.Exit(2)
+			fatalExit(2)
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/comment"
 		body = map[string]string{"body": *commentBody}
@@ -1790,11 +1782,11 @@ func runAction(args []string) {
 		_ = fs.Parse(args[1:])
 		if strings.TrimSpace(*title) == "" {
 			fmt.Fprintln(os.Stderr, "itervox action create-issue: --title is required")
-			os.Exit(2)
+			fatalExit(2)
 		}
 		if strings.TrimSpace(os.Getenv("ITERVOX_CREATE_ISSUE_STATE")) == "" {
 			fmt.Fprintln(os.Stderr, "itervox action create-issue: create_issue_state is not configured for this profile")
-			os.Exit(2)
+			fatalExit(2)
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/create-issue"
 		body = map[string]string{"title": *title, "body": *issueBody}
@@ -1804,7 +1796,7 @@ func runAction(args []string) {
 		_ = fs.Parse(args[1:])
 		if strings.TrimSpace(*state) == "" {
 			fmt.Fprintln(os.Stderr, "itervox action move-state: --state is required")
-			os.Exit(2)
+			fatalExit(2)
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/move-state"
 		body = map[string]string{"state": *state}
@@ -1814,18 +1806,18 @@ func runAction(args []string) {
 		_ = fs.Parse(args[1:])
 		if strings.TrimSpace(*message) == "" {
 			fmt.Fprintln(os.Stderr, "itervox action provide-input: --message is required")
-			os.Exit(2)
+			fatalExit(2)
 		}
 		endpoint = "/api/v1/agent-actions/" + url.PathEscape(identifier) + "/provide-input"
 		body = map[string]string{"message": *message}
 	default:
 		fmt.Fprintf(os.Stderr, "itervox action: unknown subcommand %q\n", args[0])
-		os.Exit(1)
+		fatalExit(1)
 	}
 
 	if err := invokeAgentAction(daemonURL+endpoint, token, body); err != nil {
 		fmt.Fprintf(os.Stderr, "itervox action: %v\n", err)
-		os.Exit(1)
+		fatalExit(1)
 	}
 	fmt.Println("ok")
 }
@@ -1862,440 +1854,16 @@ func invokeAgentAction(endpoint, token string, body any) error {
 	return nil
 }
 
-// repoInfo holds values discovered by scanning the current directory.
-type repoInfo struct {
-	RemoteURL     string // raw git remote URL
-	Owner         string // e.g. "vnovick"
-	Repo          string // e.g. "itervox"
-	CloneURL      string // SSH clone URL reconstructed for after_create hook
-	DefaultBranch string // "main" or "master"
-	ProjectName   string // repo name, used for workspace.root
-	HasClaudeMD   bool   // CLAUDE.md present in dir
-	HasAgentsMD   bool   // AGENTS.md present in dir
-	Stacks        []detectedStack
-	ClaudeModels  []agent.ModelOption // discovered Claude models (may be empty)
-	CodexModels   []agent.ModelOption // discovered Codex models (may be empty)
-}
-
-type detectedStack struct {
-	Name     string
-	Commands []string
-}
-
-// scanRepo inspects dir (typically ".") for git remote, branch, CLAUDE.md, and
-// language/framework indicators. All fields fall back to sensible placeholders
-// so the output is always valid even in a non-git directory.
-func scanRepo(dir string) repoInfo {
-	info := repoInfo{DefaultBranch: "main", ProjectName: "my-project"}
-
-	// ── git remote ────────────────────────────────────────────────────────────
-	if out, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output(); err == nil {
-		info.RemoteURL = strings.TrimSpace(string(out))
-		info.Owner, info.Repo = parseGitRemote(info.RemoteURL)
-		if info.Repo != "" {
-			info.ProjectName = info.Repo
-		}
-		// Normalise to SSH clone URL for the after_create hook.
-		if info.Owner != "" && info.Repo != "" {
-			info.CloneURL = fmt.Sprintf("git@github.com:%s/%s.git", info.Owner, info.Repo)
-		}
-	}
-
-	// ── default branch ────────────────────────────────────────────────────────
-	if out, err := exec.Command("git", "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {
-		ref := strings.TrimSpace(string(out)) // refs/remotes/origin/main
-		if parts := strings.Split(ref, "/"); len(parts) > 0 {
-			info.DefaultBranch = parts[len(parts)-1]
-		}
-	}
-
-	// ── CLAUDE.md ─────────────────────────────────────────────────────────────
-	if _, err := os.Stat(filepath.Join(dir, "CLAUDE.md")); err == nil {
-		info.HasClaudeMD = true
-	}
-
-	// ── AGENTS.md ─────────────────────────────────────────────────────────────
-	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); err == nil {
-		info.HasAgentsMD = true
-	}
-
-	// ── tech stack ────────────────────────────────────────────────────────────
-	info.Stacks = detectStacks(dir)
-
-	return info
-}
-
-// parseGitRemote extracts owner and repo from an SSH or HTTPS git remote URL.
-func parseGitRemote(remote string) (owner, repo string) {
-	remote = strings.TrimSuffix(strings.TrimSpace(remote), ".git")
-	// SSH: git@github.com:owner/repo
-	if strings.HasPrefix(remote, "git@") {
-		if _, path, ok := strings.Cut(remote, ":"); ok {
-			owner, repo, _ = strings.Cut(path, "/")
-			return
-		}
-	}
-	// HTTPS: https://github.com/owner/repo
-	parts := strings.Split(remote, "/")
-	if len(parts) >= 2 {
-		repo = parts[len(parts)-1]
-		owner = parts[len(parts)-2]
-	}
-	return
-}
-
-// detectStacks scans dir for language/framework indicator files and returns
-// the detected stacks with their suggested check commands.
-func detectStacks(dir string) []detectedStack {
-	has := func(name string) bool {
-		_, err := os.Stat(filepath.Join(dir, name))
-		return err == nil
-	}
-
-	var stacks []detectedStack
-
-	if has("go.mod") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Go",
-			Commands: []string{"go test ./...", "go vet ./..."},
-		})
-	}
-
-	if has("package.json") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Node.js",
-			Commands: detectNodeCommands(dir),
-		})
-	}
-
-	if has("Cargo.toml") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Rust",
-			Commands: []string{"cargo test", "cargo clippy -- -D warnings"},
-		})
-	}
-
-	if has("pyproject.toml") || has("setup.py") || has("requirements.txt") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Python",
-			Commands: []string{"python -m pytest", "python -m mypy ."},
-		})
-	}
-
-	if has("mix.exs") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Elixir",
-			Commands: []string{"mix test", "mix credo"},
-		})
-	}
-
-	if has("Gemfile") {
-		stacks = append(stacks, detectedStack{
-			Name:     "Ruby",
-			Commands: []string{"bundle exec rspec", "bundle exec rubocop"},
-		})
-	}
-
-	return stacks
-}
-
-// detectNodeCommands reads package.json scripts to suggest the right test/lint commands.
-func detectNodeCommands(dir string) []string {
-	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
-	if err != nil {
-		return []string{"npm test"}
-	}
-	var pkg struct {
-		Scripts map[string]string `json:"scripts"`
-	}
-	if err := json.Unmarshal(data, &pkg); err != nil {
-		return []string{"npm test"}
-	}
-
-	// Detect package manager from lock files.
-	pm := "npm"
-	if _, err := os.Stat(filepath.Join(dir, "pnpm-lock.yaml")); err == nil {
-		pm = "pnpm"
-	} else if _, err := os.Stat(filepath.Join(dir, "yarn.lock")); err == nil {
-		pm = "yarn"
-	}
-
-	var cmds []string
-	for _, script := range []string{"test", "lint", "typecheck", "check", "build"} {
-		if _, ok := pkg.Scripts[script]; ok {
-			cmds = append(cmds, pm+" run "+script)
-		}
-	}
-	if len(cmds) == 0 {
-		cmds = []string{pm + " test"}
-	}
-	return cmds
-}
-
-// generateWorkflow builds the WORKFLOW.md content from scanned repo info.
-func generateWorkflow(trackerKind, runner string, info repoInfo) string {
-	var b strings.Builder
-
-	// ── frontmatter ───────────────────────────────────────────────────────────
-	b.WriteString("---\n")
-	b.WriteString("tracker:\n")
-	b.WriteString("  kind: " + trackerKind + "\n")
-
-	switch trackerKind {
-	case "linear":
-		b.WriteString("  api_key: $LINEAR_API_KEY          # export LINEAR_API_KEY=lin_api_...\n")
-	case "github":
-		b.WriteString("  api_key: $GITHUB_TOKEN            # export GITHUB_TOKEN=ghp_...\n")
-	}
-
-	slug := "owner/repo"
-	if info.Owner != "" && info.Repo != "" {
-		if trackerKind == "linear" {
-			slug = info.Repo + "-<slug>"
-		} else {
-			slug = info.Owner + "/" + info.Repo
-		}
-	}
-	if trackerKind == "linear" {
-		b.WriteString("  # project_slug: <slug>  # Optional — filter to one project.\n")
-		b.WriteString("  #                        Select interactively via TUI (p) or web dashboard instead.\n")
-		b.WriteString("  active_states: [\"Todo\", \"In Progress\"]\n")
-		b.WriteString("  terminal_states: [\"Done\", \"Cancelled\", \"Duplicate\"]\n")
-		b.WriteString("  working_state: \"In Progress\"     # State applied when an agent starts working.\n")
-		b.WriteString("  #                                  # Set to \"\" to disable auto-transition.\n")
-		b.WriteString("  completion_state: \"In Review\"     # State applied when the agent finishes.\n")
-		b.WriteString("  backlog_states: [\"Backlog\"]        # Discard target; shown in TUI (b) and Kanban; not auto-dispatched.\n")
-		b.WriteString("  # failed_state: \"Backlog\"       # State for issues that exhaust all retries.\n")
-	} else {
-		b.WriteString("  project_slug: " + slug + "\n")
-		b.WriteString("  # GitHub uses labels to map states. Labels must exist in your repo.\n")
-		b.WriteString("  # NOTE: GitHub Projects v2 'Status' field is separate from labels — Itervox\n")
-		b.WriteString("  #       only reads labels. See README for Projects automation setup.\n")
-		b.WriteString("  # Create them with: gh label create \"todo\" --color \"0075ca\" --repo " + slug + "\n")
-		b.WriteString("  #                   gh label create \"in-progress\" --color \"e4e669\" --repo " + slug + "\n")
-		b.WriteString("  #                   gh label create \"in-review\" --color \"d93f0b\" --repo " + slug + "\n")
-		b.WriteString("  #                   gh label create \"done\" --color \"0e8a16\" --repo " + slug + "\n")
-		b.WriteString("  #                   gh label create \"cancelled\" --color \"cccccc\" --repo " + slug + "\n")
-		b.WriteString("  #                   gh label create \"backlog\" --color \"f9f9f9\" --repo " + slug + "\n")
-		b.WriteString("  active_states: [\"todo\", \"in-progress\"]\n")
-		b.WriteString("  terminal_states: [\"done\", \"cancelled\"]\n")
-		b.WriteString("  working_state: \"in-progress\"  # Label applied when an agent starts.\n")
-		b.WriteString("  #                               # MUST exist as a label in your repo.\n")
-		b.WriteString("  #                               # Set to \"\" to disable, or reuse an active label.\n")
-		b.WriteString("  completion_state: \"in-review\"  # Label applied when the agent finishes.\n")
-		b.WriteString("  # backlog_states: [\"backlog\"]  # Shown in TUI (b) and Kanban; not auto-dispatched.\n")
-		b.WriteString("  #                               # Must be an array — not a bare string.\n")
-		b.WriteString("  backlog_states: [\"backlog\"]\n")
-		b.WriteString("  # failed_state: \"backlog\"        # Label for issues that exhaust all retries.\n")
-	}
-
-	b.WriteString("\npolling:\n  interval_ms: 60000\n")
-
-	b.WriteString("\nagent:\n")
-	if runner == "codex" {
-		b.WriteString("  command: codex\n")
-		b.WriteString("  backend: codex\n")
-	} else {
-		b.WriteString("  command: claude\n")
-	}
-	b.WriteString("  max_turns: 60\n")
-	b.WriteString("  max_concurrent_agents: 3\n")
-	b.WriteString("  max_retries: 5\n")
-	b.WriteString("  turn_timeout_ms: 3600000\n")
-	b.WriteString("  read_timeout_ms: 120000\n")
-	b.WriteString("  stall_timeout_ms: 300000\n")
-
-	// Reviewer prompt — used when a reviewer worker is dispatched (via auto_review or AI Review button).
-	// Uses the reviewer_prompt template instead of the main WORKFLOW.md body.
-	b.WriteString("  # reviewer_profile: reviewer       # Uncomment and create a 'reviewer' profile to enable AI code review.\n")
-	b.WriteString("  # auto_review: false               # Set to true to auto-review after each successful agent run. Cannot be combined with workspace.auto_clear.\n")
-	b.WriteString("  reviewer_prompt: |\n")
-	b.WriteString("    You are an AI code reviewer for issue {{ issue.identifier }}: {{ issue.title }}.\n")
-	b.WriteString("\n")
-	b.WriteString("    ## Your task\n")
-	b.WriteString("\n")
-	b.WriteString("    Review the pull request created for this issue.\n")
-	b.WriteString("\n")
-	b.WriteString("    1. Run `gh pr diff` to read the PR changes\n")
-	b.WriteString("    2. Review for: correctness, test coverage, edge cases, security issues, code style\n")
-	b.WriteString("    3. If you find problems:\n")
-	b.WriteString("       - Fix them directly in the workspace\n")
-	b.WriteString("       - Commit and push: `git add -A && git commit -m \"fix: reviewer corrections\" && git push`\n")
-	b.WriteString("       - Post a comment on the tracker issue summarising what you fixed\n")
-	b.WriteString("    4. If the PR is clean:\n")
-	b.WriteString("       - Post an approval comment: \"AI review passed — no issues found\"\n")
-	b.WriteString("\n")
-	b.WriteString("    Be concise. Focus on real bugs, not style preferences.\n")
-
-	// Write discovered models so the dashboard profile editor has suggestions.
-	if len(info.ClaudeModels) > 0 || len(info.CodexModels) > 0 {
-		b.WriteString("  available_models:\n")
-		if len(info.ClaudeModels) > 0 {
-			b.WriteString("    claude:\n")
-			for _, m := range info.ClaudeModels {
-				fmt.Fprintf(&b, "      - { id: %q, label: %q }\n", m.ID, m.Label)
-			}
-		}
-		if len(info.CodexModels) > 0 {
-			b.WriteString("    codex:\n")
-			for _, m := range info.CodexModels {
-				fmt.Fprintf(&b, "      - { id: %q, label: %q }\n", m.ID, m.Label)
-			}
-		}
-	}
-
-	cloneURL := info.CloneURL
-	if cloneURL == "" {
-		cloneURL = "git@github.com:owner/" + info.ProjectName + ".git"
-	}
-	b.WriteString("\nworkspace:\n")
-	b.WriteString("  root: ~/.itervox/workspaces/" + info.ProjectName + "\n")
-	b.WriteString("  worktree: true\n")
-	b.WriteString("  clone_url: " + cloneURL + "\n")
-	b.WriteString("  base_branch: " + info.DefaultBranch + "\n")
-
-	b.WriteString("\nhooks:\n")
-	b.WriteString("  # after_create and before_run are no longer needed for clone/reset —\n")
-	b.WriteString("  # Itervox maintains a bare clone and creates worktrees automatically.\n")
-	b.WriteString("  # Add custom hooks here if your project needs extra setup.\n")
-	b.WriteString("  # before_run runs once per worker attempt; after_run runs after each turn.\n")
-	b.WriteString("  # after_create: |\n")
-	b.WriteString("  #   npm install\n")
-	b.WriteString("  # before_run: |\n")
-	b.WriteString("  #   make prepare-agent-workspace\n")
-	b.WriteString("  # after_run: |\n")
-	b.WriteString("  #   git status --short\n")
-	b.WriteString("  # before_remove: |\n")
-	b.WriteString("  #   tar -czf ../workspace-backup.tgz .\n")
-
-	b.WriteString("\nserver:\n  port: 8090\n")
-	b.WriteString("---\n\n")
-
-	// ── prompt body ───────────────────────────────────────────────────────────
-	b.WriteString("You are an expert engineer working on **" + info.ProjectName + "**.\n\n")
-
-	b.WriteString("## Your issue\n\n")
-	b.WriteString("**{{ issue.identifier }}: {{ issue.title }}**\n\n")
-	b.WriteString("{% if issue.description %}\n{{ issue.description }}\n{% endif %}\n\n")
-	b.WriteString("Issue URL: {{ issue.url }}\n\n")
-	b.WriteString("{% if issue.comments %}\n## Comments\n\n")
-	b.WriteString("{% for comment in issue.comments %}\n**{{ comment.author_name }}**: {{ comment.body }}\n\n{% endfor %}\n{% endif %}\n\n")
-	b.WriteString("---\n\n")
-
-	// CLAUDE.md or conventions placeholder
-	if info.HasClaudeMD {
-		b.WriteString("## Project Conventions\n\n")
-		b.WriteString("This project has a `CLAUDE.md`. Read it before touching any code:\n\n")
-		b.WriteString("```bash\ncat CLAUDE.md\n```\n\n")
-		b.WriteString("Follow all conventions, architecture rules, and preferences documented there.\n\n")
-		b.WriteString("---\n\n")
-	}
-
-	// AGENTS.md — multi-agent configuration
-	if info.HasAgentsMD {
-		b.WriteString("## Multi-Agent Configuration\n\n")
-		b.WriteString("This project has an `AGENTS.md`. Read it for multi-agent conventions and coordination rules:\n\n")
-		b.WriteString("```bash\ncat AGENTS.md\n```\n\n")
-		b.WriteString("---\n\n")
-	}
-
-	b.WriteString("## Step 1 — Explore before touching anything\n\n")
-	b.WriteString("Read the issue. Explore the relevant code before making changes.\n\n")
-	if info.HasClaudeMD {
-		b.WriteString("Re-read `CLAUDE.md` if you are unsure about conventions.\n\n")
-	}
-	b.WriteString("---\n\n")
-
-	b.WriteString("## Step 2 — Create a branch\n\n")
-	b.WriteString("```bash\n")
-	if trackerKind == "linear" {
-		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | downcase }}\n")
-	} else {
-		b.WriteString("git checkout -b {{ issue.branch_name | default: issue.identifier | replace: \"#\", \"\" | downcase }}\n")
-	}
-	b.WriteString("```\n\n---\n\n")
-
-	b.WriteString("## Step 3 — Implement\n\n")
-	b.WriteString("Read `CLAUDE.md` to understand project conventions before writing any code:\n\n")
-	b.WriteString("```bash\ncat CLAUDE.md\n```\n\n")
-	b.WriteString("If `CLAUDE.md` does not exist, explore the repository structure, identify the dominant patterns and conventions, create `CLAUDE.md` documenting them, and then implement.\n\n")
-	if len(info.Stacks) > 0 {
-		b.WriteString("Detected stacks: ")
-		for i, s := range info.Stacks {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(s.Name)
-		}
-		b.WriteString(". Follow their conventions as documented in `CLAUDE.md`.\n\n")
-	}
-	b.WriteString("---\n\n")
-
-	b.WriteString("## Step 4 — Run checks\n\n")
-	b.WriteString("Read `CLAUDE.md` for the project's test and lint commands. If `CLAUDE.md` does not exist, discover the check commands by exploring the repository (look for `Makefile`, `package.json` scripts, CI config, etc.).\n\n")
-	b.WriteString("```bash\n")
-	if len(info.Stacks) > 0 {
-		for _, s := range info.Stacks {
-			b.WriteString("# " + s.Name + "\n")
-			for _, cmd := range s.Commands {
-				b.WriteString(cmd + "\n")
-			}
-		}
-	} else {
-		b.WriteString("# Run the project's test and lint commands (check CLAUDE.md or discover from repo)\n")
-	}
-	b.WriteString("```\n\n---\n\n")
-
-	b.WriteString("## Step 5 — Commit and open PR\n\n")
-	b.WriteString("```bash\n")
-	b.WriteString("git add <specific files>\n")
-	b.WriteString("git commit -m \"feat: <description> ({{ issue.identifier }})\"\n")
-	b.WriteString("git push -u origin HEAD\n")
-	b.WriteString("gh pr create --title \"<title> ({{ issue.identifier }})\" --body \"Closes {{ issue.url }}\"\n")
-	b.WriteString("```\n\n---\n\n")
-
-	b.WriteString("## Step 6 — Post PR link to tracker\n\n")
-	b.WriteString("After the PR is open, post its URL as a comment on the tracker issue so it is visible in ")
-	if trackerKind == "linear" {
-		b.WriteString("Linear:\n\n")
-		b.WriteString("```bash\n")
-		b.WriteString("PR_URL=$(gh pr view --json url -q .url)\n")
-		b.WriteString("curl -s -X POST https://api.linear.app/graphql \\\n")
-		b.WriteString("  -H \"Authorization: $LINEAR_API_KEY\" \\\n")
-		b.WriteString("  -H \"Content-Type: application/json\" \\\n")
-		b.WriteString("  -d \"{\\\"query\\\":\\\"mutation { commentCreate(input: { issueId: \\\\\\\"{{ issue.id }}\\\\\\\", body: \\\\\\\"PR: ${PR_URL}\\\\\\\" }) { success } }\\\"}\"\n")
-		b.WriteString("```\n\n---\n\n")
-	} else {
-		b.WriteString("GitHub:\n\n")
-		b.WriteString("```bash\n")
-		b.WriteString("PR_URL=$(gh pr view --json url -q .url)\n")
-		b.WriteString("gh issue comment {{ issue.identifier | remove: \"#\" }} --body \"🤖 Opened PR: ${PR_URL}\"\n")
-		b.WriteString("```\n\n---\n\n")
-	}
-
-	b.WriteString("## Rules\n\n")
-	b.WriteString("- Complete the issue fully before stopping.\n")
-	b.WriteString("- Never commit `.env` files or secrets.\n")
-	if info.HasClaudeMD {
-		b.WriteString("- All conventions in `CLAUDE.md` apply — do not deviate without a documented reason.\n")
-	}
-	b.WriteString("\n")
-
-	// Append the static "Asking for human input" block. Sourced from the
-	// templates package so the sentinel contract has a single source of truth
-	// instead of drifting between inline strings here and the markdown files.
-	b.Write(templates.HumanInput)
-
-	return b.String()
-}
-
 // updateWorkflowProjectSlug rewrites the project_slug line in the YAML frontmatter
 // of the given WORKFLOW.md path. If slugs is nil or empty, the line is commented out.
-// Silently ignores errors (the filter is applied in-memory regardless).
-func updateWorkflowProjectSlug(path string, slugs []string) {
+// T-55: returns an error so callers can decide whether to surface a persistence
+// failure to the user (the in-memory filter is applied regardless of write
+// outcome, but a silent disk-write failure used to leave the next reload with
+// the old value while the UI claimed "saved").
+func updateWorkflowProjectSlug(path string, slugs []string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return fmt.Errorf("project_slug: read %s: %w", path, err)
 	}
 	lines := strings.Split(string(data), "\n")
 	inFrontmatter := false
@@ -2327,130 +1895,10 @@ func updateWorkflowProjectSlug(path string, slugs []string) {
 		}
 		break
 	}
-	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
-}
-
-// runInit scans the current (or specified) directory for repo metadata and
-// generates a WORKFLOW.md pre-filled with discovered values.
-func runInit(args []string) {
-	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	trackerKind := fs.String("tracker", "", "tracker kind: linear or github (required)")
-	runner := fs.String("runner", "claude", "default runner backend: claude or codex")
-	output := fs.String("output", "WORKFLOW.md", "output file path")
-	dir := fs.String("dir", ".", "directory to scan for repo metadata")
-	force := fs.Bool("force", false, "overwrite output file if it already exists")
-	_ = fs.Parse(args)
-
-	switch *trackerKind {
-	case "linear", "github":
-		// valid
-	case "":
-		fmt.Fprintln(os.Stderr, "itervox init: --tracker is required (linear or github)")
-		fs.Usage()
-		os.Exit(1)
-	default:
-		fmt.Fprintf(os.Stderr, "itervox init: unknown tracker %q (supported: linear, github)\n", *trackerKind)
-		os.Exit(1)
+	if err := atomicfs.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		return fmt.Errorf("project_slug: write %s: %w", path, err)
 	}
-
-	switch *runner {
-	case "claude", "codex":
-		// valid
-	default:
-		fmt.Fprintf(os.Stderr, "itervox init: unknown runner %q (supported: claude, codex)\n", *runner)
-		os.Exit(1)
-	}
-
-	// Validate that the selected runner CLI is available on PATH.
-	switch *runner {
-	case "claude":
-		if err := agent.ValidateClaudeCLI(); err != nil {
-			fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
-			os.Exit(1)
-		}
-	case "codex":
-		if err := agent.ValidateCodexCLI(); err != nil {
-			fmt.Fprintf(os.Stderr, "itervox init: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	if _, err := os.Stat(*output); err == nil && !*force {
-		fmt.Fprintf(os.Stderr, "itervox init: %s already exists (use --force to overwrite)\n", *output)
-		os.Exit(1)
-	}
-
-	fmt.Printf("itervox init: scanning %s...\n", *dir)
-	info := scanRepo(*dir)
-
-	if info.RemoteURL != "" {
-		fmt.Printf("  git remote : %s\n", info.RemoteURL)
-	}
-	fmt.Printf("  branch     : %s\n", info.DefaultBranch)
-	fmt.Printf("  runner     : %s\n", *runner)
-	if info.HasClaudeMD {
-		fmt.Printf("  CLAUDE.md  : found — prompt will reference it\n")
-	} else {
-		fmt.Printf("  CLAUDE.md  : not found — add one for best results\n")
-	}
-	if info.HasAgentsMD {
-		fmt.Printf("  AGENTS.md  : found — prompt will reference it\n")
-	}
-	for _, s := range info.Stacks {
-		fmt.Printf("  stack      : %s (%s)\n", s.Name, strings.Join(s.Commands, ", "))
-	}
-
-	// Discover available models from provider APIs (best-effort).
-	fmt.Printf("itervox init: discovering available models...\n")
-	info.ClaudeModels = agent.ListClaudeModels()
-	info.CodexModels = agent.ListCodexModels()
-	fmt.Printf("  models     : %d claude, %d codex\n", len(info.ClaudeModels), len(info.CodexModels))
-
-	content := generateWorkflow(*trackerKind, *runner, info)
-
-	if err := os.WriteFile(*output, []byte(content), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", *output, err)
-		os.Exit(1)
-	}
-	fmt.Printf("itervox init: wrote %s\n", *output)
-
-	// Create .itervox/.env if it doesn't exist.
-	envDir := ".itervox"
-	envPath := filepath.Join(envDir, ".env")
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		_ = os.MkdirAll(envDir, 0o755)
-		var envContent string
-		switch *trackerKind {
-		case "linear":
-			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nLINEAR_API_KEY=lin_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-		case "github":
-			envContent = "# Itervox environment — this file is gitignored.\n# See WORKFLOW.md for which variables are referenced.\nGITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-		}
-		if err := os.WriteFile(envPath, []byte(envContent), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "itervox init: write %s: %v\n", envPath, err)
-		} else {
-			fmt.Printf("itervox init: wrote %s\n", envPath)
-		}
-	}
-
-	// Ensure .itervox/.env is gitignored.
-	gitignorePath := filepath.Join(envDir, ".gitignore")
-	if _, err := os.Stat(gitignorePath); os.IsNotExist(err) {
-		_ = os.WriteFile(gitignorePath, []byte(".env\n"), 0o644)
-	}
-
-	fmt.Printf("Next steps:\n")
-	fmt.Printf("  1. Edit %s — fill in your API key\n", envPath)
-	runCmd := "itervox"
-	if *output != "WORKFLOW.md" {
-		runCmd = "itervox -workflow " + *output
-	}
-	if *trackerKind == "linear" {
-		fmt.Printf("  2. Run: %s\n", runCmd)
-		fmt.Printf("  3. Select a project via the TUI (press p) or the web dashboard\n")
-	} else {
-		fmt.Printf("  2. Run: %s\n", runCmd)
-	}
+	return nil
 }
 
 func agentActionBaseURL(addr string) string {

@@ -23,6 +23,9 @@ vi.mock('../../../pages/Settings/profiles/ProfileEditorFields', () => ({
       <span data-testid="editor-prompt">{prompt}</span>
     </div>
   ),
+}));
+
+vi.mock('../../../pages/Settings/profiles/profileBadges', () => ({
   backendLabel: (b: string) => (b === 'codex' ? 'Codex' : 'Claude'),
   backendBadgeClass: () => 'badge-class',
 }));

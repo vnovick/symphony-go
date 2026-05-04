@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,9 +12,14 @@ import (
 	"github.com/vnovick/itervox/internal/schedule"
 )
 
+// supportedTrackerKinds includes "memory" so the embedded quickstart template
+// (templates.Quickstart) — which replaces the former --demo flag — passes
+// ValidateDispatch. The memory tracker is otherwise a real, internal-only
+// codepath; allowing it in config simply removes the artificial gate.
 var supportedTrackerKinds = map[string]bool{
 	"linear": true,
 	"github": true,
+	"memory": true,
 }
 
 // ErrAutoClearAutoReviewConflict reports that workspace cleanup and automatic
@@ -76,8 +82,10 @@ func ValidateDispatch(cfg *Config) error {
 		return fmt.Errorf("unsupported_tracker_kind: %q (must be linear or github)", cfg.Tracker.Kind)
 	}
 
-	// Check 3: tracker.api_key present after $VAR resolution
-	if cfg.Tracker.APIKey == "" {
+	// Check 3: tracker.api_key present after $VAR resolution.
+	// The memory tracker is internal-only and needs no credentials, so this
+	// gate only applies to remote trackers (linear, github).
+	if cfg.Tracker.Kind != "memory" && cfg.Tracker.APIKey == "" {
 		return fmt.Errorf("missing tracker.api_key: must be set or resolved from $VAR")
 	}
 
@@ -146,7 +154,7 @@ func ValidateDispatch(cfg *Config) error {
 func ValidateAgentProfiles(profiles map[string]AgentProfile) error {
 	for name, profile := range profiles {
 		actions := NormalizeAllowedActions(profile.AllowedActions)
-		if containsString(actions, AgentActionCreateIssue) && strings.TrimSpace(profile.CreateIssueState) == "" {
+		if slices.Contains(actions, AgentActionCreateIssue) && strings.TrimSpace(profile.CreateIssueState) == "" {
 			return fmt.Errorf("invalid profile %q: create_issue_state is required when create_issue is enabled", name)
 		}
 	}
@@ -174,11 +182,19 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 		profileName := strings.TrimSpace(entry.Profile)
 		triggerType := strings.TrimSpace(entry.Trigger.Type)
 
+		// T-42 (06.G-02): the unknown-profile check fires regardless of the
+		// automation's enabled flag — a disabled-but-misconfigured rule would
+		// otherwise slip through and crash dispatch the moment a user
+		// re-enabled it. The disabled-profile check is only applied when the
+		// automation itself is enabled, because UpsertProfile's cascade
+		// deliberately leaves a disabled automation pointing at a
+		// disabled profile in lock-step (re-enabling either side without
+		// fixing the other would fail this same check on the next save).
 		profile, ok := profiles[profileName]
 		if !ok {
 			return fmt.Errorf("automation %q references unknown profile %q", id, profileName)
 		}
-		if !ProfileEnabled(profile) {
+		if entry.Enabled && !ProfileEnabled(profile) {
 			return fmt.Errorf("automation %q references disabled profile %q", id, profileName)
 		}
 
@@ -199,12 +215,41 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 		case AutomationTriggerTrackerComment:
 		case AutomationTriggerIssueMovedBacklog:
 		case AutomationTriggerRunFailed:
+		case AutomationTriggerPROpened:
+		case AutomationTriggerRateLimited:
+			// Gap E — switch_to_profile is required; switch_to_backend is
+			// optional but if set must name a known backend. cooldown_minutes
+			// must be non-negative.
+			if strings.TrimSpace(entry.Policy.SwitchToProfile) == "" {
+				return fmt.Errorf("automation %q: rate_limited automations require policy.switch_to_profile", id)
+			}
+			switch entry.Policy.SwitchToBackend {
+			case "", "claude", "codex":
+			default:
+				return fmt.Errorf("automation %q: policy.switch_to_backend must be empty, \"claude\", or \"codex\"", id)
+			}
+			if entry.Policy.CooldownMinutes < 0 {
+				return fmt.Errorf("automation %q: policy.cooldown_minutes must be >= 0", id)
+			}
 		case AutomationTriggerIssueEnteredState:
 			if strings.TrimSpace(entry.Trigger.State) == "" {
 				return fmt.Errorf("automation %q: issue_entered_state automations require trigger.state", id)
 			}
 		default:
 			return fmt.Errorf("automation %q has unsupported trigger type %q", id, triggerType)
+		}
+		// Gap E — switch_to_profile / switch_to_backend / cooldown_minutes
+		// only make sense on rate_limited triggers.
+		if triggerType != AutomationTriggerRateLimited {
+			if strings.TrimSpace(entry.Policy.SwitchToProfile) != "" {
+				return fmt.Errorf("automation %q: policy.switch_to_profile is only meaningful on rate_limited triggers", id)
+			}
+			if strings.TrimSpace(entry.Policy.SwitchToBackend) != "" {
+				return fmt.Errorf("automation %q: policy.switch_to_backend is only meaningful on rate_limited triggers", id)
+			}
+			if entry.Policy.CooldownMinutes > 0 {
+				return fmt.Errorf("automation %q: policy.cooldown_minutes is only meaningful on rate_limited triggers", id)
+			}
 		}
 		if entry.Filter.MatchMode != "" &&
 			entry.Filter.MatchMode != AutomationFilterMatchAll &&
@@ -213,6 +258,12 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 		}
 		if entry.Filter.Limit < 0 {
 			return fmt.Errorf("automation %q filter.limit must be >= 0", id)
+		}
+		if entry.Filter.MaxAgeMinutes < 0 {
+			return fmt.Errorf("automation %q filter.max_age_minutes must be >= 0", id)
+		}
+		if entry.Filter.MaxAgeMinutes > 0 && triggerType != AutomationTriggerInputRequired {
+			return fmt.Errorf("automation %q filter.max_age_minutes is only meaningful on input_required triggers", id)
 		}
 		if entry.Filter.IdentifierRegex != "" {
 			if _, err := regexp.Compile(entry.Filter.IdentifierRegex); err != nil {
@@ -226,13 +277,4 @@ func ValidateAutomations(automations []AutomationConfig, profiles map[string]Age
 		}
 	}
 	return nil
-}
-
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
 }

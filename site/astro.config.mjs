@@ -21,9 +21,12 @@ export default defineConfig({
         {
           label: 'Guides',
           items: [
+            { label: "What's New in v0.2.0", slug: 'guides/whats-new-v020' },
             { label: 'Linear Setup', slug: 'guides/linear-setup' },
             { label: 'GitHub Issues', slug: 'guides/github-issues' },
             { label: 'Agent Profiles', slug: 'guides/agent-profiles' },
+            { label: 'Automations', slug: 'guides/automations' },
+            { label: 'Skills Inventory', slug: 'guides/skills-inventory' },
             { label: 'Remote Access & Mobile', slug: 'guides/remote-access' },
           ],
         },

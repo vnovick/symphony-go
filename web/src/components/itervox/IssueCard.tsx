@@ -12,6 +12,22 @@ interface CardProps {
   defaultBackend?: string;
   onProfileChange?: (identifier: string, profile: string) => void;
   onDispatch?: (identifier: string) => void;
+  // T-6: optional surface fields populated from the latest matching
+  // RunningRow / HistoryRow. When the latest run was a reviewer with
+  // commentCount > 0, the card renders a small "📝 N reviews" badge.
+  runningKind?: string;
+  commentCount?: number;
+  // Gap A: when the issue is input_required and its corresponding snapshot
+  // entry has been queued past the configured stale threshold, the card
+  // renders a small "Stale" badge with the age in its tooltip so the
+  // operator can spot abandoned issues at a glance.
+  inputRequiredStale?: boolean;
+  inputRequiredAgeMinutes?: number;
+  // G: when the issue is currently mid-retry, surface "↻ retry N/M" so the
+  // operator can spot which issues are burning through their budget. M is
+  // the global cfg.Agent.MaxRetries (0 → ∞).
+  retryAttempt?: number;
+  maxRetries?: number;
 }
 
 function resolveBackend(
@@ -59,6 +75,12 @@ export default memo(function IssueCard({
   defaultBackend,
   onProfileChange,
   onDispatch,
+  runningKind,
+  commentCount,
+  inputRequiredStale,
+  inputRequiredAgeMinutes,
+  retryAttempt,
+  maxRetries,
 }: CardProps) {
   const isRunning = issue.orchestratorState === 'running';
   const isInputRequired = issue.orchestratorState === 'input_required';
@@ -148,6 +170,61 @@ export default memo(function IssueCard({
             </span>
           )}
 
+          {/* Gap A: stale-input-required badge. Renders only when the
+              issue is currently input_required AND the snapshot row's
+              `stale` flag is set (orchestrator picks a threshold based on
+              the longest configured max_age_minutes across input_required
+              automations). Tooltip shows the wall-clock age. */}
+          {isInputRequired && inputRequiredStale && (
+            <span
+              data-testid="issue-card-stale-badge"
+              title={
+                inputRequiredAgeMinutes
+                  ? `Input requested ${formatAge(inputRequiredAgeMinutes)} ago — likely abandoned`
+                  : 'Input request is stale — likely abandoned'
+              }
+              className="flex-shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300"
+            >
+              ⚠ Stale
+            </span>
+          )}
+
+          {/* G: retry-in-flight badge. Visible only while the orchestrator
+              is actually backing off this issue. The "M" denominator falls
+              back to ∞ when max_retries=0 (unlimited). */}
+          {issue.orchestratorState === 'retrying' && retryAttempt !== undefined && (
+            <span
+              data-testid="issue-card-retry-badge"
+              title={`Retry attempt ${String(retryAttempt)}${
+                maxRetries && maxRetries > 0 ? ` of ${String(maxRetries)}` : ' (unlimited)'
+              }`}
+              className="flex-shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-300"
+            >
+              {`↻ retry ${String(retryAttempt)}${
+                maxRetries && maxRetries > 0 ? `/${String(maxRetries)}` : ''
+              }`}
+            </span>
+          )}
+
+          {/* T-6: review-comment badge. Renders when the latest run was a
+              reviewer that posted at least one comment. Click bubbles up
+              to onSelect — the issue detail slide opens with the run
+              section in scroll. */}
+          {runningKind === 'reviewer' && (commentCount ?? 0) > 0 && (
+            <button
+              type="button"
+              data-testid="issue-card-review-badge"
+              title={`Reviewer posted ${String(commentCount)} comment${(commentCount ?? 0) === 1 ? '' : 's'} on this issue`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(issue.identifier);
+              }}
+              className="flex-shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300 hover:bg-emerald-500/25"
+            >
+              📝 {commentCount} {commentCount === 1 ? 'review' : 'reviews'}
+            </button>
+          )}
+
           {/* Dispatch button */}
           {onDispatch && (
             <button
@@ -213,3 +290,20 @@ export default memo(function IssueCard({
     </div>
   );
 });
+
+// formatAge is local to the stale-badge tooltip — turns a minute count
+// into something human-readable like "2h" or "3d 4h" without dragging in
+// a date-fns dependency. Returns "" for non-positive values so the caller
+// can fall back to a generic message.
+function formatAge(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return '';
+  if (minutes < 60) return `${String(minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const remM = minutes % 60;
+    return remM ? `${String(hours)}h ${String(remM)}m` : `${String(hours)}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const remH = hours % 24;
+  return remH ? `${String(days)}d ${String(remH)}h` : `${String(days)}d`;
+}

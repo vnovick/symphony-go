@@ -1,11 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -44,26 +44,78 @@ type compiledAutomationSet struct {
 	polledEvents  []compiledAutomation
 	inputRequired []orchestrator.InputRequiredAutomation
 	runFailed     []orchestrator.RunFailedAutomation
+	prOpened      []orchestrator.PROpenedAutomation
+	rateLimited   []orchestrator.RateLimitedAutomation
 }
 
 func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracker, orch *orchestrator.Orchestrator) {
-	compiled := compileAutomations(cfg)
-	orch.SetInputRequiredAutomations(compiled.inputRequired)
-	orch.SetRunFailedAutomations(compiled.runFailed)
-	if len(compiled.cron) == 0 && len(compiled.polledEvents) == 0 {
-		return
-	}
+	// Register the startup compiled sets so the event loop can dispatch
+	// input-required and run-failed automations from tick 0, even before the
+	// goroutine's first re-compile.
+	startupCompiled := compileAutomations(cfg)
+	orch.SetInputRequiredAutomations(startupCompiled.inputRequired)
+	orch.SetRunFailedAutomations(startupCompiled.runFailed)
+	orch.SetPROpenedAutomations(startupCompiled.prOpened)
+	orch.SetRateLimitedAutomations(startupCompiled.rateLimited)
 
+	// Summarise what survived compilation so users can see at a glance that
+	// their configured automations registered (or that some were dropped
+	// for unknown/disabled profiles, bad regex, etc. — those emit their own
+	// slog.Warn lines above).
+	logAutomationCompileSummary(len(cfg.Automations), startupCompiled)
+
+	// Always run the goroutine: hot-add (empty → non-empty via SetAutomations
+	// from the API) must take effect without a daemon restart. The loop
+	// re-reads cfg.Automations from the orchestrator each tick, so it picks up
+	// changes from orch.SetAutomationsCfg without any channel plumbing.
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 
-		lastFired := make(map[string]string, len(compiled.cron))
+		lastFired := make(map[string]string)
 		pollState := automationPollState{
 			issues:          make(map[string]observedAutomationIssue),
 			trackerComments: make(map[string]map[string]observedAutomationComment),
 		}
+		inputRequiredState := inputRequiredReplayState{
+			issues: make(map[string]inputRequiredReplayIssueState),
+		}
 		runOnce := func(now time.Time) {
+			// Build a per-tick cfg view with the current automations list so
+			// compileAutomations sees hot-reloaded rules. cfg.Agent.Profiles and
+			// the rest of cfg are read-only after startup; Automations is the
+			// only hot-reloadable field read by compileAutomations.
+			tickCfg := *cfg
+			tickCfg.Automations = orch.AutomationsCfg()
+			compiled := compileAutomations(&tickCfg)
+
+			// Re-register helper-agent rules every tick. Setters are cheap
+			// (slice copy + mutex) and idempotent when rules are unchanged.
+			orch.SetInputRequiredAutomations(compiled.inputRequired)
+			orch.SetRunFailedAutomations(compiled.runFailed)
+			orch.SetPROpenedAutomations(compiled.prOpened)
+			orch.SetRateLimitedAutomations(compiled.rateLimited)
+			inputRequiredState = replayInputRequiredAutomations(ctx, tr, orch, compiled.inputRequired, inputRequiredState, now)
+
+			// Drop lastFired entries for automations no longer present so a
+			// same-ID rule re-added under new semantics isn't blocked by stale
+			// minute markers.
+			if len(lastFired) > 0 {
+				present := make(map[string]struct{}, len(compiled.cron))
+				for _, entry := range compiled.cron {
+					present[entry.cfg.ID] = struct{}{}
+				}
+				for id := range lastFired {
+					if _, ok := present[id]; !ok {
+						delete(lastFired, id)
+					}
+				}
+			}
+
+			// Snapshot cfgMu-guarded tracker states once per tick so downstream
+			// helpers read a consistent view without racing concurrent HTTP
+			// updates via orch.SetTrackerStatesCfg.
+			activeStates, terminalStates, completionState := orch.TrackerStatesCfg()
 			for _, entry := range compiled.cron {
 				if !entry.cfg.Enabled {
 					continue
@@ -78,12 +130,12 @@ func startAutomations(ctx context.Context, cfg *config.Config, tr tracker.Tracke
 				}
 				lastFired[entry.cfg.ID] = minuteKey
 				execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				runCronAutomation(execCtx, cfg, tr, orch, entry, now)
+				runCronAutomation(execCtx, cfg, tr, orch, entry, activeStates, now)
 				cancel()
 			}
 			if len(compiled.polledEvents) > 0 {
 				execCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				pollState = pollAutomationEvents(execCtx, cfg, tr, orch, compiled.polledEvents, pollState, now)
+				pollState = pollAutomationEvents(execCtx, cfg, tr, orch, compiled.polledEvents, pollState, activeStates, terminalStates, completionState, now)
 				cancel()
 			}
 		}
@@ -109,6 +161,8 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 	compiled.polledEvents = make([]compiledAutomation, 0, len(cfg.Automations))
 	compiled.inputRequired = make([]orchestrator.InputRequiredAutomation, 0, len(cfg.Automations))
 	compiled.runFailed = make([]orchestrator.RunFailedAutomation, 0, len(cfg.Automations))
+	compiled.prOpened = make([]orchestrator.PROpenedAutomation, 0, len(cfg.Automations))
+	compiled.rateLimited = make([]orchestrator.RateLimitedAutomation, 0, len(cfg.Automations))
 	for _, entry := range cfg.Automations {
 		if !entry.Enabled {
 			continue
@@ -173,6 +227,7 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				IdentifierRegex:   identifierRe,
 				InputContextRegex: inputContextRe,
 				AutoResume:        entry.Policy.AutoResume,
+				MaxAge:            time.Duration(entry.Filter.MaxAgeMinutes) * time.Minute,
 			})
 		case config.AutomationTriggerTrackerComment,
 			config.AutomationTriggerIssueEnteredState,
@@ -192,6 +247,34 @@ func compileAutomations(cfg *config.Config) compiledAutomationSet {
 				LabelsAny:       entry.Filter.LabelsAny,
 				IdentifierRegex: identifierRe,
 			})
+		case config.AutomationTriggerPROpened:
+			compiled.prOpened = append(compiled.prOpened, orchestrator.PROpenedAutomation{
+				ID:              entry.ID,
+				ProfileName:     entry.Profile,
+				Instructions:    entry.Instructions,
+				MatchMode:       entry.Filter.MatchMode,
+				States:          entry.Filter.States,
+				LabelsAny:       entry.Filter.LabelsAny,
+				IdentifierRegex: identifierRe,
+			})
+		case config.AutomationTriggerRateLimited:
+			cooldown := time.Duration(entry.Policy.CooldownMinutes) * time.Minute
+			if cooldown == 0 {
+				cooldown = 30 * time.Minute // sane default per plan
+			}
+			compiled.rateLimited = append(compiled.rateLimited, orchestrator.RateLimitedAutomation{
+				ID:              entry.ID,
+				ProfileName:     entry.Profile,
+				Instructions:    entry.Instructions,
+				MatchMode:       entry.Filter.MatchMode,
+				States:          entry.Filter.States,
+				LabelsAny:       entry.Filter.LabelsAny,
+				IdentifierRegex: identifierRe,
+				AutoResume:      entry.Policy.AutoResume,
+				SwitchToProfile: entry.Policy.SwitchToProfile,
+				SwitchToBackend: entry.Policy.SwitchToBackend,
+				Cooldown:        cooldown,
+			})
 		default:
 			slog.Warn("automation: unsupported trigger type", "automation", entry.ID, "type", entry.Trigger.Type)
 		}
@@ -205,9 +288,10 @@ func runCronAutomation(
 	tr tracker.Tracker,
 	orch *orchestrator.Orchestrator,
 	entry compiledAutomation,
+	activeStates []string,
 	now time.Time,
 ) {
-	states := cronAutomationFetchStates(cfg, entry)
+	states := cronAutomationFetchStates(cfg, entry, activeStates)
 	issues, err := tr.FetchIssuesByStates(ctx, states)
 	if err != nil {
 		slog.Warn("automation: fetch issues failed", "automation", entry.cfg.ID, "error", err)
@@ -217,7 +301,7 @@ func runCronAutomation(
 	snap := orch.Snapshot()
 	matches := make([]domain.Issue, 0, len(issues))
 	for _, issue := range issues {
-		if shouldSkipAutomatedIssue(snap, issue) {
+		if shouldSkipAutomatedIssue(snap, cfg, issue) {
 			continue
 		}
 		if !matchesAutomationFilter(issue, entry, "") {
@@ -225,8 +309,8 @@ func runCronAutomation(
 		}
 		matches = append(matches, issue)
 	}
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].Identifier < matches[j].Identifier
+	slices.SortFunc(matches, func(a, b domain.Issue) int {
+		return cmp.Compare(a.Identifier, b.Identifier)
 	})
 
 	limit := entry.cfg.Filter.Limit
@@ -261,20 +345,12 @@ func runCronAutomation(
 	}
 }
 
-func shouldSkipAutomatedIssue(state orchestrator.State, issue domain.Issue) bool {
-	if _, claimed := state.Claimed[issue.ID]; claimed {
-		return true
-	}
-	if _, paused := state.PausedIdentifiers[issue.Identifier]; paused {
-		return true
-	}
-	if _, waiting := state.InputRequiredIssues[issue.Identifier]; waiting {
-		return true
-	}
-	if _, pending := state.PendingInputResumes[issue.Identifier]; pending {
-		return true
-	}
-	return false
+// shouldSkipAutomatedIssue is the watcher-side pre-filter that mirrors the
+// event-loop's TOCTOU re-check. Both call orchestrator.IneligibleReasonForAutomation
+// so they cannot drift — adding a new dispatch guard here is a one-place edit
+// in dispatch.go (T-35 unification).
+func shouldSkipAutomatedIssue(state orchestrator.State, cfg *config.Config, issue domain.Issue) bool {
+	return orchestrator.IneligibleReasonForAutomation(issue, state, cfg) != ""
 }
 
 func matchesAutomationFilter(issue domain.Issue, entry compiledAutomation, inputContext string) bool {
@@ -283,7 +359,9 @@ func matchesAutomationFilter(issue domain.Issue, entry compiledAutomation, input
 		checks = append(checks, entry.identifierRe.MatchString(issue.Identifier))
 	}
 	if len(entry.cfg.Filter.States) > 0 {
-		checks = append(checks, containsFold(entry.cfg.Filter.States, issue.State))
+		checks = append(checks, slices.ContainsFunc(entry.cfg.Filter.States, func(s string) bool {
+			return strings.EqualFold(s, issue.State)
+		}))
 	}
 	if len(entry.cfg.Filter.LabelsAny) > 0 {
 		issueLabels := make([]string, 0, len(issue.Labels))
@@ -333,11 +411,15 @@ func inputContextReFor(entry config.AutomationConfig) *regexp.Regexp {
 	return re
 }
 
-func cronAutomationFetchStates(cfg *config.Config, entry compiledAutomation) []string {
+// cronAutomationFetchStates computes the tracker states to fetch for a cron
+// automation. activeStates must be a snapshot obtained via
+// orch.TrackerStatesCfg() — reading cfg.Tracker.ActiveStates directly races
+// with HTTP-handler updates.
+func cronAutomationFetchStates(cfg *config.Config, entry compiledAutomation, activeStates []string) []string {
 	if entry.cfg.Filter.MatchMode != config.AutomationFilterMatchAny && len(entry.cfg.Filter.States) > 0 {
 		return append([]string{}, entry.cfg.Filter.States...)
 	}
-	return deduplicateStates(cfg.Tracker.BacklogStates, cfg.Tracker.ActiveStates, entry.cfg.Filter.States, "")
+	return deduplicateStates(cfg.Tracker.BacklogStates, activeStates, entry.cfg.Filter.States, "")
 }
 
 func pollAutomationEvents(
@@ -347,9 +429,11 @@ func pollAutomationEvents(
 	orch *orchestrator.Orchestrator,
 	entries []compiledAutomation,
 	prev automationPollState,
+	activeStates, terminalStates []string,
+	completionState string,
 	now time.Time,
 ) automationPollState {
-	states := automationPollStates(cfg, entries)
+	states := automationPollStates(cfg, entries, activeStates, terminalStates, completionState)
 	if len(states) == 0 {
 		return prev
 	}
@@ -358,8 +442,8 @@ func pollAutomationEvents(
 		slog.Warn("automation: poll-event fetch failed", "error", err)
 		return prev
 	}
-	sort.Slice(issues, func(i, j int) bool {
-		return issues[i].Identifier < issues[j].Identifier
+	slices.SortFunc(issues, func(a, b domain.Issue) int {
+		return cmp.Compare(a.Identifier, b.Identifier)
 	})
 
 	next := automationPollState{
@@ -385,8 +469,10 @@ func pollAutomationEvents(
 
 	for _, issue := range issues {
 		next.issues[issue.ID] = observedAutomationIssue{
-			State:     issue.State,
-			InBacklog: containsFold(cfg.Tracker.BacklogStates, issue.State),
+			State: issue.State,
+			InBacklog: slices.ContainsFunc(cfg.Tracker.BacklogStates, func(s string) bool {
+				return strings.EqualFold(s, issue.State)
+			}),
 		}
 	}
 	for _, entry := range entries {
@@ -402,7 +488,7 @@ func pollAutomationEvents(
 			next.trackerComments[entry.cfg.ID] = nextComments
 		}
 		for _, issue := range issues {
-			if shouldSkipAutomatedIssue(snap, issue) {
+			if shouldSkipAutomatedIssue(snap, cfg, issue) {
 				continue
 			}
 			prevIssue, seenBefore := prev.issues[issue.ID]
@@ -432,7 +518,10 @@ func pollAutomationEvents(
 					},
 				})
 			case config.AutomationTriggerIssueMovedBacklog:
-				if prevIssue.InBacklog || !containsFold(cfg.Tracker.BacklogStates, issue.State) {
+				inBacklogNow := slices.ContainsFunc(cfg.Tracker.BacklogStates, func(s string) bool {
+					return strings.EqualFold(s, issue.State)
+				})
+				if prevIssue.InBacklog || !inBacklogNow {
 					continue
 				}
 				if !matchesAutomationFilter(issue, entry, "") {
@@ -501,21 +590,37 @@ func pollAutomationEvents(
 		if limit > 0 && len(matches) > limit {
 			matches = matches[:limit]
 		}
+		dispatched := 0
 		for _, match := range matches {
-			_ = orch.DispatchAutomation(match.issue, orchestrator.AutomationDispatch{
+			if orch.DispatchAutomation(match.issue, orchestrator.AutomationDispatch{
 				AutomationID: entry.cfg.ID,
 				ProfileName:  entry.cfg.Profile,
 				Instructions: entry.cfg.Instructions,
+				AutoResume:   entry.cfg.Policy.AutoResume,
 				Trigger:      match.trigger,
-			})
+			}) {
+				dispatched++
+			}
+		}
+		// Parity with runCronAutomation: log a count when any workers queued,
+		// and a debug line when dispatches were dropped (events channel full).
+		if dispatched > 0 {
+			slog.Info("automation: queued polled-event issues", "automation", entry.cfg.ID, "count", dispatched, "profile", entry.cfg.Profile)
+		}
+		if dropped := len(matches) - dispatched; dropped > 0 {
+			slog.Debug("automation: polled-event dispatches dropped (events channel full)", "automation", entry.cfg.ID, "dropped", dropped)
 		}
 	}
 
 	return next
 }
 
-func automationPollStates(cfg *config.Config, entries []compiledAutomation) []string {
-	states := deduplicateStates(cfg.Tracker.BacklogStates, cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState)
+// automationPollStates computes the tracker states to poll for event-driven
+// automations. activeStates / terminalStates / completionState must be a
+// consistent snapshot obtained via orch.TrackerStatesCfg() — reading
+// cfg.Tracker.* directly races with HTTP-handler updates.
+func automationPollStates(cfg *config.Config, entries []compiledAutomation, activeStates, terminalStates []string, completionState string) []string {
+	states := deduplicateStates(cfg.Tracker.BacklogStates, activeStates, terminalStates, completionState)
 	for _, entry := range entries {
 		states = append(states, entry.cfg.Filter.States...)
 		if entry.cfg.Trigger.State != "" {
@@ -565,22 +670,32 @@ func hasNewAutomationComment(prev, current observedAutomationComment) bool {
 	return current.CommentCreatedAt != prev.CommentCreatedAt
 }
 
-func markAutomationComment(body string) string {
-	return tracker.MarkManagedComment(body)
-}
-
 func isAutomationManagedComment(comment domain.Comment) bool {
 	return tracker.IsManagedComment(comment) ||
 		strings.HasPrefix(comment.Body, "🤖 **Agent needs your input**") ||
 		strings.EqualFold(strings.TrimSpace(comment.AuthorName), "Itervox")
 }
 
-func containsFold(values []string, target string) bool {
-	target = strings.ToLower(target)
-	for _, value := range values {
-		if strings.ToLower(value) == target {
-			return true
-		}
+// logAutomationCompileSummary emits a single INFO line with the outcome of
+// compileAutomations so users can verify that their configured automations
+// actually registered. Per-rule skip reasons (unknown profile, disabled
+// profile, invalid cron, invalid regex) are already emitted as WARN by
+// compileAutomations itself; this summary makes the net registered/dropped
+// counts visible without grepping.
+func logAutomationCompileSummary(total int, compiled compiledAutomationSet) {
+	if total == 0 {
+		slog.Info("automations: no automations configured in WORKFLOW.md")
+		return
 	}
-	return false
+	registered := len(compiled.cron) + len(compiled.polledEvents) + len(compiled.inputRequired) + len(compiled.runFailed) + len(compiled.prOpened)
+	slog.Info("automations: compiled",
+		"total_configured", total,
+		"registered", registered,
+		"dropped", total-registered,
+		"cron", len(compiled.cron),
+		"input_required", len(compiled.inputRequired),
+		"polled_events", len(compiled.polledEvents),
+		"run_failed", len(compiled.runFailed),
+		"pr_opened", len(compiled.prOpened),
+	)
 }

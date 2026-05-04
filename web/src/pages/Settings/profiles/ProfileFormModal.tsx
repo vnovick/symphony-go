@@ -1,4 +1,4 @@
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Modal, ModalFooter } from '../../../components/ui/modal';
 import {
@@ -52,7 +52,7 @@ export function ProfileFormModal({
   const {
     register,
     handleSubmit,
-    watch,
+    control,
     setValue,
     formState: { errors, isSubmitting },
   } = useForm<ProfileFormValues>({
@@ -60,15 +60,23 @@ export function ProfileFormModal({
     defaultValues: initialValues,
   });
 
-  const [enabled, backend, model, command, prompt, allowedActions, createIssueState] = watch([
-    'enabled',
-    'backend',
-    'model',
-    'command',
-    'prompt',
-    'allowedActions',
-    'createIssueState',
-  ]);
+  // useWatch subscribes without the `watch()` function wrapper so the
+  // component is compatible with React Compiler memoization. The array-name
+  // overload returns each field in the order listed in `name`, typed per the
+  // shape of ProfileFormValues (non-partial, because useForm.defaultValues
+  // above is fully populated).
+  const [enabled, backend, model, command, prompt, allowedActions, createIssueState] = useWatch({
+    control,
+    name: [
+      'enabled',
+      'backend',
+      'model',
+      'command',
+      'prompt',
+      'allowedActions',
+      'createIssueState',
+    ],
+  });
 
   const submit = handleSubmit(async (values) => {
     const ok = await onSubmit(

@@ -7,8 +7,21 @@ const (
 	AutomationTriggerIssueEnteredState = "issue_entered_state"
 	AutomationTriggerIssueMovedBacklog = "issue_moved_to_backlog"
 	AutomationTriggerRunFailed         = "run_failed"
-	AutomationFilterMatchAll           = "all"
-	AutomationFilterMatchAny           = "any"
+	// AutomationTriggerPROpened (gap B) fires the moment a worker's
+	// post-run logic detects a new PR for the issue (the same code path
+	// that emits the `worker: pr_opened url=...` log line). The dispatch
+	// happens in-process from worker.go so no external webhook ingestion
+	// is required.
+	AutomationTriggerPROpened = "pr_opened"
+	// AutomationTriggerRateLimited (gap E) is a specialisation of
+	// run_failed that fires only when the orchestrator's terminal-failure
+	// classifier tags the exit as rate-limit-driven (vendor 429 / quota
+	// exhaustion). The policy carries SwitchToProfile / SwitchToBackend so
+	// auto_resume runs can re-dispatch the issue under a different agent
+	// instead of giving up.
+	AutomationTriggerRateLimited = "rate_limited"
+	AutomationFilterMatchAll     = "all"
+	AutomationFilterMatchAny     = "any"
 )
 
 type AutomationTriggerConfig struct {
@@ -25,10 +38,38 @@ type AutomationFilterConfig struct {
 	IdentifierRegex   string
 	Limit             int
 	InputContextRegex string
+	// MaxAgeMinutes, when > 0, restricts input_required automations to entries
+	// queued less than the given number of minutes ago. Stale entries are
+	// skipped (and surfaced as `stale: true` on the dashboard) so a third bot
+	// retry doesn't keep hammering an issue that's been blocked for days.
+	// 0 means "no age limit" — preserves pre-feature behaviour.
+	MaxAgeMinutes int
 }
 
 type AutomationPolicyConfig struct {
+	// AutoResume has dual meaning depending on trigger type:
+	//   - input_required: opt the helper into the "may call provide-input"
+	//     contract so it can resume the blocked worker.
+	//   - rate_limited: opt into the "auto-switch profile/backend without a
+	//     human in the loop" behaviour (gap E).
+	// In WORKFLOW.md, `auto_switch: true` is accepted as a clearer alias for
+	// `auto_resume: true` on rate_limited triggers (gap §5.2). Both parse
+	// into this single Go field.
 	AutoResume bool
+	// SwitchToProfile is the profile name a `rate_limited` automation
+	// re-dispatches the issue under after the original profile exhausted
+	// retries via vendor rate-limits. Required for `rate_limited`
+	// automations; ignored on other trigger types.
+	SwitchToProfile string
+	// SwitchToBackend, when non-empty, overrides the new profile's backend
+	// for the resumed run ("claude" or "codex"). Power-user knob; the
+	// recommended default is empty (let the swapped profile pick its own
+	// backend). Ignored on non-`rate_limited` triggers.
+	SwitchToBackend string
+	// CooldownMinutes mutes a `rate_limited` rule for the given (issue,
+	// profile) tuple after a fire, preventing thrash when both backends
+	// are throttled simultaneously. Default 30 when unset.
+	CooldownMinutes int
 }
 
 type AutomationConfig struct {
@@ -81,6 +122,10 @@ func parseAutomations(raw any) []AutomationConfig {
 		if limit < 0 {
 			limit = 0
 		}
+		maxAge := intField(filter, "max_age_minutes", 0)
+		if maxAge < 0 {
+			maxAge = 0
+		}
 		automations = append(automations, AutomationConfig{
 			ID:           id,
 			Enabled:      boolField(m, "enabled", true),
@@ -99,9 +144,17 @@ func parseAutomations(raw any) []AutomationConfig {
 				IdentifierRegex:   strField(filter, "identifier_regex", ""),
 				Limit:             limit,
 				InputContextRegex: strField(filter, "input_context_regex", ""),
+				MaxAgeMinutes:     maxAge,
 			},
 			Policy: AutomationPolicyConfig{
-				AutoResume: boolField(policy, "auto_resume", false),
+				// Gap §5.2 — `auto_switch` is the preferred YAML key for
+				// rate_limited triggers; falls back to `auto_resume` for
+				// backwards compatibility. Either being true sets
+				// AutoResume=true; only one need be present in the file.
+				AutoResume:      boolField(policy, "auto_resume", false) || boolField(policy, "auto_switch", false),
+				SwitchToProfile: strField(policy, "switch_to_profile", ""),
+				SwitchToBackend: strField(policy, "switch_to_backend", ""),
+				CooldownMinutes: intField(policy, "cooldown_minutes", 0),
 			},
 		})
 	}

@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
 import RunningSessionsTable from '../../components/itervox/RunningSessionsTable';
 import RetryQueueTable from '../../components/itervox/RetryQueueTable';
+import { PendingResumePanel } from '../../components/itervox/PendingResumePanel';
 import { ReviewQueueSection } from '../../components/itervox/ReviewQueueSection';
 import { HostPool } from '../../components/itervox/HostPool';
 import { ProjectSelector } from '../../components/itervox/ProjectSelector';
@@ -24,6 +25,9 @@ import { UnauthorizedError } from '../../auth/UnauthorizedError';
 
 import { BoardView } from './components/BoardView';
 import { ListView } from './components/ListView';
+import { NotificationsView } from '../../components/itervox/NotificationsView';
+import { useNotificationsTotal } from './components/useNotificationsTotal';
+import { viewModeLabel } from './components/viewModeLabel';
 import { HeroStats } from './components/HeroStats';
 
 // ─── Stable fallbacks ─────────────────────────────────────────────────────────
@@ -75,6 +79,9 @@ export default function Dashboard() {
     }
     return map;
   }, [running, runHistory, issues, backlogStateSet]);
+
+  // T-6: kind + commentCount derivation is scoped to BoardView/BoardColumn
+  // because those are the surfaces that pass it down to IssueCard.
 
   const invalidateIssues = useInvalidateIssues();
   const setSelectedIdentifier = useItervoxStore((s) => s.setSelectedIdentifier);
@@ -155,6 +162,8 @@ export default function Dashboard() {
     [issues, search, activePillStates],
   );
 
+  const notificationsTotal = useNotificationsTotal(issues);
+
   const handleRefresh = useCallback(async () => {
     setLoading(true);
     try {
@@ -218,7 +227,10 @@ export default function Dashboard() {
 
   return (
     <>
-      <PageMeta title="Itervox | Dashboard" description="Itervox agent orchestration dashboard" />
+      <PageMeta
+        title="Itervox | Dashboard"
+        description="Itervox — autonomous agentic harness for multi-agent collaboration, observability, human input, and fleet distribution"
+      />
       <div className="space-y-[14px]">
         <ProjectSelector />
 
@@ -246,10 +258,10 @@ export default function Dashboard() {
                   WebkitTextFillColor: 'transparent',
                 }}
               >
-                Parallel agent orchestration
+                Autonomous agentic harness
               </h1>
               <p className="text-theme-text-secondary mt-2 text-[13px] leading-relaxed">
-                Manage running agents and track issues across states.
+                Multi-agent collaboration, observability, human input, and fleet distribution.
               </p>
             </div>
             <HeroStats />
@@ -273,6 +285,7 @@ export default function Dashboard() {
         <HostPool />
         <RunningSessionsTable />
         <ReviewQueueSection />
+        <PendingResumePanel onSelect={handleIssueSelect} />
         <RetryQueueTable />
 
         {/* Issues panel */}
@@ -292,11 +305,12 @@ export default function Dashboard() {
                 {/* View toggle — segmented */}
                 <div className="bg-theme-bg-elevated border-theme-line inline-flex items-center gap-0.5 rounded-[var(--radius-md)] border p-[3px]">
                   {(
-                    ['board', 'list', ...(availableProfiles.length > 0 ? ['agents'] : [])] as (
-                      | 'board'
-                      | 'list'
-                      | 'agents'
-                    )[]
+                    [
+                      'board',
+                      'list',
+                      ...(availableProfiles.length > 0 ? (['agents'] as const) : []),
+                      'notifications',
+                    ] as ('board' | 'list' | 'agents' | 'notifications')[]
                   ).map((mode) => (
                     <button
                       key={mode}
@@ -307,7 +321,7 @@ export default function Dashboard() {
                         viewMode === mode ? 'bg-theme-accent text-white' : 'text-theme-muted'
                       }`}
                     >
-                      {mode === 'board' ? 'Board' : mode === 'list' ? 'List' : 'Agents'}
+                      {viewModeLabel(mode, notificationsTotal)}
                     </button>
                   ))}
                 </div>
@@ -326,7 +340,7 @@ export default function Dashboard() {
             </div>
 
             {/* Filter pills + search — hidden in agents view (agents group by profile, not state) */}
-            {viewMode !== 'agents' && (
+            {viewMode !== 'agents' && viewMode !== 'notifications' && (
               <>
                 <FilterPills pills={filterPills} activeId={stateFilter} onChange={setStateFilter} />
                 <div className="flex gap-3">
@@ -380,6 +394,7 @@ export default function Dashboard() {
                 />
               </div>
             )}
+            {viewMode === 'notifications' && <NotificationsView onSelect={handleIssueSelect} />}
           </div>
         </div>
 

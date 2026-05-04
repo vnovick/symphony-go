@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import PageMeta from '../../components/common/PageMeta';
 import { useItervoxStore } from '../../store/itervoxStore';
+import { useUIStore } from '../../store/uiStore';
 import { useClearIssueLogs, useIssues } from '../../queries/issues';
 import { useIssueLogs, useLogIdentifiers } from '../../queries/logs';
 import { orchDotClass, formatOrchestratorState } from '../../utils/format';
@@ -10,6 +11,12 @@ import { Terminal } from '../../components/ui/Terminal/Terminal';
 import { EMPTY_RUNNING, EMPTY_RETRYING } from '../../utils/constants';
 import { issueLogToTerminal } from '../../utils/logFormatting';
 import type { StateSnapshot } from '../../types/schemas';
+
+// Logs page filter chip (T-4) treats every entry whose .message starts with
+// this prefix as an automation event. The Go side writes the same prefix via
+// AutomationFiredLogPrefix in internal/orchestrator/automation.go — keep the
+// two in sync.
+const AUTOMATION_FIRED_PREFIX = 'AUTOMATION FIRED';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -54,12 +61,24 @@ export default function Logs() {
     [issues],
   );
   const allIdentifiers = useMemo(() => {
+    // Build the sidebar list:
+    //   - Always include LIVE issues (running / retrying / inputRequired) even
+    //     before their first log line — operators want to see them immediately.
+    //   - Include PAUSED + idle (review-state, blocked-by-PR) ONLY if they
+    //     actually have logs in the buffer. This is what `logIdentifiers`
+    //     is the source of truth for. Without this filter, clearing a
+    //     review-state issue's logs leaves the row pinned because it's still
+    //     in the `paused` snapshot field — confusing to the operator who
+    //     just hit "Clear logs".
     const identifiers = new Set<string>();
+    const logSet = new Set(logIdentifiers);
     for (const identifier of logIdentifiers) identifiers.add(identifier);
     for (const row of running) identifiers.add(row.identifier);
     for (const row of retrying) identifiers.add(row.identifier);
     for (const entry of inputRequired) identifiers.add(entry.identifier);
-    for (const identifier of paused) identifiers.add(identifier);
+    for (const identifier of paused) {
+      if (logSet.has(identifier)) identifiers.add(identifier);
+    }
     return [...identifiers];
   }, [inputRequired, logIdentifiers, paused, retrying, running]);
 
@@ -112,6 +131,8 @@ export default function Logs() {
   const selectedId = useItervoxStore((s) => s.activeIssueId) ?? '';
   const setSelectedId = useItervoxStore((s) => s.setActiveIssueId);
   const [activeChips, setActiveChips] = useState<Set<FilterChip>>(new Set(FILTER_CHIPS));
+  const automationOnly = useUIStore((s) => s.logsAutomationOnly);
+  const setAutomationOnly = useUIStore((s) => s.setLogsAutomationOnly);
 
   useEffect(() => {
     if (!selectedId || !sortedIssues.find((i) => i.identifier === selectedId)) {
@@ -156,14 +177,24 @@ export default function Logs() {
     });
   };
 
-  // Filter entries by active chips, then map to Terminal LogEntry
+  // Filter entries by active chips, then map to Terminal LogEntry. The
+  // automation chip (T-4) is an additional gate: when active, only entries
+  // whose message begins with AUTOMATION FIRED survive.
   const filteredEntries = useMemo(
     () =>
-      entries.filter(
-        (e) =>
-          !FILTER_CHIPS.includes(e.event as FilterChip) || activeChips.has(e.event as FilterChip),
-      ),
-    [entries, activeChips],
+      entries.filter((e) => {
+        if (
+          FILTER_CHIPS.includes(e.event as FilterChip) &&
+          !activeChips.has(e.event as FilterChip)
+        ) {
+          return false;
+        }
+        if (automationOnly && !e.message.startsWith(AUTOMATION_FIRED_PREFIX)) {
+          return false;
+        }
+        return true;
+      }),
+    [entries, activeChips, automationOnly],
   );
 
   const logEntries = useMemo(() => filteredEntries.map(issueLogToTerminal), [filteredEntries]);
@@ -318,6 +349,22 @@ export default function Logs() {
                   {chip}
                 </button>
               ))}
+              <button
+                type="button"
+                data-testid="chip-automation"
+                aria-pressed={automationOnly}
+                onClick={() => {
+                  setAutomationOnly(!automationOnly);
+                }}
+                className={`rounded px-2 py-0.5 font-mono text-[10px] transition-colors ${
+                  automationOnly
+                    ? 'bg-emerald-500/20 text-emerald-300'
+                    : 'text-[#374151] line-through'
+                }`}
+                title="Show only AUTOMATION FIRED entries"
+              >
+                automation
+              </button>
               <span className="ml-auto font-mono text-[10px] text-[#374151]">
                 {filteredEntries.length} / {entries.length}
               </span>

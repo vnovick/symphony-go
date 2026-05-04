@@ -16,10 +16,18 @@ import (
 	"github.com/vnovick/itervox/internal/domain"
 )
 
+// maxSubLogLines is the upper bound on parsed sublog entries returned per
+// fetch (and persisted in memory by callers). Bound exists to keep dashboard
+// payloads reasonable for long-running agent sessions: at ~200 bytes per
+// entry this caps each issue's tail at ~1 MiB, well below SSE/HTTP body
+// thresholds. Excess lines are dropped from the *front* of the slice (oldest
+// first) so the most recent activity is always visible.
 const maxSubLogLines = 5000
 
 // newMaxScanner returns a bufio.Scanner with a 1 MiB buffer, suitable for
-// reading JSONL lines that may exceed the default 64 KiB limit.
+// reading JSONL lines that may exceed the default 64 KiB limit. The 1 MiB
+// cap matches the largest reasonable single-line agent emit (long
+// concatenated tool inputs / stack traces) without making truncation common.
 func newMaxScanner(r io.Reader) *bufio.Scanner {
 	s := bufio.NewScanner(r)
 	s.Buffer(make([]byte, 1<<20), 1<<20)
@@ -88,13 +96,8 @@ func sshFetchClaude(ctx context.Context, host, dir string) []domain.IssueLogEntr
 	script := `files=$(find ` + shellQuote(dir) + ` -maxdepth 1 -name '*.jsonl' ! -name 'codex-*.jsonl' 2>/dev/null | sort); ` +
 		`[ -n "$files" ] && tar -cf - -C ` + shellQuote(dir) + ` $(basename -a $files) 2>/dev/null || true`
 
-	cmd := exec.CommandContext(ctx, "ssh",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=10",
-		host,
-		"bash", "-c", script,
-	)
+	sshArgs := append(sshStrictHostOption(host), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "bash", "-c", script)
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		slog.Warn("logtailer: ssh stdout pipe failed", "host", host, "error", err)
@@ -138,13 +141,8 @@ func sshFetchCodex(ctx context.Context, host, dir string) []domain.IssueLogEntry
 	script := `files=$(find ` + shellQuote(dir) + ` -maxdepth 1 -name 'codex-*.jsonl' 2>/dev/null | sort); ` +
 		`[ -n "$files" ] && tar -cf - -C ` + shellQuote(dir) + ` $(basename -a $files) 2>/dev/null || true`
 
-	cmd := exec.CommandContext(ctx, "ssh",
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=10",
-		host,
-		"bash", "-c", script,
-	)
+	sshArgs := append(sshStrictHostOption(host), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, "bash", "-c", script)
+	cmd := exec.CommandContext(ctx, "ssh", sshArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		slog.Warn("logtailer: ssh stdout pipe failed (codex)", "host", host, "error", err)

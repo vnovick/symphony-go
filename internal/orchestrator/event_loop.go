@@ -5,7 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -24,12 +25,26 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	o.loadHistoryFromDisk()
 	state := NewState(o.cfg)
 	state = o.loadPausedFromDisk(state)
+	state = o.loadAutoSwitchedFromDisk(state)
 	state = o.loadInputRequiredFromDisk(state)
+	o.replayPersistedInputRequiredAutomations(ctx, &state, time.Now())
 	tick := time.NewTimer(0)
 	defer tick.Stop()
 
 	var loopErr error
 	for {
+		// Prioritize cancellation over any pending tick/event/refresh. Without
+		// this pre-check, Go's select is non-deterministic when ctx.Done() is
+		// ready concurrently with another channel — a trailing event can run
+		// AFTER cancel, mutate state (e.g. EventWorkerUpdate clearing
+		// PendingInputResumes at line ~791 via progress flags), and storeSnap
+		// persist the post-mutation state to disk. That breaks the
+		// provide-input durability contract: a user's queued reply must
+		// survive a cancel/restart cycle even if their worker was mid-turn.
+		if err := ctx.Err(); err != nil {
+			loopErr = err
+			break
+		}
 		select {
 		case <-ctx.Done():
 			loopErr = ctx.Err()
@@ -52,6 +67,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	}
 	o.autoClearWg.Wait()
 	o.discardWg.Wait()
+	o.commentWg.Wait()
 	return loopErr
 }
 
@@ -70,9 +86,12 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 	// 1. Fire any retries whose DueAt has passed.
 	state = o.fireRetries(ctx, state, now)
 
-	// 2. Stall detection and tracker-state reconciliation.
-	state = ReconcileStalls(state, o.cfg, now, o.events, o.logBuf)
-	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.logBuf)
+	// 2. Stall detection and tracker-state reconciliation. Pass the
+	// orchestrator's cancelAndCleanupWorker so reconcile-driven cancels
+	// release the workerCancels-map entry even if the EventWorkerExited
+	// send drops under load (T-09).
+	state = ReconcileStalls(state, o.cfg, now, o.events, o.cancelAndCleanupWorker, o.logBuf)
+	state = ReconcileTrackerStates(ctx, state, o.tracker, o.events, o.cancelAndCleanupWorker, o.logBuf)
 
 	// 3. Fetch candidates and dispatch eligible issues.
 	issues, err := o.tracker.FetchCandidateIssues(ctx)
@@ -159,6 +178,7 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 		// a fresh worker. This recovers from daemon restarts / state loss.
 		if entry := o.recoverInputRequired(ctx, issue); entry != nil {
 			state.InputRequiredIssues[issue.Identifier] = entry
+			o.dispatchMatchingInputRequiredAutomations(ctx, &state, issue, entry, now)
 			slog.Info("orchestrator: recovered input-required from tracker comment",
 				"identifier", issue.Identifier)
 			if o.logBuf != nil {
@@ -177,6 +197,22 @@ func (o *Orchestrator) onTick(ctx context.Context, state State) State {
 			"running", len(state.Running),
 			"slots_remaining", AvailableSlots(state),
 		)
+	}
+	// Gap §1.1 + §1.2 — opportunistic janitor for the rate-limit
+	// switch-history + cooldown maps. Cheap: one pass per tick over
+	// typically <100 entries, and short-circuits when the cap is 0.
+	o.PruneRateLimitedMaps(now)
+	// Gap §6.2 — TTL-based revert of auto-switched overrides. No-op
+	// when cfg.Agent.SwitchRevertHours == 0 (default).
+	o.cfgMu.RLock()
+	revertHours := o.cfg.Agent.SwitchRevertHours
+	o.cfgMu.RUnlock()
+	if revertHours > 0 {
+		ttl := time.Duration(revertHours) * time.Hour
+		if reverted := RevertExpiredAutoSwitches(&state, ttl, now); reverted > 0 {
+			slog.Info("orchestrator: reverted expired auto-switch overrides",
+				"count", reverted, "ttl_hours", revertHours)
+		}
 	}
 	return state
 }
@@ -384,6 +420,20 @@ func (o *Orchestrator) recoverInputRequired(ctx context.Context, issue domain.Is
 	if idx := strings.LastIndex(questionCtx, "\n---\n"); idx >= 0 {
 		questionCtx = strings.TrimSpace(questionCtx[:idx])
 	}
+	// Rehydration path: local input_required.json state was lost (daemon
+	// restart + missing file, stale cache, or new installation), but the
+	// tracker still carries the Itervox question comment. We can reconstruct
+	// identity and context from the tracker, but NOT the agent session ID,
+	// backend, command, profile, or worker host — those were only ever in
+	// worker-local state. On resume, hasResumeSession will be false, so the
+	// worker will take the fresh-dispatch-with-context branch rather than
+	// `claude --resume <sid>`. Users should know this has happened because
+	// their "resume the exact paused session" expectation is being
+	// downgraded to "start fresh with the question + your reply as context".
+	slog.Warn("orchestrator: rehydrating input-required entry from tracker — session context lost, resume will start a fresh agent session",
+		"identifier", issue.Identifier,
+		"question_comment_id", questionComment.ID,
+	)
 	entry := &InputRequiredEntry{
 		IssueID:            issue.ID,
 		Identifier:         issue.Identifier,
@@ -447,7 +497,7 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 	for identifier := range state.PendingInputResumes {
 		identifiers = append(identifiers, identifier)
 	}
-	sort.Strings(identifiers)
+	slices.Sort(identifiers)
 
 	for _, identifier := range identifiers {
 		if AvailableSlots(state) <= 0 {
@@ -465,9 +515,15 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			continue
 		}
 		if _, paused := state.PausedIdentifiers[identifier]; paused {
+			delete(state.PendingInputResumes, identifier)
+			slog.Info("orchestrator: dropping pending input resume for paused issue",
+				"identifier", identifier)
 			continue
 		}
 		if _, discarding := state.DiscardingIdentifiers[identifier]; discarding {
+			delete(state.PendingInputResumes, identifier)
+			slog.Info("orchestrator: dropping pending input resume for discarding issue",
+				"identifier", identifier)
 			continue
 		}
 
@@ -487,6 +543,9 @@ func (o *Orchestrator) processPendingInputResumes(ctx context.Context, state Sta
 			continue
 		}
 		if !isActiveState(detailed.State, state) {
+			delete(state.PendingInputResumes, identifier)
+			slog.Info("orchestrator: dropping pending input resume for non-active issue",
+				"identifier", identifier, "state", detailed.State)
 			continue
 		}
 
@@ -544,51 +603,46 @@ func (o *Orchestrator) dispatch(ctx context.Context, state State, issue domain.I
 	o.cfgMu.RUnlock()
 
 	workerHost := o.selectWorkerHost(hosts, dispatchStrategy, state)
-	runnerCommand := agentCommand
-	backend := agent.BackendFromCommand(agentCommand)
-	if defaultBackend != "" {
-		backend = defaultBackend
-		runnerCommand = agent.CommandWithBackendHint(agentCommand, defaultBackend)
-	}
+
+	// Resolve the issue's profile (clearing it if not found / disabled), then
+	// compute the effective (cmd, runnerCmd, backend) via the shared helper.
+	// The same logic powers reviewer dispatch — see resolveBackendForIssue.
 	o.issueProfilesMu.Lock()
 	profileName := o.issueProfiles[issue.Identifier]
 	o.issueProfilesMu.Unlock()
+	var profilePtr *config.AgentProfile
 	if profileName != "" {
 		o.cfgMu.RLock()
 		profile, ok := o.cfg.Agent.Profiles[profileName]
 		o.cfgMu.RUnlock()
-		if !ok {
+		switch {
+		case !ok:
 			slog.Warn("orchestrator: profile not found, using default",
 				"identifier", issue.Identifier, "profile", profileName)
-			profileName = "" // clear so the worker does not reference a missing profile
-		} else if !config.ProfileEnabled(profile) {
+			profileName = "" // worker will not reference a missing profile
+		case !config.ProfileEnabled(profile):
 			slog.Warn("orchestrator: profile disabled, using default",
 				"identifier", issue.Identifier, "profile", profileName)
 			profileName = ""
-		} else {
-			if profile.Command != "" {
-				agentCommand = profile.Command
-				runnerCommand = agentCommand
-				backend = agent.BackendFromCommand(agentCommand)
-			}
-			if profile.Backend != "" {
-				backend = profile.Backend
-				runnerCommand = agent.CommandWithBackendHint(agentCommand, profile.Backend)
-			}
-			slog.Info("orchestrator: using profile",
-				"identifier", issue.Identifier, "profile", profileName, "command", agentCommand, "backend", backend)
+		default:
+			profilePtr = &profile
 		}
 	}
-
-	// Per-issue backend override takes highest priority.
 	o.issueBackendsMu.RLock()
-	if issueBackend := o.issueBackends[issue.Identifier]; issueBackend != "" {
-		backend = issueBackend
-		runnerCommand = agent.CommandWithBackendHint(agentCommand, issueBackend)
+	issueBackend := o.issueBackends[issue.Identifier]
+	o.issueBackendsMu.RUnlock()
+
+	agentCommand, runnerCommand, backend := resolveBackendForIssue(
+		agentCommand, defaultBackend, profilePtr, issueBackend,
+	)
+	if profilePtr != nil {
+		slog.Info("orchestrator: using profile",
+			"identifier", issue.Identifier, "profile", profileName, "command", agentCommand, "backend", backend)
+	}
+	if issueBackend != "" {
 		slog.Info("orchestrator: using per-issue backend override",
 			"identifier", issue.Identifier, "backend", issueBackend)
 	}
-	o.issueBackendsMu.RUnlock()
 
 	if o.DryRun {
 		workerCancel()
@@ -662,20 +716,16 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 		return
 	}
 
-	agentCommand := defaultCommand
-	backend := agent.BackendFromCommand(agentCommand)
-	if defaultBackend != "" {
-		backend = defaultBackend
-	}
-	runnerCommand := agentCommand
-	if profile.Command != "" {
-		agentCommand = profile.Command
-		runnerCommand = agentCommand
-		backend = agent.BackendFromCommand(agentCommand)
-	}
-	if profile.Backend != "" {
-		backend = profile.Backend
-		runnerCommand = agent.CommandWithBackendHint(agentCommand, profile.Backend)
+	o.issueBackendsMu.RLock()
+	issueBackend := o.issueBackends[issue.Identifier]
+	o.issueBackendsMu.RUnlock()
+
+	_, runnerCommand, backend := resolveBackendForIssue(
+		defaultCommand, defaultBackend, &profile, issueBackend,
+	)
+	if issueBackend != "" {
+		slog.Info("orchestrator: using per-issue backend override for reviewer",
+			"identifier", issue.Identifier, "backend", issueBackend)
 	}
 
 	workerCtx, workerCancel := context.WithCancel(ctx)
@@ -708,9 +758,12 @@ func (o *Orchestrator) dispatchReviewerForIssue(ctx context.Context, state *Stat
 		"issue_identifier", issue.Identifier, "profile", profileName, "backend", backend, "worker_host", workerHost)
 
 	// Set the issue's profile to the reviewer profile so runWorker uses the
-	// reviewer's prompt (appended via the profile system).
+	// reviewer's prompt (appended via the profile system). Mark this entry
+	// as reviewer-injected so TerminalSucceeded knows to clear it without
+	// touching user-set overrides (T-21).
 	o.issueProfilesMu.Lock()
 	o.issueProfiles[issue.Identifier] = profileName
+	o.reviewerInjectedProfiles[issue.Identifier] = struct{}{}
 	o.issueProfilesMu.Unlock()
 
 	go o.runWorker(workerCtx, issue, attempt, workerHost, runnerCommand, backend, profileName, false, nil, nil)
@@ -788,7 +841,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			delete(state.PausedSessions, ev.Identifier)
 			state.ForceReanalyze[ev.Identifier] = struct{}{}
 			// Persist immediately so a crash between ticks doesn't re-pause the issue.
-			o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
+			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 			slog.Info("orchestrator: issue un-paused for forced re-analysis",
 				"identifier", ev.Identifier)
 			if o.OnStateChange != nil {
@@ -799,7 +852,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 	case EventResumeIssue:
 		if _, isPaused := state.PausedIdentifiers[ev.Identifier]; isPaused {
 			delete(state.PausedIdentifiers, ev.Identifier)
-			o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
+			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 			slog.Info("orchestrator: issue resumed", "identifier", ev.Identifier)
 			if o.OnStateChange != nil {
 				o.OnStateChange()
@@ -811,7 +864,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			delete(state.PausedIdentifiers, ev.Identifier)
 			// Terminate discards the issue entirely; drop any captured session.
 			delete(state.PausedSessions, ev.Identifier)
-			o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
+			o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 			slog.Info("orchestrator: paused issue terminated (claim released)", "identifier", ev.Identifier)
 			// Move the issue back to Backlog (or first active state if no backlog
 			// is configured) to remove the in-progress label and prevent it from
@@ -855,7 +908,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		// automatically re-dispatched until the user explicitly resumes it.
 		state = CancelRetry(state, ev.IssueID)
 		state.PausedIdentifiers[ev.Identifier] = ev.IssueID
-		o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
+		o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 		slog.Info("orchestrator: retry-queue issue cancelled and paused", "identifier", ev.Identifier)
 		if o.OnStateChange != nil {
 			o.OnStateChange()
@@ -873,7 +926,13 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			"identifier", ev.Identifier, "session_id", entry.SessionID)
 		// Post the user's reply as a tracker comment so the conversation
 		// is visible in Linear/GitHub alongside the agent's question.
+		// T-44 (02.G-01): tracked via commentWg so Run waits for the post
+		// to finish on shutdown — otherwise the comment can be dropped if
+		// the daemon exits before the (postRunTimeout-bounded) tracker
+		// API call returns.
+		o.commentWg.Add(1)
 		go func(issueID, ident, msg string) {
+			defer o.commentWg.Done()
 			postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 			defer cancel()
 			if _, err := o.tracker.CreateComment(postCtx, issueID, tracker.MarkManagedComment(msg)); err != nil {
@@ -905,7 +964,7 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 		delete(state.InputRequiredIssues, ev.Identifier)
 		state.PausedIdentifiers[ev.Identifier] = entry.IssueID
-		o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
+		o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 		slog.Info("orchestrator: input-required issue dismissed and paused", "identifier", ev.Identifier)
 		if o.OnStateChange != nil {
 			o.OnStateChange()
@@ -957,7 +1016,22 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		if ev.Issue == nil || ev.Automation == nil {
 			return state
 		}
-		if reason := IneligibleReason(*ev.Issue, state, o.cfg); reason != "" {
+		// T-16: re-check input-required status at dispatch time. A cron
+		// automation snapshots state.InputRequiredIssues when it queues the
+		// dispatch; an input-required event may arrive between then and now.
+		// input_required-typed automations are exempt — that's their purpose.
+		if _, waiting := state.InputRequiredIssues[ev.Issue.Identifier]; waiting &&
+			ev.Automation.Trigger.Type != config.AutomationTriggerInputRequired {
+			slog.Debug("orchestrator: skipping automation dispatch (input_required arrived after queue)",
+				"identifier", ev.Issue.Identifier,
+				"automation", ev.Automation.AutomationID,
+				"reason", "input_required")
+			return state
+		}
+		// Automation dispatch intentionally skips the isActiveState gate —
+		// triggers like issue_moved_to_backlog and non-active issue_entered_state
+		// targets need to fire outside the reconcile-loop active set.
+		if reason := ineligibleReasonForAutomation(*ev.Issue, state, o.cfg); reason != "" {
 			slog.Debug("orchestrator: skipping automation dispatch",
 				"identifier", ev.Issue.Identifier,
 				"automation", ev.Automation.AutomationID,
@@ -978,10 +1052,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 		}
 
 		// Remove the cancel func from the concurrent-safe map now that the worker
-		// has exited — CancelIssue will no longer find a cancel to invoke.
-		o.workerCancelsMu.Lock()
-		delete(o.workerCancels, ev.RunEntry.Issue.Identifier)
-		o.workerCancelsMu.Unlock()
+		// has exited — CancelIssue will no longer find a cancel to invoke. Use
+		// the same helper reconcile uses so cleanup is single-source-of-truth
+		// (T-09). The cancel func itself was already invoked by the worker's
+		// own exit path; calling cancelAndCleanupWorker here is redundant on
+		// the cancel side but correct on the map-cleanup side.
+		o.cancelAndCleanupWorker(ev.RunEntry.Issue.Identifier)
 
 		now := time.Now()
 		issue := ev.RunEntry.Issue
@@ -1081,6 +1157,28 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Do NOT schedule a retry; successful completions must not appear in
 			// the retry queue and must not cause infinite re-dispatch loops.
 			delete(state.Claimed, ev.IssueID)
+			// T-21: clear reviewer-injected profile overrides only. A user-set
+			// override (via SetIssueProfile HTTP) is left intact even on a
+			// reviewer-Kind completion, since the user never asked us to forget it.
+			if liveEntry != nil && liveEntry.Kind == "reviewer" {
+				o.issueProfilesMu.Lock()
+				if _, injected := o.reviewerInjectedProfiles[issue.Identifier]; injected {
+					delete(o.issueProfiles, issue.Identifier)
+					delete(o.reviewerInjectedProfiles, issue.Identifier)
+				}
+				o.issueProfilesMu.Unlock()
+			}
+			// G-07 (gaps_280426_2): clear `issueBackends[identifier]` on terminal
+			// completion to bound map growth across the daemon's lifetime. Unlike
+			// `issueProfiles` (which has the reviewer-injected vs user-set
+			// distinction handled above), every `issueBackends` entry is user-set
+			// via the SetIssueBackend HTTP path. Discarding on terminal matches
+			// what TerminateIssue (issue_control.go:95) already does on the
+			// explicit-cancel path; without this, naturally-resolved issues
+			// leave entries behind for the daemon's lifetime.
+			o.issueBackendsMu.Lock()
+			delete(o.issueBackends, issue.Identifier)
+			o.issueBackendsMu.Unlock()
 			var turns, inTok, outTok int
 			if liveEntry != nil {
 				turns = liveEntry.TurnCount
@@ -1095,6 +1193,23 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 				successArgs = append(successArgs, "pr_url", ev.RunEntry.PRURL)
 			}
 			slog.Info("orchestrator: worker succeeded, claim released", successArgs...)
+			// Gap §1.3 — clear the rate_limited auto-switch override on
+			// successful exit so the next dispatch reverts to the
+			// natural profile. Operator-set overrides (not marked in
+			// AutoSwitchedIdentifiers) are preserved.
+			if _, autoSwitched := state.AutoSwitchedIdentifiers[issue.Identifier]; autoSwitched {
+				delete(state.IssueProfiles, issue.Identifier)
+				delete(state.IssueBackends, issue.Identifier)
+				delete(state.AutoSwitchedIdentifiers, issue.Identifier)
+				delete(state.AutoSwitchedAt, issue.Identifier) // §6.2 keep maps in sync
+				// Gap §5.3 — persist the cleared state so a restart
+				// after the successful exit doesn't reload the stale
+				// override.
+				autoSwitchedCopy := maps.Clone(state.AutoSwitchedIdentifiers)
+				profilesCopy := maps.Clone(state.IssueProfiles)
+				backendsCopy := maps.Clone(state.IssueBackends)
+				go o.saveAutoSwitchedToDisk(autoSwitchedCopy, profilesCopy, backendsCopy)
+			}
 			o.recordHistory(liveEntry, issue, now, "succeeded")
 			// Auto-clear workspace if configured — removes the cloned directory
 			// but leaves logs intact (they live under the logs dir, not here).
@@ -1176,8 +1291,12 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 			// Post the agent's question as a tracker comment so it's visible
 			// in Linear/GitHub. The dashboard shows a reply UI; user replies
 			// are also posted as tracker comments before resuming the agent.
+			// T-44 (02.G-01): tracked via commentWg so Run waits for the post
+			// AND the recorded-comment event to finish on shutdown.
 			commentText := tracker.MarkManagedComment(buildInputRequiredComment(entry))
+			o.commentWg.Add(1)
 			go func(issueID, ident string) {
+				defer o.commentWg.Done()
 				postCtx, cancel := context.WithTimeout(context.Background(), postRunTimeout)
 				defer cancel()
 				comment, err := o.tracker.CreateComment(postCtx, issueID, commentText)
@@ -1221,7 +1340,11 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 					errMsg = ev.Error.Error()
 				}
 				nextAttempt := attempt + 1
-				maxRetries := o.cfg.Agent.MaxRetries
+				// Read through the cfgMu-guarded getters: G surfaces these fields
+				// to a runtime PUT /api/v1/settings handler that writes under
+				// cfgMu.Lock. Direct reads here would be a data race once the UI
+				// is in use even if no -race test exercises the interleave today.
+				maxRetries := o.MaxRetriesCfg()
 				if maxRetries > 0 && nextAttempt > maxRetries {
 					// Max retries exhausted — move to failed state or pause.
 					slog.Warn("worker: max retries exhausted",
@@ -1232,15 +1355,33 @@ func (o *Orchestrator) handleEvent(ctx context.Context, state State, ev Orchestr
 							fmt.Sprintf("worker: max retries exhausted (%d/%d) — moving to failed state", attempt, maxRetries)))
 					}
 					o.commentMaxRetriesExhausted(issue, attempt, errMsg)
-					failedState := o.cfg.Tracker.FailedState
+					failedState := o.FailedStateCfg()
 					if failedState != "" {
 						state = o.asyncDiscardAndTransitionTo(state, ev.IssueID, issue.Identifier, failedState)
 					} else {
 						state.PausedIdentifiers[issue.Identifier] = issue.ID
-						o.savePausedToDisk(copyStringMap(state.PausedIdentifiers))
+						o.savePausedToDisk(maps.Clone(state.PausedIdentifiers))
 					}
 					delete(state.Claimed, ev.IssueID)
 					o.dispatchMatchingRunFailedAutomations(ctx, &state, issue, now, errMsg, nextAttempt)
+					// Gap E — additionally fire rate_limited rules when the
+					// failure was classified as vendor-throttle-driven. This
+					// runs in parallel with run_failed so an operator can have
+					// both a generic comment-only failure rule and a targeted
+					// switch rule without one blocking the other.
+					// Gap §5.1 — use the operator-configurable patterns
+					// list when present; otherwise fall back to defaults.
+					o.cfgMu.RLock()
+					rlPatterns := append([]string(nil), o.cfg.Agent.RateLimitErrorPatterns...)
+					o.cfgMu.RUnlock()
+					if IsRateLimitFailureWithPatterns(errMsg, rlPatterns) {
+						failedProfile := state.IssueProfiles[issue.Identifier]
+						o.dispatchMatchingRateLimitedAutomations(
+							ctx, &state, issue, now,
+							failedProfile, liveEntry.Backend, errMsg, nextAttempt,
+							liveEntry.InputTokens, liveEntry.OutputTokens,
+						)
+					}
 					o.recordHistory(liveEntry, issue, now, "failed")
 				} else {
 					backoff := BackoffMs(nextAttempt, o.cfg.Agent.MaxRetryBackoffMs)
@@ -1386,10 +1527,26 @@ func (o *Orchestrator) recordHistory(liveEntry *RunEntry, issue domain.Issue, fi
 		run.Backend = liveEntry.Backend
 		run.Kind = liveEntry.Kind
 		run.SessionID = liveEntry.SessionID
+		run.AutomationID = liveEntry.AutomationID
+		run.TriggerType = liveEntry.TriggerType
+		// CommentCount on liveEntry is rarely populated directly — the live
+		// counter lives on the orchestrator (BumpCommentCount writes to the
+		// concurrent map). Prefer the orchestrator counter; fall back to the
+		// liveEntry value so unit tests that pass a CommentCount directly
+		// still propagate.
+		live := o.CommentCountFor(issue.Identifier)
+		if live > liveEntry.CommentCount {
+			run.CommentCount = live
+		} else {
+			run.CommentCount = liveEntry.CommentCount
+		}
 	} else {
 		run.StartedAt = finishedAt
 	}
 	o.addCompletedRun(run)
+	// Reset the per-identifier counter so the next run starts fresh — without
+	// this a long-lived issue accumulates comment counts across multiple runs.
+	o.ResetCommentCount(issue.Identifier)
 }
 
 func runEligibleForAutoReview(liveEntry *RunEntry) bool {
@@ -1476,8 +1633,15 @@ func buildSubAgentContext(profiles map[string]config.AgentProfile, activeProfile
 
 // StartupTerminalCleanup fetches terminal issues and removes their workspaces.
 // Runs in the background with a 15-second timeout so it never blocks startup.
-func StartupTerminalCleanup(ctx context.Context, tr tracker.Tracker, terminalStates []string, removeWorkspace func(string) error) {
+//
+// Returns a `wait` closure that blocks until the cleanup goroutine has fully
+// exited. Callers that need to ensure cleanup is complete before proceeding
+// (e.g. shutdown teardown) MUST invoke `wait()`. Discarding the return value
+// is safe — the goroutine exits on its own within the 15s timeout. T-49.
+func StartupTerminalCleanup(ctx context.Context, tr tracker.Tracker, terminalStates []string, removeWorkspace func(string) error) (wait func()) {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		cleanupCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		issues, err := tr.FetchIssuesByStates(cleanupCtx, terminalStates)
@@ -1492,4 +1656,5 @@ func StartupTerminalCleanup(ctx context.Context, tr tracker.Tracker, terminalSta
 			}
 		}
 	}()
+	return func() { <-done }
 }

@@ -113,8 +113,9 @@ worker goroutine — send an event instead.
 
 `cfgMu` protects only these `cfg` fields (mutable at runtime via HTTP):
 - `cfg.Agent.AgentMode`, `cfg.Agent.MaxConcurrentAgents`, `cfg.Agent.Profiles`
-- `cfg.Agent.SSHHosts`, `cfg.Agent.DispatchStrategy`
+- `cfg.Agent.SSHHosts`, `cfg.Agent.SSHHostDescriptions`, `cfg.Agent.DispatchStrategy`, `cfg.Agent.InlineInput`
 - `cfg.Tracker.ActiveStates`, `cfg.Tracker.TerminalStates`, `cfg.Tracker.CompletionState`
+- `cfg.Automations`
 - `cfg.Workspace.AutoClearWorkspace`
 
 All other `cfg` fields are **read-only after startup** — no lock needed.

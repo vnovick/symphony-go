@@ -9,7 +9,6 @@ import { logIdentifiersKey } from './queries/logs';
 import IssueDetailSlide from './components/itervox/IssueDetailSlide';
 import Toast from './components/common/Toast';
 import { PageErrorBoundary } from './components/common/PageErrorBoundary';
-import { ItervoxLogo } from './components/brand/ItervoxLogo';
 import { NavLink } from './components/layout/NavLink';
 import {
   AgentsIcon,
@@ -53,13 +52,8 @@ const NAV_ITEMS = [
 function SidebarContent() {
   return (
     <>
-      <div className="mb-3 flex w-full items-center justify-center px-2" aria-label="Itervox">
-        <div className="border-theme-line bg-theme-bg-elevated flex h-10 w-full items-center justify-center rounded-[var(--radius-md)] border px-2">
-          <ItervoxLogo className="h-5 w-auto" />
-        </div>
-      </div>
-
-      {/* Nav links */}
+      {/* Nav links — brand moved to AppHeader so the sidebar is icon-only and
+          aligns with the dashboard content row in the main column. */}
       <nav className="flex flex-1 flex-col gap-1">
         {NAV_ITEMS.map((item) => (
           <NavLink key={item.to} to={item.to} icon={item.icon} label={item.label} />

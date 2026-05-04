@@ -160,7 +160,16 @@ type RunEntry struct {
 	AgentSessionID string
 	WorkerHost     string // SSH host used for this worker, empty = local
 	Backend        string // e.g. "claude", "codex", or "" when unknown
-	Kind           string // "worker" (default) | "reviewer"
+	Kind           string // "worker" (default) | "reviewer" | "automation"
+	// AutomationID is the rule ID that dispatched this run; empty for
+	// manually dispatched runs. Set once at dispatch and never mutated.
+	AutomationID string
+	// TriggerType is the automation trigger ("cron", "input_required",
+	// "run_failed", "test"). Empty for manual runs.
+	TriggerType string
+	// CommentCount counts comment-action invocations recorded for this
+	// run; surfaced on the issue card (T-6).
+	CommentCount int
 	// PendingInputResume is true while this run is consuming a locally
 	// persisted human reply from PendingInputResumes. The event loop uses it to
 	// clear the pending-resume record only after the resumed run has actually
@@ -199,9 +208,16 @@ type CompletedRun struct {
 	// history file does not leak runs across projects. Format: "<kind>:<slug>".
 	// Empty string means "unscoped" (legacy entries written before this field
 	// was added); these are retained so existing history is not silently dropped.
-	Kind         string // "worker" (default) | "reviewer"
+	Kind         string // "worker" (default) | "reviewer" | "automation"
 	ProjectKey   string
 	AppSessionID string // daemon-invocation grouping key; empty for legacy entries
+	// AutomationID / TriggerType propagate the automation context onto
+	// completed runs so dashboards can attribute history to a specific
+	// rule. Empty for manual runs.
+	AutomationID string `json:"automationID,omitempty"`
+	TriggerType  string `json:"triggerType,omitempty"`
+	// CommentCount captures how many comment actions the run posted.
+	CommentCount int `json:"commentCount,omitempty"`
 }
 
 // RetryEntry represents a scheduled retry for an issue.
@@ -267,6 +283,19 @@ type State struct {
 	// IssueBackends maps issue identifier to a backend override ("claude" or "codex").
 	// When set, overrides the profile and config backend for dispatch.
 	IssueBackends map[string]string
+	// AutoSwitchedIdentifiers tracks issues whose IssueProfiles / IssueBackends
+	// override was set by a `rate_limited` automation auto-switch (gap E)
+	// rather than by an explicit operator action via SetIssueProfile /
+	// SetIssueBackend. On a successful worker exit the override is cleared so
+	// subsequent runs revert to the natural profile — but operator-set
+	// overrides survive. Gap §1.3.
+	AutoSwitchedIdentifiers map[string]struct{}
+	// AutoSwitchedAt records the wall-clock time of each auto-switch fire.
+	// Used by the time-based revert path: when `cfg.Agent.SwitchRevertHours`
+	// > 0 the orchestrator's onTick reverts overrides whose age has
+	// exceeded the TTL, even if no successful exit cleared them. Gap §6.2.
+	// Keys mirror AutoSwitchedIdentifiers; the two maps stay in sync.
+	AutoSwitchedAt map[string]time.Time
 	// PausedOpenPRs tracks issues that were auto-paused because an open PR was detected.
 	// Key: issue identifier, Value: open PR URL.
 	PausedOpenPRs map[string]string
@@ -316,23 +345,25 @@ type InlineInputEntry struct {
 // NewState initialises a State from a config snapshot.
 func NewState(cfg *config.Config) State {
 	return State{
-		PollIntervalMs:        cfg.Polling.IntervalMs,
-		MaxConcurrentAgents:   cfg.Agent.MaxConcurrentAgents,
-		ActiveStates:          append([]string{}, cfg.Tracker.ActiveStates...),
-		TerminalStates:        append([]string{}, cfg.Tracker.TerminalStates...),
-		Running:               make(map[string]*RunEntry),
-		Claimed:               make(map[string]struct{}),
-		RetryAttempts:         make(map[string]*RetryEntry),
-		PausedIdentifiers:     make(map[string]string),
-		PausedSessions:        make(map[string]*PausedSessionInfo),
-		IssueProfiles:         make(map[string]string),
-		IssueBackends:         make(map[string]string),
-		PausedOpenPRs:         make(map[string]string),
-		ForceReanalyze:        make(map[string]struct{}),
-		PrevActiveIdentifiers: make(map[string]struct{}),
-		DiscardingIdentifiers: make(map[string]struct{}),
-		InputRequiredIssues:   make(map[string]*InputRequiredEntry),
-		PendingInputResumes:   make(map[string]*PendingInputResumeEntry),
-		InlineInputIssues:     make(map[string]*InlineInputEntry),
+		PollIntervalMs:          cfg.Polling.IntervalMs,
+		MaxConcurrentAgents:     cfg.Agent.MaxConcurrentAgents,
+		ActiveStates:            append([]string{}, cfg.Tracker.ActiveStates...),
+		TerminalStates:          append([]string{}, cfg.Tracker.TerminalStates...),
+		Running:                 make(map[string]*RunEntry),
+		Claimed:                 make(map[string]struct{}),
+		RetryAttempts:           make(map[string]*RetryEntry),
+		PausedIdentifiers:       make(map[string]string),
+		PausedSessions:          make(map[string]*PausedSessionInfo),
+		IssueProfiles:           make(map[string]string),
+		IssueBackends:           make(map[string]string),
+		AutoSwitchedIdentifiers: make(map[string]struct{}),
+		AutoSwitchedAt:          make(map[string]time.Time),
+		PausedOpenPRs:           make(map[string]string),
+		ForceReanalyze:          make(map[string]struct{}),
+		PrevActiveIdentifiers:   make(map[string]struct{}),
+		DiscardingIdentifiers:   make(map[string]struct{}),
+		InputRequiredIssues:     make(map[string]*InputRequiredEntry),
+		PendingInputResumes:     make(map[string]*PendingInputResumeEntry),
+		InlineInputIssues:       make(map[string]*InlineInputEntry),
 	}
 }

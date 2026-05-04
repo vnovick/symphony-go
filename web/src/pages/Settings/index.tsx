@@ -1,8 +1,11 @@
 import PageMeta from '../../components/common/PageMeta';
+import { GeneralCard } from './GeneralCard';
 import { TrackerStatesCard } from './TrackerStatesCard';
 import { WorkspaceCard } from './WorkspaceCard';
 import { ProjectFilterCard } from './ProjectFilterCard';
 import { SSHHostsCard } from './SSHHostsCard';
+import { SkillsCard } from './SkillsCard';
+import { RetriesCard } from './RetriesCard';
 import { ConfirmButton } from '../../components/ui/button/ConfirmButton';
 import { useClearAllLogs, useClearAllWorkspaces } from '../../queries/issues';
 import { useSettingsPageData } from './useSettingsPageData';
@@ -13,11 +16,23 @@ export default function Settings() {
     terminalStates,
     completionState,
     autoClearWorkspace,
+    autoReview,
+    inlineInput,
     trackerKind,
     activeProjectFilter,
+    maxRetries,
+    failedState,
+    maxSwitchesPerIssuePerWindow,
+    switchWindowHours,
+    trackerStateOptions,
     updateTrackerStates,
     setAutoClearWorkspace,
     setProjectFilter,
+    setInlineInput,
+    setMaxRetries,
+    setFailedState,
+    setMaxSwitchesPerIssuePerWindow,
+    setSwitchWindowHours,
   } = useSettingsPageData();
   const clearAllLogs = useClearAllLogs();
   const clearAllWorkspaces = useClearAllWorkspaces();
@@ -41,6 +56,13 @@ export default function Settings() {
             .
           </p>
         </div>
+
+        <section aria-labelledby="section-general">
+          <h2 id="section-general" className="mb-3 text-xs font-semibold tracking-widest uppercase">
+            General
+          </h2>
+          <GeneralCard inlineInput={inlineInput} onSetInlineInput={setInlineInput} />
+        </section>
 
         <section aria-labelledby="section-tracker">
           <h2 id="section-tracker" className="mb-3 text-xs font-semibold tracking-widest uppercase">
@@ -71,8 +93,26 @@ export default function Settings() {
           </h2>
           <WorkspaceCard
             autoClearWorkspace={autoClearWorkspace}
-            autoReviewEnabled={false}
+            autoReviewEnabled={autoReview}
             onToggle={setAutoClearWorkspace}
+          />
+        </section>
+
+        <section aria-labelledby="section-retries">
+          <h2 id="section-retries" className="mb-3 text-xs font-semibold tracking-widest uppercase">
+            Retries
+          </h2>
+          <RetriesCard
+            maxRetries={maxRetries}
+            failedState={failedState}
+            trackerStateOptions={trackerStateOptions}
+            completionState={completionState}
+            maxSwitchesPerIssuePerWindow={maxSwitchesPerIssuePerWindow}
+            switchWindowHours={switchWindowHours}
+            onSetMaxRetries={setMaxRetries}
+            onSetFailedState={setFailedState}
+            onSetMaxSwitchesPerIssuePerWindow={setMaxSwitchesPerIssuePerWindow}
+            onSetSwitchWindowHours={setSwitchWindowHours}
           />
         </section>
 
@@ -84,6 +124,13 @@ export default function Settings() {
             SSH Hosts
           </h2>
           <SSHHostsCard />
+        </section>
+
+        <section aria-labelledby="section-skills">
+          <h2 id="section-skills" className="mb-3 text-xs font-semibold tracking-widest uppercase">
+            Skills Inventory
+          </h2>
+          <SkillsCard />
         </section>
 
         <section aria-labelledby="section-logs">

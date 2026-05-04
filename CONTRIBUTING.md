@@ -8,7 +8,7 @@ Thank you for your interest in contributing. This document covers how to get the
 
 ### Prerequisites
 
-- Go 1.25.8 (matches `go.mod`; the `Makefile` pins `GOTOOLCHAIN=go1.25.8`)
+- Go 1.25.9 (matches `go.mod`; the `Makefile` pins `GOTOOLCHAIN=go1.25.9`)
 - Node.js 20+ and `pnpm` (for the web dashboard)
 - `git`
 - [Lefthook](https://github.com/evilmartians/lefthook) (`brew install lefthook` or `go install github.com/evilmartians/lefthook@latest`)
@@ -37,11 +37,11 @@ The web dashboard is a Vite app that proxies API calls to a running `itervox` da
 **Terminal 1 — build and run the Go binary from a project that has a `WORKFLOW.md`:**
 
 ```bash
-# In the itervox repo — build the binary
-go build -o itervox ./cmd/itervox
+# In the itervox repo — build the binary with embedded web assets
+make build
 
 # In your project repo (must contain a WORKFLOW.md)
-/path/to/itervox   # picks up WORKFLOW.md in the current directory
+/path/to/itervox/itervox   # picks up WORKFLOW.md in the current directory
 ```
 
 If you don't have a project lying around, scaffold a throwaway one:
@@ -81,21 +81,29 @@ pnpm dev     # HMR at http://localhost:5173, proxies /api/* to 127.0.0.1:8090
 |---|---|
 | `make all` | `build` + `verify` — full build and check suite |
 | `make build` | Build web dashboard (`web-build`) then compile Go binary |
-| `make verify` | `fmt` + `vet` + `lint-go` + `test` + `web-test` + `web-spelling` — mirrors CI |
+| `make verify` | `fmt` + `vet` + `lint-go` + `test` + `web-test` + `web-spelling` + `size-budget` + `no-os-exit` — mirrors CI |
 | `make dev` | Start the Vite dev server with HMR (run the daemon separately) |
 | `make test` | `go test -race ./... -count=1` |
 | `make coverage` | Run tests with coverage; output `coverage.html` |
 | `make benchmark` | `go test -bench=. -benchmem ./...` |
 | `make tui-golden` | Regenerate catwalk golden files after intentional TUI render changes |
+| `make size-budget` | Enforce LOC caps on the intentionally size-budgeted files |
+| `make no-os-exit` | Guard against new `os.Exit()` calls outside `cmd/itervox/exit.go` |
 | `make fmt` | `gofmt -l -w .` |
 | `make vet` | `go vet ./...` |
 | `make lint-go` | `golangci-lint run ./cmd/... ./internal/...` |
 | `make web-build` | `pnpm install --frozen-lockfile && pnpm build` in `web/` |
 | `make web-test` | `pnpm install --frozen-lockfile && pnpm test` in `web/` |
 | `make web-spelling` | Guard against the legacy `Symphony` brand name leaking into user-visible TS/TSX strings |
+| `make e2e` | Build the binary, then run the real-daemon Playwright smoke suite |
+| `make qa-current-ui` | Run the route-mocked Playwright regression lane for the current UI |
+| `make qa-daemon` | Alias for the real-daemon Playwright lane |
+| `make qa-current` | `verify` + `qa-current-ui` + `qa-daemon` — full current-functionality baseline |
 | `make clean` | Remove `itervox` binary and coverage files |
 
 > **Note:** `make web-spelling` (also part of `make verify`) rejects any TypeScript/TSX string literal containing `Symphony` (the legacy project name). If your editor autocompletes the old name, the rule will fail your `pre-push` hook — search and replace before pushing.
+
+> **QA baseline:** `make verify` remains the zero-extra-dependency contributor gate. The browser QA lanes (`make qa-current-ui`, `make qa-daemon`, `make qa-current`) require a one-time Playwright browser install: `cd web && pnpm exec playwright install chromium`.
 
 ---
 
@@ -214,7 +222,7 @@ When an agent needs human clarification, it emits a sentinel token in its output
   const InputRequiredSentinel = "<!-- itervox:needs-input -->"
   ```
 
-- Detection lives in `agent.IsSentinelInputRequired(text string) bool` (substring match, whitespace-tolerant). This is the function `agent.FinalizeResult` calls in `internal/agent/runner.go`. A 1-line wrapper `agent.IsContentInputRequired` is kept as an alias for callers that don't go through `FinalizeResult`.
+- Detection lives in `agent.IsSentinelInputRequired(text string) bool` (substring match, whitespace-tolerant). This is the function `agent.FinalizeResult` calls in `internal/agent/runner.go`.
 - The bundled prompt template at `internal/templates/human_input.md` instructs agents how and when to emit it.
 
 If you change the sentinel value, you **must** update both the constant and the template, and re-run `go test -race ./internal/agent/...` to refresh the parser tests.

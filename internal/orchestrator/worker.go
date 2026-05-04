@@ -12,7 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -365,15 +365,11 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 			o.sendExit(ctx, issue, attempt, TerminalFailed, err)
 			return
 		}
-		// Append the active profile's prompt (role context) whenever a named profile
-		// is selected, regardless of agent mode. This lets profile prompts work in
-		// solo/subagents mode too — not just teams mode.
-		// Snapshot the contested cfg fields once under cfgMu to avoid data races
-		// with HTTP handler goroutines that may mutate them concurrently.
-		o.cfgMu.RLock()
-		agentMode := o.cfg.Agent.AgentMode
-		o.cfgMu.RUnlock()
-
+		// Append the active profile's prompt (role context) whenever a named
+		// profile is selected. The pre-removal `agent_mode == "teams"` gate
+		// has been deleted (agent_mode is gone — see CHANGELOG); the
+		// subagent roster context below also injects unconditionally so
+		// multi-profile setups always tell the agent who its peers are.
 		if profileName != "" {
 			if profile, ok := profilesSnap[profileName]; ok {
 				if profile.Prompt != "" {
@@ -422,12 +418,13 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if actionContext != "" {
 			renderedPrompt += "\n\n" + actionContext
 		}
-		// In teams mode, also append sub-agent roster context so the active backend
-		// knows which specialised agents it can spawn via its delegation tool.
-		if agentMode == "teams" {
-			if subCtx := buildSubAgentContext(profilesSnap, profileName, backend); subCtx != "" {
-				renderedPrompt += "\n\n" + subCtx
-			}
+		// Append sub-agent roster context whenever the inventory has more than
+		// one profile — gives the active backend the names + descriptions of
+		// peer agents it can spawn via its delegation tool. `buildSubAgentContext`
+		// returns "" when there's nothing to say, so single-profile setups
+		// see no change.
+		if subCtx := buildSubAgentContext(profilesSnap, profileName, backend); subCtx != "" {
+			renderedPrompt += "\n\n" + subCtx
 		}
 
 		// On the first turn, inject open PR context if detected.
@@ -762,6 +759,17 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 					// message text, not by the log level or a separate event-type field.
 					o.logBuf.Add(issue.Identifier, makeBufLineWithSession("INFO", fmt.Sprintf("worker: pr_opened url=%s", prURL), runLogID))
 				}
+				// Gap B — dispatch any pr_opened automation rules right here,
+				// at the point we've confirmed the PR is brand-new for this
+				// issue (alreadyPosted==false). Doing it inside the
+				// "first-time PR detection" branch keeps the firing
+				// semantics tight: re-runs on the same issue whose PR has
+				// already been commented don't re-fire reviewer/QA agents.
+				prBranch := ""
+				if prCtx != nil {
+					prBranch = prCtx.Branch
+				}
+				o.DispatchPROpenedAutomations(issue, prURL, prBranch, o.cfg.Agent.BaseBranch)
 			}
 		}
 	}
@@ -1146,7 +1154,7 @@ func prependEnvToCommand(command string, env map[string]string) string {
 	for key := range env {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 
 	trimmedCommand := strings.TrimSpace(command)
 	hintToken := ""

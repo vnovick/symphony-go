@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vnovick/itervox/internal/agent"
+	"github.com/vnovick/itervox/internal/config"
 	"github.com/vnovick/itervox/internal/domain"
 	"github.com/vnovick/itervox/internal/orchestrator"
 	"github.com/vnovick/itervox/internal/tracker"
@@ -759,7 +761,15 @@ func TestInputRequiredPersistenceResumesAfterTrackerReplyWithoutTrackerMetadata(
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel1()
 
-	go orch1.Run(ctx1) //nolint:errcheck
+	// Wait for the orchestrator goroutine to fully exit before t.TempDir's
+	// cleanup runs os.RemoveAll — otherwise Run may still be writing
+	// input_required.json into TempDir when cleanup fires, producing
+	// "directory not empty" flakes (same class as TestReanalyzeIssueRace).
+	run1Done := make(chan struct{})
+	go func() {
+		_ = orch1.Run(ctx1)
+		close(run1Done)
+	}()
 
 	deadline := time.After(3 * time.Second)
 	for {
@@ -781,6 +791,11 @@ func TestInputRequiredPersistenceResumesAfterTrackerReplyWithoutTrackerMetadata(
 		}
 	}
 	cancel1()
+	select {
+	case <-run1Done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orch1 did not exit within 2s of cancel")
+	}
 
 	ct.addComment("id1", "Approved via tracker comment before restart.")
 
@@ -798,7 +813,19 @@ func TestInputRequiredPersistenceResumesAfterTrackerReplyWithoutTrackerMetadata(
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
 
-	go orch2.Run(ctx2) //nolint:errcheck
+	run2Done := make(chan struct{})
+	go func() {
+		_ = orch2.Run(ctx2)
+		close(run2Done)
+	}()
+	defer func() {
+		cancel2()
+		select {
+		case <-run2Done:
+		case <-time.After(2 * time.Second):
+			t.Log("orch2 did not exit within 2s of cancel — TempDir flake possible")
+		}
+	}()
 
 	deadline = time.After(3 * time.Second)
 	for {
@@ -857,7 +884,12 @@ func TestRecoveredTrackerReplySkipsSameAuthorCommentsAndUsesExactQuestionComment
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel1()
 
-	go orch1.Run(ctx1) //nolint:errcheck
+	// Same TempDir-cleanup race guard as the sibling tests.
+	run1Done := make(chan struct{})
+	go func() {
+		_ = orch1.Run(ctx1)
+		close(run1Done)
+	}()
 
 	var questionComment domain.Comment
 	deadline := time.After(3 * time.Second)
@@ -880,6 +912,11 @@ func TestRecoveredTrackerReplySkipsSameAuthorCommentsAndUsesExactQuestionComment
 		}
 	}
 	cancel1()
+	select {
+	case <-run1Done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orch1 did not exit within 2s of cancel")
+	}
 
 	ct.addComment("id1", "Follow-up from the same bot author.", questionComment.AuthorID, questionComment.AuthorName)
 	ct.addComment("id1", "Approved via tracker comment from a human.", "human-user-1", "Alice")
@@ -898,7 +935,19 @@ func TestRecoveredTrackerReplySkipsSameAuthorCommentsAndUsesExactQuestionComment
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
 
-	go orch2.Run(ctx2) //nolint:errcheck
+	run2Done := make(chan struct{})
+	go func() {
+		_ = orch2.Run(ctx2)
+		close(run2Done)
+	}()
+	defer func() {
+		cancel2()
+		select {
+		case <-run2Done:
+		case <-time.After(2 * time.Second):
+			t.Log("orch2 did not exit within 2s of cancel — TempDir flake possible")
+		}
+	}()
 
 	deadline = time.After(3 * time.Second)
 	for {
@@ -952,7 +1001,15 @@ func TestProvideInputPendingResumeSurvivesRestartBeforeResumedTurnCompletes(t *t
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel1()
 
-	go orch1.Run(ctx1) //nolint:errcheck
+	// Track the orchestrator goroutine so we can wait for it to fully exit
+	// before t.TempDir's cleanup runs os.RemoveAll — otherwise Run may still
+	// be writing input_required.json into TempDir when cleanup fires, producing
+	// "directory not empty" flakes (same class as TestReanalyzeIssueRace).
+	run1Done := make(chan struct{})
+	go func() {
+		_ = orch1.Run(ctx1)
+		close(run1Done)
+	}()
 
 	deadline := time.After(3 * time.Second)
 	for {
@@ -983,6 +1040,11 @@ func TestProvideInputPendingResumeSurvivesRestartBeforeResumedTurnCompletes(t *t
 	}
 
 	cancel1()
+	select {
+	case <-run1Done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("orch1 did not exit within 2s of cancel")
+	}
 
 	runner2 := &inputRequiredResumeRunner{}
 	orch2 := orchestrator.New(cfg, ct, runner2, wm)
@@ -990,7 +1052,22 @@ func TestProvideInputPendingResumeSurvivesRestartBeforeResumedTurnCompletes(t *t
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
 
-	go orch2.Run(ctx2) //nolint:errcheck
+	run2Done := make(chan struct{})
+	go func() {
+		_ = orch2.Run(ctx2)
+		close(run2Done)
+	}()
+
+	// Ensure orch2 is stopped and fully exited before TempDir cleanup runs
+	// on any exit path (success return, fatal, or scope unwind).
+	defer func() {
+		cancel2()
+		select {
+		case <-run2Done:
+		case <-time.After(2 * time.Second):
+			t.Log("orch2 did not exit within 2s of cancel — TempDir flake possible")
+		}
+	}()
 
 	deadline = time.After(3 * time.Second)
 	for {
@@ -1023,4 +1100,151 @@ func mustReadFile(t *testing.T, path string) string {
 		return ""
 	}
 	return string(data)
+}
+
+// MED-2 regression guard: end-to-end test for the automation dispatch pipeline.
+// Proves the full path: DispatchAutomation (any goroutine) → events channel →
+// event loop → EventDispatchAutomation handler → ineligibleReasonForAutomation
+// (which must skip the isActiveState gate per CRIT-3) → startAutomationRun →
+// worker spawn. Uses a backlog-state issue to exercise CRIT-3 in one shot.
+func TestOrchestratorAutomationDispatchPipeline(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 3
+	cfg.Tracker.BacklogStates = []string{"Backlog"}
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude", Backend: "claude"},
+	}
+
+	backlogIssue := makeIssue("id1", "ENG-1", "Backlog", nil, nil)
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{backlogIssue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+
+	runner := &succeedOnceRunner{}
+	orch := orchestrator.New(cfg, mt, runner, nil)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	// Fire an automation dispatch for a BACKLOG issue — the reconcile loop
+	// would reject this via isActiveState, but automation dispatch must
+	// accept it (CRIT-3 invariant).
+	ok := orch.DispatchAutomation(backlogIssue, orchestrator.AutomationDispatch{
+		AutomationID: "test-backlog-review",
+		ProfileName:  "reviewer",
+		Instructions: "Review the backlog issue.",
+		Trigger: orchestrator.AutomationTriggerContext{
+			Type:         "issue_moved_to_backlog",
+			FiredAt:      time.Now(),
+			AutomationID: "test-backlog-review",
+			CurrentState: "Backlog",
+		},
+	})
+	require.True(t, ok, "DispatchAutomation should enqueue for a backlog-state issue")
+
+	// The runner should be invoked — proves the full event-loop path reached
+	// the worker despite the issue being in a non-active state (CRIT-3 guard).
+	// startAutomationRun does NOT fire OnDispatch, so we observe via runner.
+	deadline := time.After(3 * time.Second)
+	for runner.calls.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("runner was not called for backlog-state automation dispatch within timeout — CRIT-3 regression")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	// F-1 acceptance: once the worker has been observed (runner.calls >= 1) the
+	// orchestrator must already have written a Running entry tagged with the
+	// automation ID + trigger type. We poll the snapshot briefly because the
+	// event loop may store it on a slightly different goroutine boundary than
+	// the runner invocation.
+	var captured *orchestrator.RunEntry
+	pollDeadline := time.After(2 * time.Second)
+PollSnap:
+	for {
+		snap := orch.Snapshot()
+		for _, entry := range snap.Running {
+			if entry.AutomationID != "" {
+				captured = entry
+				break PollSnap
+			}
+		}
+		// Also accept history entries — by the time we observe the runner,
+		// the worker may have already finished and moved to history.
+		hist := orch.RunHistory()
+		for i := range hist {
+			if hist[i].AutomationID == "test-backlog-review" {
+				assert.Equal(t, "issue_moved_to_backlog", hist[i].TriggerType,
+					"history row must propagate TriggerType from RunEntry")
+				return
+			}
+		}
+		select {
+		case <-pollDeadline:
+			t.Fatal("automation dispatch never produced a snapshot row tagged with AutomationID")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	assert.Equal(t, "test-backlog-review", captured.AutomationID,
+		"snapshot Running row must carry AutomationID set by startAutomationRun")
+	assert.Equal(t, "issue_moved_to_backlog", captured.TriggerType,
+		"snapshot Running row must carry TriggerType set by startAutomationRun")
+	assert.Equal(t, "automation", captured.Kind,
+		"automation-dispatched runs must be tagged Kind=automation")
+}
+
+func TestRecoveredInputRequiredDispatchesMatchingAutomations(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Polling.IntervalMs = 20
+	cfg.Agent.MaxTurns = 3
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"responder": {Command: "claude", Backend: "claude"},
+	}
+
+	issue := makeIssue("id1", "ENG-1", "Todo", nil, nil)
+	issue.Comments = []domain.Comment{
+		{
+			ID:         "q1",
+			AuthorID:   "itervox",
+			AuthorName: "Itervox",
+			Body:       "🤖 **Agent needs your input**\n\nContinue with the existing branch\n\n---\n_Reply in the tracker or via the Itervox dashboard to continue._",
+		},
+	}
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{issue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+
+	runner := &succeedOnceRunner{}
+	orch := orchestrator.New(cfg, mt, runner, nil)
+	orch.SetInputRequiredAutomations([]orchestrator.InputRequiredAutomation{
+		{
+			ID:                "input-responder",
+			ProfileName:       "responder",
+			States:            []string{"Todo"},
+			InputContextRegex: regexp.MustCompile(`continue|branch`),
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	go orch.Run(ctx) //nolint:errcheck
+
+	deadline := time.After(3 * time.Second)
+	for runner.calls.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatalf("recovered input-required automation did not dispatch; snap=%+v", orch.Snapshot())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }

@@ -77,12 +77,14 @@ and must always be accessed under `cfgMu`:
 - `cfg.Agent.MaxConcurrentAgents`
 - `cfg.Agent.Profiles`
 - `cfg.Agent.SSHHosts`
+- `cfg.Agent.SSHHostDescriptions`
 - `cfg.Agent.DispatchStrategy`
 - `cfg.Agent.InlineInput`
 - `cfg.Tracker.ActiveStates`
 - `cfg.Tracker.TerminalStates`
 - `cfg.Tracker.CompletionState`
 - `cfg.Workspace.AutoClearWorkspace`
+- `cfg.Automations`
 
 All **other** `cfg` fields are read-only after startup — no lock needed for them.
 
@@ -242,3 +244,4 @@ Before claiming a component is missing an accessibility attribute:
 - **Do not mock `orchestrator.State`** in tests that check state transitions — pass real State values
 - **Do not call `patchSnapshot` from settings mutations** — they must call `refreshSnapshot()` to get the authoritative server state
 - **Do not call `fetch()` or `new EventSource()` directly in `web/src`** — use `authedFetch` from `web/src/auth/authedFetch.ts` and `openAuthedEventStream` from `web/src/auth/authedEventStream.ts`. The only exceptions are inside the auth module itself (`AuthGate` health/state probes and `TokenEntryScreen` token validation), which bootstrap before a token is stored.
+- **Do not call `os.Exit()` directly in `cmd/itervox/`** — use `fatalExit(code)` from `cmd/itervox/exit.go`. It restores the terminal to a sane mode (`stty sane`) before exiting, which is required for any code path that may run after `go statusui.Run` puts the terminal into raw mode. The CI guard `make no-os-exit` (run by `make verify`) fails the build if a new `os.Exit()` appears outside `exit.go`. Tests and the `exit.go` file itself are the only exceptions.

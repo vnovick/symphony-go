@@ -69,6 +69,7 @@ Pluggable agent backends — Claude Code and Codex are supported today; new back
 - **Retry queue** — failed agents auto-retry with exponential backoff (10s, 20s, 40s… capped at 5 min).
 - **Pause & resume** — free up a slot; resume later via `--resume` and continue the same session from exactly where it stopped.
 - **Input required** — agents can request human input. The preferred contract is the explicit `<!-- itervox:needs-input -->` marker, but Itervox also has a best-effort English-oriented fallback for successful final messages that end in a real blocking decision or confirmation prompt. The question is posted as a tracker comment; reply from Linear/GitHub or the dashboard to resume.
+- **Automations** — trigger helper runs from cron schedules, blocked-input events, tracker comments, issue-state transitions, backlog moves, or failed runs. Reuse normal profiles, filters, and permissions instead of inventing a separate workflow engine.
 - **Auto-clear workspaces** — delete cloned workspaces after successful completion. Disk stays clean, logs are preserved.
 - **Project filters** — filter issues by Linear project when working across multiple repos.
 - **Stall detection** — no output inside the stall window? Worker is killed and retried automatically.
@@ -227,6 +228,7 @@ Autonomous, not unsupervised. Agents do the work. You stay in control at every c
 
 - **AI Code Review.** Configure a `reviewer_profile` and optionally `auto_review` to dispatch a second worker for PR review. `agent.auto_review` and `workspace.auto_clear` are mutually exclusive today because the reviewer needs the workspace to remain available after the main worker exits.
 - **Agent asks for help.** When an agent needs input it pauses and posts a comment directly on the Linear or GitHub issue. Explicit `<!-- itervox:needs-input -->` remains the recommended way for prompts and skills to signal this. Itervox also catches common plain-English blocking questions like final choice or confirmation requests with a deterministic fallback detector, but that fallback is heuristic and English-oriented. If your prompts or skills use non-English wording or unusual phrasing, emit the explicit marker. Reply from the dashboard or from your tracker — the agent picks up your response and resumes automatically in the same session.
+- **Automation helpers stay sandboxed by profile permissions.** If an automation should comment, move state, create follow-up issues, or auto-resume a blocked run, enable only the required `allowed_actions` on that profile. The daemon issues short-lived action grants per run instead of handing the agent your dashboard API token.
 - **You merge the PR.** Agents submit PRs and post a session summary as a comment — they never merge. PR links are auto-commented on the tracker issue.
 
 ---
@@ -239,6 +241,14 @@ Autonomous, not unsupervised. Agents do the work. You stay in control at every c
 | **GitHub Issues** | Issues + PRs with label-based routing, auto PR detection, PR link comments |
 
 Full setup guides: **[Linear](https://itervox.dev/guides/linear-setup/)** · **[GitHub Issues](https://itervox.dev/guides/github-issues/)**.
+
+---
+
+## Remote access & bearer-token auth
+
+When Itervox binds to any non-loopback address (`0.0.0.0`, a LAN IP), the dashboard and REST API require an `Authorization: Bearer <token>` header on every request. Set `ITERVOX_API_TOKEN` in the environment, or Itervox generates an ephemeral token at startup and logs it once. The dashboard captures the token from the URL query (`?token=…`) on first load and persists it via `sessionStorage` (or `localStorage` with the Remember checkbox). `GET /health` is auth-exempt for load-balancer probes. For trusted-LAN air-gapped setups, set `server.allow_unauthenticated_lan: true` to bypass auth entirely.
+
+Full guide: **[itervox.dev/guides/remote-access/](https://itervox.dev/guides/remote-access/)**.
 
 ---
 
@@ -425,7 +435,7 @@ Windows is **unsupported**: Itervox relies on a POSIX shell for hooks and uses w
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, and the pre-commit hook policy. The project uses `make verify` as the single entry point that mirrors CI (fmt, vet, lint, Go tests with `-race`, and web tests).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev loop, the `make` targets, the web dashboard HMR workflow, the QA lanes, and the pre-commit hook policy. The project uses `make verify` as the main CI-equivalent gate (fmt, vet, lint, Go tests with `-race`, web tests, `web-spelling`, `size-budget`, and `no-os-exit`), with `make qa-current` covering the current-functionality Playwright baseline.
 
 Bug reports, feature requests, and PRs are welcome. Join the [Discord](https://discord.gg/ATU5n3yZNX) to show your `WORKFLOW.md`, ask questions, or propose ideas.
 

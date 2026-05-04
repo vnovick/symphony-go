@@ -197,6 +197,48 @@ func TestDispatchReviewer_UsesConfiguredSSHHost(t *testing.T) {
 	require.Equal(t, []string{"ssh-review"}, runner.snapshot())
 }
 
+func TestDispatchReviewer_UsesPerIssueBackendOverride(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Tracker.CompletionState = "In Review"
+	cfg.Agent.ReviewerProfile = "reviewer"
+	cfg.Agent.Profiles = map[string]config.AgentProfile{
+		"reviewer": {Command: "claude", Prompt: "You are a code reviewer."},
+	}
+
+	issue := makeIssue("id1", "ENG-1", "In Review", nil, nil)
+	mt := tracker.NewMemoryTracker(
+		[]domain.Issue{issue},
+		cfg.Tracker.ActiveStates,
+		cfg.Tracker.TerminalStates,
+	)
+	runner := &commandTrackingRunner{
+		Runner: agenttest.NewFakeRunner([]agent.StreamEvent{
+			{Type: "system", SessionID: "s1"},
+			{Type: "result", SessionID: "s1"},
+		}),
+		done: make(chan struct{}, 1),
+	}
+	orch := orchestrator.New(cfg, mt, runner, nil)
+	orch.SetIssueBackend("ENG-1", "codex")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go orch.Run(ctx) //nolint:errcheck
+	time.Sleep(20 * time.Millisecond)
+
+	require.NoError(t, orch.DispatchReviewer("ENG-1"))
+
+	select {
+	case <-runner.done:
+	case <-ctx.Done():
+		t.Fatal("reviewer did not complete within 3s")
+	}
+
+	commands := runner.snapshot()
+	require.Len(t, commands, 1)
+	assert.Contains(t, commands[0], "@@itervox-backend=codex")
+}
+
 // ─── Auto-review tests ──────────────────────────────────────────────────────
 
 func TestAutoReview_DispatchesAfterSuccess(t *testing.T) {
@@ -549,6 +591,31 @@ func (r *workerHostTrackingRunner) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string{}, r.workerHosts...)
+}
+
+type commandTrackingRunner struct {
+	agent.Runner
+	mu       sync.Mutex
+	done     chan struct{}
+	commands []string
+}
+
+func (r *commandTrackingRunner) RunTurn(ctx context.Context, log agent.Logger, onProgress func(agent.TurnResult), sessionID *string, prompt, workspacePath, command, workerHost string, logDir string, readTimeoutMs, turnTimeoutMs int) (agent.TurnResult, error) {
+	r.mu.Lock()
+	r.commands = append(r.commands, command)
+	r.mu.Unlock()
+	res, err := r.Runner.RunTurn(ctx, log, onProgress, sessionID, prompt, workspacePath, command, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
+	select {
+	case r.done <- struct{}{}:
+	default:
+	}
+	return res, err
+}
+
+func (r *commandTrackingRunner) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string{}, r.commands...)
 }
 
 // Verify syncBuffer exists in the test package (defined in token_log_test.go).

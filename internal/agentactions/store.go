@@ -1,3 +1,8 @@
+// Package agentactions issues, validates, and revokes short-lived per-run
+// action grants used by local agent workers (Claude Code / Codex) to call
+// daemon-side action endpoints like `create_issue`. Each grant is scoped to a
+// specific issue identifier and run session, carries an allowed-action list,
+// and expires after a caller-supplied TTL.
 package agentactions
 
 import (
@@ -8,6 +13,9 @@ import (
 	"time"
 )
 
+// Grant is the server-side record tied to an action-grant token. It pins the
+// token to an issue, run, action whitelist, and optional create-issue target
+// state, and enforces a hard expiry.
 type Grant struct {
 	IssueIdentifier  string
 	RunSessionID     string
@@ -16,17 +24,25 @@ type Grant struct {
 	ExpiresAt        time.Time
 }
 
+// Store is an in-memory, concurrency-safe action-grant registry. All access is
+// guarded by a single mutex — fine for the expected cardinality (one live grant
+// per running worker).
 type Store struct {
 	mu     sync.Mutex
 	grants map[string]Grant
 }
 
+// NewStore constructs an empty Store ready for use.
 func NewStore() *Store {
 	return &Store{
 		grants: make(map[string]Grant),
 	}
 }
 
+// Issue creates a new action grant bound to the given issue and run session.
+// allowedActions is normalised (cloned + sorted). If ttl is zero or negative,
+// a default of one hour is applied — callers should pass a positive value for
+// production use; the fallback is a convenience for tests.
 func (s *Store) Issue(issueIdentifier, runSessionID string, allowedActions []string, createIssueState string, ttl time.Duration) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -53,6 +69,8 @@ func (s *Store) Issue(issueIdentifier, runSessionID string, allowedActions []str
 	return token, nil
 }
 
+// Revoke immediately invalidates the given token. No-op if the token is empty,
+// the receiver is nil, or the token was never issued.
 func (s *Store) Revoke(token string) {
 	if s == nil || token == "" {
 		return
@@ -62,6 +80,12 @@ func (s *Store) Revoke(token string) {
 	s.mu.Unlock()
 }
 
+// Validate checks whether the given token authorises the given action against
+// the given issue at time now. Returns the Grant on success; on failure the
+// second return value carries a short machine-readable reason
+// ("missing_token", "unknown_token", "expired_token", "issue_mismatch",
+// "action_not_allowed") and the third return is false. Expired tokens are
+// deleted opportunistically on read.
 func (s *Store) Validate(token, issueIdentifier, action string, now time.Time) (Grant, string, bool) {
 	if s == nil || token == "" {
 		return Grant{}, "missing_token", false

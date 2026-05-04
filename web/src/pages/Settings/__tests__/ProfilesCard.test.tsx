@@ -3,6 +3,12 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ProfilesCard } from '../ProfilesCard';
 
+// ProfileRow now consumes useSkillsInventory() to surface the per-profile
+// token-cost line. Stub it to avoid wrapping these tests with a QueryClient.
+vi.mock('../../../queries/skills', () => ({
+  useSkillsInventory: () => ({ data: null }),
+}));
+
 describe('ProfilesCard', () => {
   it('renders saved profiles as cards with active and inactive actions', () => {
     render(

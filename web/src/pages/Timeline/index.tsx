@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import PageMeta from '../../components/common/PageMeta';
 import { useItervoxStore } from '../../store/itervoxStore';
+import { useUIStore } from '../../store/uiStore';
 import { useIssueLogs, useSubagentLogs } from '../../queries/logs';
 import { useStableValue } from '../../hooks/useStableValue';
 import { useClearIssueLogs, useClearIssueSubLogs } from '../../queries/issues';
@@ -29,12 +30,22 @@ export default function Timeline() {
 
   const liveSessions = useMemo(() => liveRunning.map(fromRunning), [liveRunning]);
   const historySessions = useMemo(() => rawHistory.map(fromHistory), [rawHistory]);
+  const automationOnly = useUIStore((s) => s.timelineAutomationOnly);
+  const setAutomationOnly = useUIStore((s) => s.setTimelineAutomationOnly);
 
   const allSessions = useMemo<NormalisedSession[]>(() => {
-    return [...historySessions, ...liveSessions].sort(
+    const sorted = [...historySessions, ...liveSessions].sort(
       (a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
     );
-  }, [historySessions, liveSessions]);
+    return automationOnly
+      ? sorted.filter((s) => s.automationId !== undefined && s.automationId !== '')
+      : sorted;
+  }, [historySessions, liveSessions, automationOnly]);
+
+  const hasAnyAutomationRun = useMemo(
+    () => historySessions.some((s) => s.automationId) || liveSessions.some((s) => s.automationId),
+    [historySessions, liveSessions],
+  );
 
   const issueGroups = useMemo(() => {
     const map = new Map<string, NormalisedSession[]>();
@@ -247,7 +258,40 @@ export default function Timeline() {
     <>
       <PageMeta title="Itervox | Timeline" description="Agent timeline" />
 
-      <div className="flex" style={{ height: 'calc(100vh - 100px)', minHeight: 500 }}>
+      <div
+        data-testid="timeline-filter-bar"
+        className="border-theme-line flex items-center gap-2 border-b px-3 py-2"
+      >
+        <button
+          type="button"
+          data-testid="timeline-chip-automation"
+          aria-pressed={automationOnly}
+          aria-disabled={!hasAnyAutomationRun}
+          disabled={!hasAnyAutomationRun}
+          onClick={() => {
+            if (hasAnyAutomationRun) setAutomationOnly(!automationOnly);
+          }}
+          title={
+            hasAnyAutomationRun
+              ? 'Show only runs dispatched by an automation rule'
+              : 'No automation runs in the current snapshot'
+          }
+          className={`rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors ${
+            !hasAnyAutomationRun
+              ? 'border-theme-line text-theme-muted/60 cursor-not-allowed'
+              : automationOnly
+                ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                : 'border-theme-line text-theme-muted hover:text-theme-text'
+          }`}
+        >
+          automation runs only
+        </button>
+        <span className="text-theme-muted ml-auto font-mono text-[10px]">
+          {allSessions.length} runs
+        </span>
+      </div>
+
+      <div className="flex" style={{ height: 'calc(100vh - 140px)', minHeight: 500 }}>
         <TimelineSidebar
           issueGroups={issueGroups}
           selectedId={selectedId}

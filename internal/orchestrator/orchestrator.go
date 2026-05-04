@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/vnovick/itervox/internal/agent"
 	"github.com/vnovick/itervox/internal/agentactions"
@@ -46,11 +47,18 @@ type Orchestrator struct {
 	lastSnap   State
 	sshHostIdx int // round-robin index for SSH host selection; only accessed in event loop
 
-	// cfgMu guards cfg fields mutated at runtime from HTTP handler goroutines:
-	// cfg.Agent.AgentMode, cfg.Agent.MaxConcurrentAgents, cfg.Agent.Profiles,
-	// cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates, cfg.Tracker.CompletionState,
-	// cfg.Workspace.AutoClearWorkspace, cfg.Agent.SSHHosts, cfg.Agent.DispatchStrategy,
-	// cfg.Agent.ReviewerProfile, cfg.Agent.AutoReview.
+	// cfgMu guards cfg fields mutated at runtime from HTTP handler goroutines.
+	// The CANONICAL list of guarded fields lives in
+	// `cfg_mu_audit_test.go::AllowedMutableCfgFields` (gap §7.1) — that test
+	// fails the build if a new `o.cfg.X = ...` assignment is added without
+	// being added to the allowlist. Browse it for the full enumeration.
+	// Quick reference (kept loosely in sync; trust the audit test):
+	// cfg.Agent.{MaxConcurrentAgents, Profiles, MaxRetries,
+	// MaxSwitchesPerIssuePerWindow, SwitchWindowHours, SwitchRevertHours,
+	// RateLimitErrorPatterns, SSHHosts, SSHHostDescriptions, DispatchStrategy,
+	// ReviewerProfile, AutoReview, InlineInput};
+	// cfg.Tracker.{ActiveStates, TerminalStates, CompletionState, FailedState};
+	// cfg.Workspace.AutoClearWorkspace; cfg.Automations.
 	// All other cfg fields are read-only after startup and need no lock.
 	cfgMu sync.RWMutex
 
@@ -68,6 +76,14 @@ type Orchestrator struct {
 	// pausedMu guards pausedFile, which is an unrelated concern from history.
 	pausedMu   sync.RWMutex
 	pausedFile string // optional path for persisting PausedIdentifiers across restarts
+
+	// autoSwitchedMu guards autoSwitchedFile. Gap §5.3 — persistence for
+	// state.IssueProfiles + state.IssueBackends overrides set by the
+	// rate_limited automation auto-switch. Without this, a daemon crash
+	// mid-flight loses the override and the next dispatch picks up the
+	// original (rate-limited) profile, looping back into the same failure.
+	autoSwitchedMu   sync.RWMutex
+	autoSwitchedFile string
 
 	// inputRequiredMu guards inputRequiredFile.
 	inputRequiredMu   sync.RWMutex
@@ -90,24 +106,68 @@ type Orchestrator struct {
 	userTerminatedMu  sync.Mutex
 	userTerminatedIDs map[string]struct{} // like userCancelledIDs but releases claim without pausing
 
-	// issueProfilesMu guards issueProfiles, which is written by SetIssueProfile
-	// (any goroutine) and read by dispatch (event loop goroutine) and Snapshot.
+	// issueProfilesMu guards issueProfiles AND reviewerInjectedProfiles —
+	// they're tracked together because reviewer-dispatch writes both under the
+	// same lock. issueProfiles is written by SetIssueProfile (any goroutine)
+	// and read by dispatch (event loop goroutine) and Snapshot.
 	// RWMutex allows concurrent Snapshot() calls without serialising each other.
 	issueProfilesMu sync.RWMutex
 	issueProfiles   map[string]string // identifier → profile name
+
+	// reviewerInjectedProfiles marks identifiers whose issueProfiles entry was
+	// set by dispatchReviewerForIssue (T-21). On reviewer-run TerminalSucceeded
+	// we clear ONLY entries we marked here, leaving user-set overrides intact.
+	reviewerInjectedProfiles map[string]struct{}
 
 	// issueBackendsMu guards issueBackends, which is written by SetIssueBackend
 	// (any goroutine) and read by dispatch (event loop goroutine) and Snapshot.
 	issueBackendsMu sync.RWMutex
 	issueBackends   map[string]string // identifier → "claude"|"codex"
 
+	// commentCountsMu guards commentCounts, which is written by
+	// BumpCommentCount (any goroutine, called from the HTTP handler that
+	// serves /api/v1/agent-actions/{identifier}/comment) and read by
+	// CommentCountFor when populating snapshot rows. Per-identifier counters
+	// are reset to zero by ResetCommentCount when the run terminates.
+	commentCountsMu sync.RWMutex
+	commentCounts   map[string]int // identifier → live comment count
+
+	// automationsMu guards inputRequiredAutomations and runFailedAutomations so
+	// the automations goroutine can hot-reload them via SetInputRequiredAutomations
+	// / SetRunFailedAutomations concurrently with event-loop reads.
+	automationsMu sync.RWMutex
+
 	// inputRequiredAutomations is the compiled set of helper-agent rules that
-	// react to blocked runs. Installed before Run and read by the event loop.
+	// react to blocked runs. Read by the event loop via snapshot helpers so
+	// hot-reload from the automations goroutine is race-safe.
 	inputRequiredAutomations []InputRequiredAutomation
 
 	// runFailedAutomations is the compiled set of helper-agent rules that react
 	// to terminal worker failures after retries are exhausted.
 	runFailedAutomations []RunFailedAutomation
+
+	// prOpenedAutomations (gap B) is the compiled set of rules that react to
+	// the worker's pr_opened signal. Race-safe via the same automationsMu
+	// guard as the other registries.
+	prOpenedAutomations []PROpenedAutomation
+
+	// rateLimitedAutomations (gap E) is the compiled set of rules that fire
+	// when an exhausted-retry exit is classified rate-limit-driven. These
+	// share the automationsMu lock with the other registries.
+	rateLimitedAutomations []RateLimitedAutomation
+
+	// switchHistoryMu guards switchHistory which records every successful
+	// rate_limited switch so the per-issue cap (cfg.Agent.MaxSwitchesPerIssuePerWindow
+	// over cfg.Agent.SwitchWindowHours) can reject further switches once
+	// the cap is reached.
+	switchHistoryMu sync.Mutex
+	switchHistory   map[string][]time.Time // issueID → fire timestamps
+
+	// rateLimitCooldownMu guards rateLimitCooldown which records the time
+	// until which a (issueID, profile) tuple is muted from re-firing the
+	// rate_limited rule.
+	rateLimitCooldownMu sync.Mutex
+	rateLimitCooldown   map[string]time.Time // key="<issueID>|<profile>" → until
 
 	// agentLogDir, when non-empty, is passed to RunTurn as CLAUDE_CODE_LOG_DIR
 	// so Claude Code writes full session logs (including sub-agents) to disk.
@@ -135,6 +195,13 @@ type Orchestrator struct {
 	// goroutines so Run can wait for them before returning.
 	discardWg sync.WaitGroup
 
+	// commentWg tracks the two untracked-by-default tracker-comment goroutines
+	// in event_loop.go (post-user-input comment, post-input-required-question
+	// comment). Without this, Run could return while the goroutines were still
+	// blocked on the tracker API, occasionally dropping a comment the user
+	// expected persisted. T-44 (gaps_280426 02.G-01).
+	commentWg sync.WaitGroup
+
 	// runCtx is the context passed to Run. Stored atomically so DispatchReviewer
 	// can read it safely from any goroutine without a mutex.
 	runCtx atomic.Pointer[context.Context]
@@ -148,20 +215,58 @@ type Orchestrator struct {
 
 // New constructs an Orchestrator ready to Run. wm may be nil (workspace ops skipped).
 func New(cfg *config.Config, tr tracker.Tracker, runner agent.Runner, wm workspace.Provider) *Orchestrator {
-	return &Orchestrator{
-		cfg:               cfg,
-		tracker:           tr,
-		runner:            runner,
-		workspace:         wm,
-		events:            make(chan OrchestratorEvent, 64),
-		refresh:           make(chan struct{}, 1),
-		workerCancels:     make(map[string]context.CancelFunc),
-		userCancelledIDs:  make(map[string]struct{}),
-		userTerminatedIDs: make(map[string]struct{}),
-		issueProfiles:     make(map[string]string),
-		issueBackends:     make(map[string]string),
-		sshHostDescs:      make(map[string]string),
+	sshHostDescs := maps.Clone(cfg.Agent.SSHHostDescriptions)
+	if sshHostDescs == nil {
+		sshHostDescs = make(map[string]string)
 	}
+	return &Orchestrator{
+		cfg:                      cfg,
+		tracker:                  tr,
+		runner:                   runner,
+		workspace:                wm,
+		events:                   make(chan OrchestratorEvent, 64),
+		refresh:                  make(chan struct{}, 1),
+		workerCancels:            make(map[string]context.CancelFunc),
+		userCancelledIDs:         make(map[string]struct{}),
+		userTerminatedIDs:        make(map[string]struct{}),
+		issueProfiles:            make(map[string]string),
+		reviewerInjectedProfiles: make(map[string]struct{}),
+		issueBackends:            make(map[string]string),
+		commentCounts:            make(map[string]int),
+		sshHostDescs:             sshHostDescs,
+	}
+}
+
+// BumpCommentCount increments the per-identifier comment counter (T-6).
+// Called from the HTTP handler that fans out a comment action; safe for any
+// goroutine. The counter is read-merged into RunningRow.CommentCount /
+// HistoryRow.CommentCount at snapshot conversion time.
+func (o *Orchestrator) BumpCommentCount(identifier string) {
+	if identifier == "" {
+		return
+	}
+	o.commentCountsMu.Lock()
+	if o.commentCounts == nil {
+		o.commentCounts = make(map[string]int)
+	}
+	o.commentCounts[identifier]++
+	o.commentCountsMu.Unlock()
+}
+
+// CommentCountFor returns the current count for the identifier (zero if the
+// identifier has not commented). Safe for any goroutine.
+func (o *Orchestrator) CommentCountFor(identifier string) int {
+	o.commentCountsMu.RLock()
+	defer o.commentCountsMu.RUnlock()
+	return o.commentCounts[identifier]
+}
+
+// ResetCommentCount clears the counter for the identifier. Called when a
+// run terminates so the next run starts fresh.
+func (o *Orchestrator) ResetCommentCount(identifier string) {
+	o.commentCountsMu.Lock()
+	delete(o.commentCounts, identifier)
+	o.commentCountsMu.Unlock()
 }
 
 // SetAgentLogDir configures the directory where agent session logs are written
@@ -203,6 +308,31 @@ func (o *Orchestrator) Refresh() {
 	}
 }
 
+// cancelAndCleanupWorker cancels the worker context for the given issue
+// identifier and removes the entry from the workerCancels map atomically.
+//
+// This MUST be the only path that mutates workerCancels post-startup. The
+// previous design coupled cleanup to the EventWorkerExited event reaching
+// the event loop — but reconcile-driven cancellations send that event with
+// a 100ms send-timeout, which under load drops the event and leaves the
+// cancel func pinned in the map until process exit (a slow leak per
+// stalled or reconciled worker). Calling this helper makes cleanup
+// independent of event delivery.
+//
+// Safe to call from any goroutine. If the identifier is not in the map
+// (already cleaned up), this is a no-op.
+func (o *Orchestrator) cancelAndCleanupWorker(identifier string) {
+	o.workerCancelsMu.Lock()
+	cancel, ok := o.workerCancels[identifier]
+	if ok {
+		delete(o.workerCancels, identifier)
+	}
+	o.workerCancelsMu.Unlock()
+	if ok && cancel != nil {
+		cancel()
+	}
+}
+
 // SetMaxWorkers updates the maximum number of concurrent agents at runtime.
 // The value is clamped to [1, maxWorkersCap]. Safe to call from any goroutine.
 func (o *Orchestrator) SetMaxWorkers(n int) {
@@ -226,13 +356,7 @@ func (o *Orchestrator) SetMaxWorkers(n int) {
 // Safe to call from any goroutine.
 func (o *Orchestrator) BumpMaxWorkers(delta int) int {
 	o.cfgMu.Lock()
-	next := o.cfg.Agent.MaxConcurrentAgents + delta
-	if next < 1 {
-		next = 1
-	}
-	if next > maxWorkersCap {
-		next = maxWorkersCap
-	}
+	next := max(1, min(o.cfg.Agent.MaxConcurrentAgents+delta, maxWorkersCap))
 	o.cfg.Agent.MaxConcurrentAgents = next
 	o.cfgMu.Unlock()
 	slog.Info("orchestrator: max workers bumped", "delta", delta, "max_concurrent_agents", next)
@@ -250,20 +374,99 @@ func (o *Orchestrator) MaxWorkers() int {
 	return o.cfg.Agent.MaxConcurrentAgents
 }
 
-// AgentModeCfg returns cfg.Agent.AgentMode under cfgMu.
+// SetMaxRetriesCfg updates the per-issue retry budget at runtime. A value of 0
+// is interpreted as "unlimited retries" by the event loop's exhaustion check
+// (see event_loop.go). Negative values are clamped to 0.
 // Safe to call from any goroutine.
-func (o *Orchestrator) AgentModeCfg() string {
-	o.cfgMu.RLock()
-	defer o.cfgMu.RUnlock()
-	return o.cfg.Agent.AgentMode
+func (o *Orchestrator) SetMaxRetriesCfg(n int) {
+	if n < 0 {
+		n = 0
+	}
+	o.cfgMu.Lock()
+	o.cfg.Agent.MaxRetries = n
+	o.cfgMu.Unlock()
+	slog.Info("orchestrator: max_retries updated", "max_retries", n)
+	if o.OnStateChange != nil {
+		o.OnStateChange()
+	}
 }
 
-// SetAgentModeCfg sets cfg.Agent.AgentMode under cfgMu.
+// MaxRetriesCfg returns the current per-issue retry budget.
 // Safe to call from any goroutine.
-func (o *Orchestrator) SetAgentModeCfg(mode string) {
+func (o *Orchestrator) MaxRetriesCfg() int {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Agent.MaxRetries
+}
+
+// SetFailedStateCfg updates the tracker state issues are moved to when the
+// retry budget is exhausted. Empty string means "pause instead of move".
+// The caller is responsible for validating that the state exists in the
+// tracker's known state set; this setter does not validate.
+// Safe to call from any goroutine.
+func (o *Orchestrator) SetFailedStateCfg(stateName string) {
 	o.cfgMu.Lock()
-	o.cfg.Agent.AgentMode = mode
+	o.cfg.Tracker.FailedState = stateName
 	o.cfgMu.Unlock()
+	slog.Info("orchestrator: failed_state updated", "failed_state", stateName)
+	if o.OnStateChange != nil {
+		o.OnStateChange()
+	}
+}
+
+// FailedStateCfg returns the current failed-state name (empty = pause).
+// Safe to call from any goroutine.
+func (o *Orchestrator) FailedStateCfg() string {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Tracker.FailedState
+}
+
+// MaxSwitchesPerIssuePerWindowCfg returns the per-issue rate-limited switch
+// cap. 0 means "unlimited" (operator opt-out). Gap E. Safe to call from any
+// goroutine.
+func (o *Orchestrator) MaxSwitchesPerIssuePerWindowCfg() int {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Agent.MaxSwitchesPerIssuePerWindow
+}
+
+// SwitchWindowHoursCfg returns the rolling-window duration over which
+// switches are counted. Gap E.
+func (o *Orchestrator) SwitchWindowHoursCfg() int {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	return o.cfg.Agent.SwitchWindowHours
+}
+
+// SetMaxSwitchesPerIssuePerWindowCfg updates the cap at runtime. Negative
+// values are clamped to 0 (= unlimited). Gap E.
+func (o *Orchestrator) SetMaxSwitchesPerIssuePerWindowCfg(n int) {
+	if n < 0 {
+		n = 0
+	}
+	o.cfgMu.Lock()
+	o.cfg.Agent.MaxSwitchesPerIssuePerWindow = n
+	o.cfgMu.Unlock()
+	slog.Info("orchestrator: max_switches_per_issue_per_window updated", "cap", n)
+	if o.OnStateChange != nil {
+		o.OnStateChange()
+	}
+}
+
+// SetSwitchWindowHoursCfg updates the rolling-window duration. Values <= 0
+// are normalised to 6h. Gap E.
+func (o *Orchestrator) SetSwitchWindowHoursCfg(h int) {
+	if h <= 0 {
+		h = 6
+	}
+	o.cfgMu.Lock()
+	o.cfg.Agent.SwitchWindowHours = h
+	o.cfgMu.Unlock()
+	slog.Info("orchestrator: switch_window_hours updated", "hours", h)
+	if o.OnStateChange != nil {
+		o.OnStateChange()
+	}
 }
 
 // SetAutoClearWorkspaceCfg toggles automatic workspace removal after a task succeeds.
@@ -393,6 +596,39 @@ func (o *Orchestrator) SetTrackerStatesCfg(active, terminal []string, completion
 	o.cfgMu.Unlock()
 }
 
+// AutomationsCfg returns a deep copy of cfg.Automations under cfgMu.
+// Safe to call from any goroutine. Automation slices inside each config are
+// copied to decouple the caller from future in-place mutations.
+func (o *Orchestrator) AutomationsCfg() []config.AutomationConfig {
+	o.cfgMu.RLock()
+	defer o.cfgMu.RUnlock()
+	if len(o.cfg.Automations) == 0 {
+		return nil
+	}
+	out := make([]config.AutomationConfig, len(o.cfg.Automations))
+	for i, a := range o.cfg.Automations {
+		cp := a
+		if len(a.Filter.States) > 0 {
+			cp.Filter.States = append([]string{}, a.Filter.States...)
+		}
+		if len(a.Filter.LabelsAny) > 0 {
+			cp.Filter.LabelsAny = append([]string{}, a.Filter.LabelsAny...)
+		}
+		out[i] = cp
+	}
+	return out
+}
+
+// SetAutomationsCfg atomically replaces cfg.Automations under cfgMu.
+// Safe to call from any goroutine. The caller is responsible for re-registering
+// input-required and run-failed automation sets via SetInputRequiredAutomations
+// and SetRunFailedAutomations so the event loop picks up the new rules.
+func (o *Orchestrator) SetAutomationsCfg(cfgs []config.AutomationConfig) {
+	o.cfgMu.Lock()
+	o.cfg.Automations = cfgs
+	o.cfgMu.Unlock()
+}
+
 // SSHHostsCfg returns a copy of the current SSH host list and descriptions map.
 // Safe to call from any goroutine.
 func (o *Orchestrator) SSHHostsCfg() (hosts []string, descs map[string]string) {
@@ -406,14 +642,26 @@ func (o *Orchestrator) SSHHostsCfg() (hosts []string, descs map[string]string) {
 func (o *Orchestrator) AddSSHHostCfg(host, description string) {
 	o.cfgMu.Lock()
 	defer o.cfgMu.Unlock()
+	if o.cfg.Agent.SSHHostDescriptions == nil {
+		o.cfg.Agent.SSHHostDescriptions = make(map[string]string)
+	}
 	for _, h := range o.cfg.Agent.SSHHosts {
 		if h == host {
-			o.sshHostDescs[host] = description
+			if description == "" {
+				delete(o.sshHostDescs, host)
+				delete(o.cfg.Agent.SSHHostDescriptions, host)
+			} else {
+				o.sshHostDescs[host] = description
+				o.cfg.Agent.SSHHostDescriptions[host] = description
+			}
 			return
 		}
 	}
 	o.cfg.Agent.SSHHosts = append(o.cfg.Agent.SSHHosts, host)
-	o.sshHostDescs[host] = description
+	if description != "" {
+		o.sshHostDescs[host] = description
+		o.cfg.Agent.SSHHostDescriptions[host] = description
+	}
 }
 
 // RemoveSSHHostCfg removes a host from the SSH pool at runtime.
@@ -429,6 +677,7 @@ func (o *Orchestrator) RemoveSSHHostCfg(host string) {
 	}
 	o.cfg.Agent.SSHHosts = result
 	delete(o.sshHostDescs, host)
+	delete(o.cfg.Agent.SSHHostDescriptions, host)
 }
 
 // DispatchStrategyCfg returns the active dispatch strategy.

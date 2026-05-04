@@ -4,11 +4,8 @@ import remarkGfm from 'remark-gfm';
 import { Modal } from '../ui/modal';
 import type { ProfileDef } from '../../types/schemas';
 import { proseClass } from '../../utils/format';
-import {
-  ProfileEditorFields,
-  backendLabel,
-  backendBadgeClass,
-} from '../../pages/Settings/profiles/ProfileEditorFields';
+import { ProfileEditorFields } from '../../pages/Settings/profiles/ProfileEditorFields';
+import { backendLabel, backendBadgeClass } from '../../pages/Settings/profiles/profileBadges';
 import {
   AGENT_ACTION_OPTIONS,
   normalizeAllowedActions,

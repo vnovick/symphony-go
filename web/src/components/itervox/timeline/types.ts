@@ -16,6 +16,11 @@ export interface NormalisedSession {
   tokens: number;
   status: 'live' | 'succeeded' | 'failed' | 'cancelled' | 'stalled' | 'input_required';
   sessionId?: string;
+  // Automation context (T-5). Populated by F-1 when the run was dispatched
+  // by an automation rule; undefined for manual runs. The Timeline page
+  // filters on the presence of automationId for its automation chip.
+  automationId?: string;
+  triggerType?: string;
 }
 
 export function fromRunning(r: RunningRow): NormalisedSession {
@@ -27,6 +32,8 @@ export function fromRunning(r: RunningRow): NormalisedSession {
     tokens: r.tokens,
     status: 'live',
     sessionId: r.sessionId,
+    automationId: r.automationId,
+    triggerType: r.triggerType,
   };
 }
 
@@ -41,6 +48,8 @@ export function fromHistory(h: HistoryRow): NormalisedSession {
     tokens: h.tokens,
     status: h.status,
     sessionId: h.sessionId,
+    automationId: h.automationId,
+    triggerType: h.triggerType,
   };
 }
 

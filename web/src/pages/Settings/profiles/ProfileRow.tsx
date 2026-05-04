@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { ProfileDef } from '../../../types/schemas';
+import { useSkillsInventory } from '../../../queries/skills';
 import {
   AGENT_ACTION_OPTIONS,
   commandToBackend,
@@ -7,7 +8,13 @@ import {
   modelLabel,
   normalizeAllowedActions,
 } from '../profileCommands';
-import { backendBadgeClass, backendLabel } from './ProfileEditorFields';
+import { backendBadgeClass, backendLabel } from './profileBadges';
+
+function fmtTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
+  return `${String(Math.round(n / 1000))}k`;
+}
 
 interface ProfileRowProps {
   name: string;
@@ -27,6 +34,24 @@ export function ProfileRow({ name, def, onEdit, onToggleEnabled, onDelete }: Pro
     normalizeAllowedActions(def.allowedActions).includes(option.id),
   ).map((option) => option.label);
   const isEnabled = def.enabled ?? true;
+
+  // Approx token cost this profile inherits from the global skills inventory.
+  // Until per-profile whitelist/blacklist lands (see planning/skills_pass/),
+  // every profile inherits the full inventory surface — we surface that here
+  // so operators can see at a glance which agents are over-loaded.
+  const { data: inventory } = useSkillsInventory();
+  const tokenSummary = useMemo(() => {
+    if (!inventory) return null;
+    const skillTokens = (inventory.Skills ?? []).reduce((s, sk) => s + sk.ApproxTokens, 0);
+    const pluginTokens = (inventory.Plugins ?? []).reduce((s, p) => s + p.ApproxTokens, 0);
+    const hookTokens = (inventory.Hooks ?? []).reduce((s, h) => s + h.ApproxTokens, 0);
+    const mcpTokens = (inventory.MCPServers ?? []).length * 800;
+    const skillCount = (inventory.Skills ?? []).length;
+    return {
+      total: skillTokens + pluginTokens + hookTokens + mcpTokens,
+      skillCount,
+    };
+  }, [inventory]);
 
   return (
     <article className="border-theme-line bg-theme-bg-soft flex min-h-[176px] w-full flex-col gap-3 rounded-[var(--radius-md)] border p-4">
@@ -73,6 +98,16 @@ export function ProfileRow({ name, def, onEdit, onToggleEnabled, onDelete }: Pro
             </span>
           ))}
         </div>
+      )}
+
+      {tokenSummary && (
+        <p
+          className="text-theme-muted text-[10px]"
+          title="Approx. token cost this profile inherits from the global skills inventory. Per-profile whitelist/blacklist coming — see planning/skills_pass."
+        >
+          Inherits ~{fmtTokens(tokenSummary.total)} tok ({tokenSummary.skillCount} skills) — every
+          profile loads the full surface today
+        </p>
       )}
 
       <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">

@@ -279,7 +279,14 @@ query ItervoxResolveStateId($issueId: String!, $stateName: String!) {
 	if len(nodes) == 0 {
 		return fmt.Errorf("linear_update_state: state %q not found for issue %q", stateName, issueID)
 	}
-	stateID, _ := nodes[0].(map[string]any)["id"].(string)
+	// G-19 (gaps_280426_2): comma-ok the chained type assertion. Previously a
+	// single-value `nodes[0].(map[string]any)["id"].(string)` would panic if
+	// Linear ever returned a non-map element here.
+	firstNode, ok := nodes[0].(map[string]any)
+	if !ok {
+		return fmt.Errorf("linear_update_state: unexpected node[0] shape for state %q", stateName)
+	}
+	stateID, _ := firstNode["id"].(string)
 	if stateID == "" {
 		return fmt.Errorf("linear_update_state: empty state id for %q", stateName)
 	}

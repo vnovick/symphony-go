@@ -171,8 +171,8 @@ func TestSetWorkers(t *testing.T) {
 			snap.MaxConcurrentAgents = tc.currentWorkers
 			cfg := makeTestConfig(snap)
 			cfg.Client = &server.FuncClient{
-				SetWorkersFn: func(n int) { called = n },
-				BumpWorkersFn: func(delta int) int {
+				SetWorkersFn: func(n int) error { called = n; return nil },
+				BumpWorkersFn: func(delta int) (int, error) {
 					next := snap.MaxConcurrentAgents + delta
 					if next < 1 {
 						next = 1
@@ -181,7 +181,7 @@ func TestSetWorkers(t *testing.T) {
 						next = 50
 					}
 					called = next
-					return next
+					return next, nil
 				},
 			}
 			srv := server.New(cfg)
@@ -199,6 +199,41 @@ func TestSetWorkers(t *testing.T) {
 			}
 		})
 	}
+
+	// Persist failure must surface as 500 — the frontend toast plumbing
+	// keys off non-2xx to show an error. T-05 added the error return so
+	// SetWorkers can no longer silently revert at the next reload.
+	t.Run("persist failure returns 500", func(t *testing.T) {
+		snap := baseSnap()
+		snap.MaxConcurrentAgents = 3
+		cfg := makeTestConfig(snap)
+		cfg.Client = &server.FuncClient{
+			SetWorkersFn: func(int) error {
+				return errors.New("disk full")
+			},
+		}
+		srv := server.New(cfg)
+
+		w := postJSON(t, srv, "/api/v1/settings/workers", `{"workers":5}`)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "disk full")
+	})
+
+	t.Run("bump persist failure returns 500", func(t *testing.T) {
+		snap := baseSnap()
+		snap.MaxConcurrentAgents = 3
+		cfg := makeTestConfig(snap)
+		cfg.Client = &server.FuncClient{
+			BumpWorkersFn: func(int) (int, error) {
+				return 0, errors.New("disk full")
+			},
+		}
+		srv := server.New(cfg)
+
+		w := postJSON(t, srv, "/api/v1/settings/workers", `{"delta":1}`)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+		assert.Contains(t, w.Body.String(), "disk full")
+	})
 }
 
 func TestSetIssueProfile(t *testing.T) {
@@ -506,60 +541,6 @@ func TestHandleResumeIssue_NotPaused_Returns404(t *testing.T) {
 	w := postJSON(t, srv, "/api/v1/issues/ENG-5/resume", "")
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assert.Contains(t, w.Body.String(), "not_paused")
-}
-
-// ─── handleSetAgentMode ───────────────────────────────────────────────────────
-
-func testServerWithAgentMode(t *testing.T, fn func(string) error) *server.Server {
-	t.Helper()
-	cfg := makeTestConfig(baseSnap())
-	cfg.Client = &server.FuncClient{SetAgentModeFn: fn}
-	return server.New(cfg)
-}
-
-func TestHandleSetAgentMode_ValidMode_Returns200(t *testing.T) {
-	tests := []struct {
-		name string
-		mode string
-	}{
-		{"empty mode (off)", ""},
-		{"subagents mode", "subagents"},
-		{"teams mode", "teams"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var gotMode string
-			srv := testServerWithAgentMode(t, func(mode string) error {
-				gotMode = mode
-				return nil
-			})
-
-			body := `{"mode":"` + tc.mode + `"}`
-			w := postJSON(t, srv, "/api/v1/settings/agent-mode", body)
-
-			assert.Equal(t, http.StatusOK, w.Code)
-			var resp map[string]any
-			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-			assert.Equal(t, true, resp["ok"])
-			assert.Equal(t, tc.mode, resp["agentMode"])
-			assert.Equal(t, tc.mode, gotMode)
-		})
-	}
-}
-
-func TestHandleSetAgentMode_InvalidJSON_Returns400(t *testing.T) {
-	srv := testServerWithAgentMode(t, func(mode string) error { return nil })
-	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `not-json`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "error")
-}
-
-func TestHandleSetAgentMode_InvalidMode_Returns400(t *testing.T) {
-	srv := testServerWithAgentMode(t, func(mode string) error { return nil })
-	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `{"mode":"invalid-mode"}`)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid_mode")
 }
 
 // ─── handleTerminateIssue ─────────────────────────────────────────────────────
@@ -1135,6 +1116,22 @@ func TestHandleSetInlineInput_NoopClient_Returns500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+func TestHandleSetInlineInput_Success(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	called := false
+	cfg.Client = &server.FuncClient{
+		SetInlineInputFn: func(enabled bool) error {
+			called = true
+			assert.True(t, enabled)
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/settings/inline-input", `{"enabled":true}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
 // ─── handleSetDispatchStrategy ───────────────────────────────────────────────
 
 func TestHandleSetDispatchStrategy_ValidStrategies(t *testing.T) {
@@ -1396,6 +1393,87 @@ func TestHandleSubLogs_Error_Returns500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+// TestHandleSubLogStream_ResumesFromLastEventID pins the T-18 contract: a
+// reconnect carrying Last-Event-ID: N causes the server to skip the first
+// N entries and stream only events N+1..end. Without this, every reconnect
+// re-delivers the entire buffer (duplicate-line spam in the dashboard).
+func TestHandleSubLogStream_ResumesFromLastEventID(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	ctx, cancel := context.WithCancel(context.Background())
+	entries := []domain.IssueLogEntry{
+		{Event: "text", Message: "one"},
+		{Event: "text", Message: "two"},
+		{Event: "text", Message: "three"},
+		{Event: "text", Message: "four"},
+		{Event: "text", Message: "five"},
+	}
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) {
+			defer cancel()
+			return entries, nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublog-stream", nil).WithContext(ctx)
+	req.Header.Set("Last-Event-ID", "3")
+	w := httptest.NewRecorder()
+
+	srv.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	assert.NotContains(t, body, `"message":"one"`, "events 1-3 must be skipped after Last-Event-ID: 3")
+	assert.NotContains(t, body, `"message":"two"`)
+	assert.NotContains(t, body, `"message":"three"`)
+	assert.Contains(t, body, `"message":"four"`)
+	assert.Contains(t, body, `"message":"five"`)
+	// Server stamps each emitted event with id: <cursor>.
+	assert.Contains(t, body, "id: 4")
+	assert.Contains(t, body, "id: 5")
+}
+
+// TestHandleSubLogStream_StaleLastEventIDReplaysFromStart guards against a
+// stale cursor pointing past the current buffer (e.g. server restart): the
+// server must reset to 0 and replay everything, not silently drop events.
+func TestHandleSubLogStream_StaleLastEventIDReplaysFromStart(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) {
+			defer cancel()
+			return []domain.IssueLogEntry{{Event: "text", Message: "first"}}, nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublog-stream", nil).WithContext(ctx)
+	req.Header.Set("Last-Event-ID", "999")
+	w := httptest.NewRecorder()
+
+	srv.ServeHTTP(w, req)
+
+	assert.Contains(t, w.Body.String(), `"message":"first"`)
+}
+
+func TestHandleSubLogStream_StreamsInitialEntries(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg.Client = &server.FuncClient{
+		FetchSubLogsFn: func(string) ([]domain.IssueLogEntry, error) {
+			defer cancel()
+			return []domain.IssueLogEntry{{Event: "text", Message: "hello"}}, nil
+		},
+	}
+	srv := server.New(cfg)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/ENG-1/sublog-stream", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "text/event-stream", w.Header().Get("Content-Type"))
+	assert.Contains(t, w.Body.String(), "event: sublog")
+	assert.Contains(t, w.Body.String(), "hello")
+}
+
 // ─── handleClearAllLogs ──────────────────────────────────────────────────────
 
 func TestHandleClearAllLogs_Success(t *testing.T) {
@@ -1599,6 +1677,103 @@ func TestHandleAgentComment_Success(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "ENG-1", gotIdentifier)
 	assert.Equal(t, "hello from agent", gotBody)
+}
+
+// Gap D — happy path: a profile granted AgentActionCommentPR can post
+// structured findings; the rendered Markdown is what reaches CommentOnIssue.
+func TestHandleAgentCommentPR_Success(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionCommentPR}, "", time.Minute)
+	require.NoError(t, err)
+
+	var gotIdentifier, gotBody string
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		CommentOnIssueFn: func(_ context.Context, identifier, body string) error {
+			gotIdentifier = identifier
+			gotBody = body
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	body := `{
+		"summary": "PR review: 1 issue found.",
+		"findings": [
+			{"path": "internal/foo.go", "line": 42, "severity": "error", "body": "potential nil deref"}
+		]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/comment_pr", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "ENG-1", gotIdentifier)
+	assert.Contains(t, gotBody, "🤖 Itervox review")
+	assert.Contains(t, gotBody, "internal/foo.go:42")
+	assert.Contains(t, gotBody, "potential nil deref")
+}
+
+// Gap D — comment_pr with no summary AND no findings must reject as 400
+// before the tracker call so an agent that produced an empty review gets a
+// clear "you sent nothing" error rather than a silent no-op comment.
+func TestHandleAgentCommentPR_EmptySubmissionRejected(t *testing.T) {
+	store := agentactions.NewStore()
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionCommentPR}, "", time.Minute)
+	require.NoError(t, err)
+
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		CommentOnIssueFn: func(context.Context, string, string) error {
+			t.Fatal("CommentOnIssue must not be called for an empty submission")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/comment_pr", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "summary or at least one finding")
+}
+
+// Gap D — a profile granted only AgentActionComment must NOT be allowed to
+// call comment_pr. The two scopes are separate so reviewer profiles can be
+// authorised for structured findings without granting freeform comment.
+func TestHandleAgentCommentPR_ForbiddenWithoutCommentPRScope(t *testing.T) {
+	store := agentactions.NewStore()
+	// Note: only AgentActionComment, not AgentActionCommentPR.
+	token, err := store.Issue("ENG-1", "run-1", []string{config.AgentActionComment}, "", time.Minute)
+	require.NoError(t, err)
+
+	var called bool
+	cfg := makeTestConfig(baseSnap())
+	cfg.ActionTokenStore = store
+	cfg.Client = &server.FuncClient{
+		CommentOnIssueFn: func(context.Context, string, string) error {
+			called = true
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+
+	body := `{"findings":[{"path":"a.go","line":1,"severity":"info","body":"x"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent-actions/ENG-1/comment_pr", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, called)
 }
 
 func TestHandleAgentProvideInput_ForbiddenWithoutPermission(t *testing.T) {
@@ -1965,14 +2140,6 @@ func TestHandleUpdateTrackerStates_ServerError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
-// ─── handleSetAgentMode server error ─────────────────────────────────────────
-
-func TestHandleSetAgentMode_ServerError(t *testing.T) {
-	srv := testServerWithAgentMode(t, func(string) error { return errors.New("write failed") })
-	w := postJSON(t, srv, "/api/v1/settings/agent-mode", `{"mode":"teams"}`)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-}
-
 // ─── handleClearIssueLogs error path ─────────────────────────────────────────
 
 func TestHandleClearIssueLogs_Error(t *testing.T) {
@@ -2072,4 +2239,212 @@ func TestHandleCancelIssue_PostAlias(t *testing.T) {
 	w := postJSON(t, srv, "/api/v1/issues/ENG-1/cancel", "")
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "cancelled")
+}
+
+// ─── POST /api/v1/automations/{id}/test (T-10) ───────────────────────────────
+
+func TestHandleTestAutomation_Success(t *testing.T) {
+	var gotAutomationID, gotIdentifier string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		TestAutomationFn: func(_ context.Context, automationID, identifier string) error {
+			gotAutomationID = automationID
+			gotIdentifier = identifier
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/automations/cron-nightly/test", `{"identifier":"ENG-1"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "cron-nightly", gotAutomationID)
+	assert.Equal(t, "ENG-1", gotIdentifier)
+	assert.Contains(t, w.Body.String(), "ok")
+}
+
+func TestHandleTestAutomation_MissingIdentifier_400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		TestAutomationFn: func(context.Context, string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/automations/cron/test", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "identifier")
+}
+
+func TestHandleTestAutomation_BlankIdentifier_400(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		TestAutomationFn: func(context.Context, string, string) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/automations/cron/test", `{"identifier":"   "}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleTestAutomation_BackendError_500(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		TestAutomationFn: func(context.Context, string, string) error {
+			return errors.New("rule not found")
+		},
+	}
+	srv := server.New(cfg)
+	w := postJSON(t, srv, "/api/v1/automations/missing/test", `{"identifier":"ENG-1"}`)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "rule not found")
+}
+
+// PUT /settings/agent/max-retries — happy path round-trips the integer to the
+// orchestrator client and surfaces it in the JSON response.
+func TestHandleSetMaxRetries_OK(t *testing.T) {
+	var captured int
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxRetriesFn: func(n int) error { captured = n; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-retries", `{"maxRetries":7}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 7, captured)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, float64(7), resp["maxRetries"])
+}
+
+// Negative max_retries is meaningless — the handler must reject it BEFORE
+// hitting the persist layer to avoid a misleading 500 from the WORKFLOW.md
+// patcher.
+func TestHandleSetMaxRetries_NegativeRejected(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxRetriesFn: func(int) error {
+			t.Fatal("setter should not have been called for negative input")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-retries", `{"maxRetries":-1}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// Missing maxRetries field is a malformed body — must 400, not silently
+// default to 0 (which would clobber the operator's previous value).
+func TestHandleSetMaxRetries_MissingField(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxRetriesFn: func(int) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-retries", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// PUT /settings/tracker/failed-state — happy path with a non-empty state.
+func TestHandleSetFailedState_OK(t *testing.T) {
+	var captured string
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetFailedStateFn: func(s string) error { captured = s; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/failed-state", `{"failedState":"Backlog"}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "Backlog", captured)
+}
+
+// Empty string round-trip — operator picks "Pause (do not move)" — must
+// reach the setter as "" so the orchestrator clears the field.
+func TestHandleSetFailedState_EmptyMeansPause(t *testing.T) {
+	captured := "untouched"
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetFailedStateFn: func(s string) error { captured = s; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/failed-state", `{"failedState":""}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "", captured, "empty string must reach the setter, not be rejected as bad_request")
+}
+
+// Gap E §4.7 — switch-cap settings handlers.
+//
+// PUT /settings/agent/max-switches-per-issue-per-window — happy path round-trips.
+func TestHandleSetMaxSwitches_OK(t *testing.T) {
+	var captured int
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxSwitchesPerIssuePerWindowFn: func(n int) error { captured = n; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-switches-per-issue-per-window",
+		`{"maxSwitchesPerIssuePerWindow":3}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 3, captured)
+	assert.Contains(t, w.Body.String(), `"maxSwitchesPerIssuePerWindow":3`)
+}
+
+func TestHandleSetMaxSwitches_NegativeRejected(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxSwitchesPerIssuePerWindowFn: func(int) error {
+			t.Fatal("setter should not be called for negative input")
+			return nil
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-switches-per-issue-per-window",
+		`{"maxSwitchesPerIssuePerWindow":-1}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleSetMaxSwitches_MissingField(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetMaxSwitchesPerIssuePerWindowFn: func(int) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/max-switches-per-issue-per-window", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// PUT /settings/agent/switch-window-hours — happy path round-trips.
+func TestHandleSetSwitchWindowHours_OK(t *testing.T) {
+	var captured int
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetSwitchWindowHoursFn: func(h int) error { captured = h; return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/switch-window-hours",
+		`{"switchWindowHours":12}`)
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 12, captured)
+	assert.Contains(t, w.Body.String(), `"switchWindowHours":12`)
+}
+
+func TestHandleSetSwitchWindowHours_MissingField(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetSwitchWindowHoursFn: func(int) error { return nil },
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/agent/switch-window-hours", `{}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// Setter validation failure (e.g. unknown state) must surface as 400, not
+// 500 — it's user error.
+func TestHandleSetFailedState_UnknownStateRejected(t *testing.T) {
+	cfg := makeTestConfig(baseSnap())
+	cfg.Client = &server.FuncClient{
+		SetFailedStateFn: func(string) error {
+			return errors.New(`failed_state "Garbage" is not in tracker.active_states / terminal_states / backlog_states`)
+		},
+	}
+	srv := server.New(cfg)
+	w := putJSON(t, srv, "/api/v1/settings/tracker/failed-state", `{"failedState":"Garbage"}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "Garbage")
 }

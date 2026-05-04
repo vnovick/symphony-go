@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 
-type ViewMode = 'board' | 'list' | 'agents';
+type ViewMode = 'board' | 'list' | 'agents' | 'notifications';
+
+export type AutomationsTab = 'configure' | 'activity';
 
 interface UIState {
   // Dashboard preferences (ZUSTAND-3) — persist across navigation
@@ -12,6 +14,15 @@ interface UIState {
   // Accordion expansion (ZUSTAND-6) — persist across re-renders
   expandedRunningId: string | null;
   expandedPausedId: string | null;
+
+  // /automations sub-tab — Configure (editor) vs Activity (per-rule run history)
+  automationsTab: AutomationsTab;
+
+  // Logs page chip — restrict to AUTOMATION FIRED entries.
+  logsAutomationOnly: boolean;
+
+  // Timeline page chip — restrict to runs with an automationId.
+  timelineAutomationOnly: boolean;
 }
 
 interface UIActions {
@@ -21,6 +32,9 @@ interface UIActions {
   setDashboardSearchVisible: (visible: boolean) => void;
   setExpandedRunningId: (id: string | null) => void;
   setExpandedPausedId: (id: string | null) => void;
+  setAutomationsTab: (tab: AutomationsTab) => void;
+  setLogsAutomationOnly: (value: boolean) => void;
+  setTimelineAutomationOnly: (value: boolean) => void;
 }
 
 export const useUIStore = create<UIState & UIActions>((set) => ({
@@ -30,6 +44,9 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   dashboardSearchVisible: false,
   expandedRunningId: null,
   expandedPausedId: null,
+  automationsTab: 'configure',
+  logsAutomationOnly: false,
+  timelineAutomationOnly: false,
 
   setDashboardViewMode: (dashboardViewMode) => {
     set({ dashboardViewMode });
@@ -48,5 +65,14 @@ export const useUIStore = create<UIState & UIActions>((set) => ({
   },
   setExpandedPausedId: (expandedPausedId) => {
     set({ expandedPausedId });
+  },
+  setAutomationsTab: (automationsTab) => {
+    set({ automationsTab });
+  },
+  setLogsAutomationOnly: (logsAutomationOnly) => {
+    set({ logsAutomationOnly });
+  },
+  setTimelineAutomationOnly: (timelineAutomationOnly) => {
+    set({ timelineAutomationOnly });
   },
 }));

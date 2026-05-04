@@ -1,19 +1,45 @@
 import { useShallow } from 'zustand/react/shallow';
+import { useNavigate } from 'react-router';
 import { useItervoxStore } from '../../../store/itervoxStore';
+import { useUIStore } from '../../../store/uiStore';
+import { EMPTY_HISTORY } from '../../../utils/constants';
 
 function StatTile({
   label,
   value,
   sub,
   valueColor,
+  onClick,
+  testId,
 }: {
   label: string;
   value: string;
   sub: string;
   valueColor?: string;
+  onClick?: () => void;
+  testId?: string;
 }) {
+  const isInteractive = !!onClick;
   return (
-    <div className="flex flex-col items-center rounded-[var(--radius-md)] bg-white/[0.04] px-4 py-3">
+    <div
+      role={isInteractive ? 'button' : undefined}
+      tabIndex={isInteractive ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        isInteractive
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
+      data-testid={testId}
+      className={`flex flex-col items-center rounded-[var(--radius-md)] bg-white/[0.04] px-4 py-3 ${
+        isInteractive ? 'cursor-pointer hover:bg-white/[0.08]' : ''
+      }`}
+    >
       <span className="text-theme-muted text-[10px] font-semibold tracking-[0.06em] uppercase">
         {label}
       </span>
@@ -28,18 +54,45 @@ function StatTile({
   );
 }
 
+function startOfTodayMs(now: number = Date.now()): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+export function automationsFiredToday(
+  rows: Array<{ automationId?: string; finishedAt: string; startedAt?: string }>,
+  now: number = Date.now(),
+): number {
+  const start = startOfTodayMs(now);
+  let count = 0;
+  for (const row of rows) {
+    if (!row.automationId) continue;
+    const t = Date.parse(row.finishedAt);
+    if (!Number.isNaN(t) && t >= start) count++;
+  }
+  return count;
+}
+
 export function HeroStats() {
-  const { running, paused, retrying, inputRequired, max } = useItervoxStore(
+  const { running, paused, retrying, inputRequired, max, history } = useItervoxStore(
     useShallow((s) => ({
       running: s.snapshot?.running.length ?? 0,
       paused: s.snapshot?.paused.length ?? 0,
       retrying: s.snapshot?.retrying.length ?? 0,
       inputRequired: (s.snapshot?.inputRequired ?? []).length,
       max: s.snapshot?.maxConcurrentAgents ?? 0,
+      history: s.snapshot?.history ?? EMPTY_HISTORY,
     })),
   );
+  const navigate = useNavigate();
+  const setTimelineAutomationOnly = useUIStore((s) => s.setTimelineAutomationOnly);
+  const automationsToday = automationsFiredToday(history);
   return (
-    <div className="grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 md:w-auto md:grid-cols-5">
+    <div
+      className="grid w-full flex-shrink-0 grid-cols-2 gap-2 sm:grid-cols-3 md:w-auto md:grid-cols-6"
+      data-testid="hero-stats"
+    >
       <StatTile
         label="Running"
         value={String(running)}
@@ -63,6 +116,17 @@ export function HeroStats() {
         value={String(inputRequired)}
         sub="blocked"
         valueColor={inputRequired > 0 ? 'var(--warning)' : undefined}
+      />
+      <StatTile
+        testId="hero-stat-automations-today"
+        label="Automations"
+        value={String(automationsToday)}
+        sub="fired today"
+        valueColor={automationsToday > 0 ? 'var(--success)' : undefined}
+        onClick={() => {
+          setTimelineAutomationOnly(true);
+          void navigate('/timeline');
+        }}
       />
       <StatTile
         label="Capacity"
