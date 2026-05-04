@@ -46,6 +46,14 @@ func ValidateDispatch(cfg *Config) error {
 		}
 	}
 
+	// Check 6b: resume_prompt is a valid Liquid template.
+	if rp := cfg.Agent.ResumePrompt; rp != "" {
+		eng := liquid.NewEngine()
+		if _, err := eng.ParseTemplate([]byte(rp)); err != nil {
+			return fmt.Errorf("agent.resume_prompt: invalid Liquid template: %w", err)
+		}
+	}
+
 	// Check 7: ssh_hosts must not start with '-' or contain whitespace (prevents SSH flag injection)
 	for _, host := range cfg.Agent.SSHHosts {
 		if strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t") {

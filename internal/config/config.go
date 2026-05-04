@@ -78,6 +78,9 @@ Your job:
 
 Be concise in your review comments. Focus on real problems, not style nits.`
 
+// DefaultResumePrompt is used for Claude resume turns when resume_prompt is absent from WORKFLOW.md.
+const DefaultResumePrompt = "Continue working on the previously assigned issue using the existing session context. Do not restart from scratch; proceed from where the prior turn left off."
+
 // AgentProfile holds settings for a named agent profile.
 type AgentProfile struct {
 	// Command overrides the default agent CLI command (e.g. "claude --model ...").
@@ -104,6 +107,9 @@ type AgentConfig struct {
 	// Backend optionally overrides runner selection for the default agent command
 	// when it cannot be inferred from the command string alone.
 	Backend string
+	// ResumePrompt is the Liquid template sent to Claude resume turns instead of
+	// re-sending the full WORKFLOW.md prompt. Codex resumes keep backend-native behavior.
+	ResumePrompt string
 	// TurnTimeoutMs is the hard wall-clock limit for an entire agent session
 	// (all turns combined). When the limit is exceeded the subprocess is killed
 	// and the issue is scheduled for retry. Default: 3 600 000 ms (1 hour).
@@ -280,6 +286,7 @@ func fromWorkflow(wf *workflow.Workflow) *Config {
 	cfg.Agent.MaxTurns = positiveIntField(agent, "max_turns", 20)
 	cfg.Agent.Command = strField(agent, "command", "claude")
 	cfg.Agent.Backend = strField(agent, "backend", "")
+	cfg.Agent.ResumePrompt = strField(agent, "resume_prompt", DefaultResumePrompt)
 	cfg.Agent.TurnTimeoutMs = intField(agent, "turn_timeout_ms", 3600000)
 	cfg.Agent.ReadTimeoutMs = positiveIntField(agent, "read_timeout_ms", 30000)
 	cfg.Agent.StallTimeoutMs = intField(agent, "stall_timeout_ms", 300000)

@@ -185,6 +185,7 @@ Controls the agent runner: which CLI to invoke, concurrency limits, timeouts, re
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `agent_mode` | string | `""` | Agent collaboration model. In all modes, if an issue has a profile assigned, that profile's prompt is appended. `""` (solo): agent runs alone. `"subagents"`: agent may use its native helper/subagent tool. `"teams"`: additionally injects a sub-agent roster so the agent knows which specialists it can delegate to by name. |
+| `resume_prompt` | string | built-in | Liquid template sent to Claude resume turns instead of re-sending the full workflow prompt. Applies to Claude turn 2+ and manual pause/resume. |
 | `inline_input` | bool | `false` | When `true`, agent input-required signals are posted as tracker comments; the user replies in the tracker and moves the issue back to an active state to continue. When `false` (default), the dashboard shows a reply UI that posts the response as a tracker comment before resuming. |
 | `base_branch` | string | `""` | Remote branch used as the base for git diffs when enriching PR context (e.g. `"origin/develop"`). When empty, Itervox auto-detects via `git symbolic-ref refs/remotes/origin/HEAD`, falling back to `"origin/main"`. |
 | `reviewer_prompt` | string | built-in | (Deprecated) Liquid template for the legacy reviewer. Prefer `reviewer_profile`. |

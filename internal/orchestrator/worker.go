@@ -288,9 +288,14 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		maps.Copy(profilesSnap, o.cfg.Agent.Profiles)
 		o.cfgMu.RUnlock()
 
+		var firstResumeContext []string
 		if profileName != "" {
 			if profile, ok := profilesSnap[profileName]; ok && profile.Prompt != "" {
-				renderedPrompt += "\n\n" + prompt.RenderProfilePrompt(profile.Prompt, issue, attemptPtr)
+				profilePrompt := prompt.RenderProfilePrompt(profile.Prompt, issue, attemptPtr)
+				renderedPrompt += "\n\n" + profilePrompt
+				if turn == 1 {
+					firstResumeContext = append(firstResumeContext, profilePrompt)
+				}
 			}
 		}
 		// In teams mode, also append sub-agent roster context so the active backend
@@ -298,6 +303,9 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if agentMode == "teams" {
 			if subCtx := buildSubAgentContext(profilesSnap, profileName, backend); subCtx != "" {
 				renderedPrompt += "\n\n" + subCtx
+				if turn == 1 {
+					firstResumeContext = append(firstResumeContext, subCtx)
+				}
 			}
 		}
 
@@ -305,6 +313,18 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if turn == 1 {
 			if prBlock := prdetector.FormatPRContext(prCtx); prBlock != "" {
 				renderedPrompt += "\n\n" + prBlock
+				firstResumeContext = append(firstResumeContext, prBlock)
+			}
+		}
+
+		turnPrompt := renderedPrompt
+		if shouldUseClaudeResumePrompt(backend, claudeSessionID) {
+			resumePrompt, err := renderClaudeResumePrompt(o.cfg.Agent.ResumePrompt, issue, attemptPtr)
+			if err != nil {
+				slog.Warn("worker: resume prompt render failed",
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier, "error", err)
+			} else {
+				turnPrompt = appendPromptSections(resumePrompt, firstResumeContext...)
 			}
 		}
 
@@ -341,7 +361,7 @@ func (o *Orchestrator) runWorker(ctx context.Context, issue domain.Issue, attemp
 		if o.agentLogDir != "" {
 			logDir = filepath.Join(o.agentLogDir, workspace.SanitizeKey(issue.Identifier))
 		}
-		result, runErr := o.runner.RunTurn(ctx, workerLog, onProgress, claudeSessionID, renderedPrompt, wsPath,
+		result, runErr := o.runner.RunTurn(ctx, workerLog, onProgress, claudeSessionID, turnPrompt, wsPath,
 			agentCommand, workerHost, logDir, readTimeoutMs, turnTimeoutMs)
 
 		if result.SessionID != "" {
@@ -784,6 +804,31 @@ func (o *Orchestrator) runAfterHook(ctx context.Context, hook string, timeoutMs 
 	if err := workspace.RunHook(ctx, hook, wsPath, timeoutMs, o.hookLogFn(identifier, sessionID)); err != nil {
 		slog.Warn("worker: after_run hook failed (ignored)", "issue_id", issueID, "error", err)
 	}
+}
+
+func shouldUseClaudeResumePrompt(backend string, sessionID *string) bool {
+	if sessionID == nil || *sessionID == "" {
+		return false
+	}
+	return backend == "" || backend == "claude"
+}
+
+func renderClaudeResumePrompt(template string, issue domain.Issue, attempt *int) (string, error) {
+	if strings.TrimSpace(template) == "" {
+		template = config.DefaultResumePrompt
+	}
+	return prompt.Render(template, issue, attempt)
+}
+
+func appendPromptSections(base string, sections ...string) string {
+	out := base
+	for _, section := range sections {
+		if strings.TrimSpace(section) == "" {
+			continue
+		}
+		out += "\n\n" + section
+	}
+	return out
 }
 
 // generateRunID returns a short random ID that is assigned to a worker run

@@ -52,11 +52,34 @@ func TestBuildShellCmdNewSession(t *testing.T) {
 
 func TestBuildShellCmdResume(t *testing.T) {
 	id := "sess-abc"
-	cmd := buildShellCmd("claude", &id, "ignored prompt")
+	cmd := buildShellCmd("claude", &id, "next-turn prompt")
 	assert.Contains(t, cmd, "--resume")
 	assert.Contains(t, cmd, "sess-abc")
-	// When resuming, the new-session flag ` -p ` should not appear (note spaces).
-	assert.NotContains(t, cmd, " -p ")
+	// Claude Code ≥ 2.1.119 requires `-p` alongside `--resume` when the
+	// resumed transcript has no deferred-tool marker. Issue #30.
+	assert.Contains(t, cmd, " -p ")
+	assert.Contains(t, cmd, "next-turn prompt")
+}
+
+// --- buildDirectArgs ---
+
+func TestBuildDirectArgsNewSession(t *testing.T) {
+	args := buildDirectArgs(nil, "do the thing")
+	assert.Contains(t, args, "--output-format")
+	assert.Contains(t, args, "stream-json")
+	assert.Contains(t, args, "-p")
+	assert.Contains(t, args, "do the thing")
+	assert.NotContains(t, args, "--resume")
+}
+
+func TestBuildDirectArgsResume(t *testing.T) {
+	id := "sess-abc"
+	args := buildDirectArgs(&id, "next-turn prompt")
+	assert.Contains(t, args, "--resume")
+	assert.Contains(t, args, "sess-abc")
+	// Issue #30: prompt must be present alongside --resume.
+	assert.Contains(t, args, "-p")
+	assert.Contains(t, args, "next-turn prompt")
 }
 
 // Regression: an empty command must not produce a shell line that starts with
