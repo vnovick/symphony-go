@@ -2,6 +2,7 @@ package statusui
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 
@@ -15,6 +16,19 @@ import (
 // cancelled or the user presses q. buf may be nil (log pane disabled).
 // cancelFn is called when the user presses x to kill the selected session; nil disables it.
 func Run(ctx context.Context, snap func() server.StateSnapshot, buf *logbuffer.Buffer, cfg Config, cancelFn func(string) bool) {
+	if err := waitForForegroundTTY(ctx); err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return
+		case errors.Is(err, errNoControllingTTY):
+			slog.Info("statusui: no controlling tty; terminal UI disabled", "error", err)
+			return
+		default:
+			slog.Warn("statusui: foreground tty check failed; terminal UI disabled", "error", err)
+			return
+		}
+	}
+
 	m := New(snap, buf, cfg, cancelFn)
 	p := tea.NewProgram(m,
 		tea.WithOutput(os.Stderr),
